@@ -166,7 +166,7 @@ const { IambicKeyer } = require('./lib/keyer');
 const { WinKeyer } = require('./lib/winkeyer');
 const { parsePotaParksCSV } = require('./lib/pota-parks');
 const { PotaSync } = require('./lib/pota-sync');
-const { WsjtxClient, extractCallsigns, encodeHeartbeat, encodeLoggedAdif, encodeQsoLogged } = require('./lib/wsjtx');
+const { WsjtxClient, extractCallsigns, encodeHeartbeat, encodeStatus, encodeDecode, encodeLoggedAdif, encodeQsoLogged } = require('./lib/wsjtx');
 const { PskrClient } = require('./lib/pskreporter');
 const { Ft8Engine } = require('./lib/ft8-engine');
 const { RemoteServer } = require('./lib/remote-server');
@@ -3750,6 +3750,8 @@ function startJtcat(mode) {
         }
       }
     }
+
+    forwardJtcatDecodeToExtraUdp(data, { sliceId: 'default', engine: ft8Engine });
 
     if (win && !win.isDestroyed()) {
       win.webContents.send('jtcat-decode', data);
@@ -10086,6 +10088,18 @@ function createWsjtxUdpBridge(label) {
       this.socket.send(buf, 0, buf.length, this.port, this.host);
     },
 
+    sendStatus(status) {
+      if (!this.socket) return;
+      const buf = encodeStatus(this.id, status || {});
+      this.socket.send(buf, 0, buf.length, this.port, this.host);
+    },
+
+    sendDecode(decode) {
+      if (!this.socket) return;
+      const buf = encodeDecode(this.id, decode || {});
+      this.socket.send(buf, 0, buf.length, this.port, this.host);
+    },
+
     sendQso(qsoData, adifText) {
       return new Promise((resolve, reject) => {
         if (!this.socket) {
@@ -10148,6 +10162,55 @@ function createWsjtxUdpBridge(label) {
 
 const hamrsBridge = createWsjtxUdpBridge('HamRS');
 const extraUdpBridge = createWsjtxUdpBridge('Extra UDP');
+
+function forwardJtcatDecodeToExtraUdp(data, opts = {}) {
+  if (!settings.extraUdpEnabled || (settings.extraUdpFormat || 'wsjtx') !== 'wsjtx') return;
+  const host = settings.extraUdpHost || '127.0.0.1';
+  const port = parseInt(settings.extraUdpPort, 10) || 2237;
+  if (!extraUdpBridge.socket || extraUdpBridge.host !== host || extraUdpBridge.port !== port) {
+    extraUdpBridge.start(host, port);
+  }
+
+  const sliceId = opts.sliceId || data.sliceId || 'default';
+  const dial = jtcatManager ? jtcatManager.getDialFreq(sliceId) : null;
+  const dialFrequency = opts.freqHz || (dial && dial.freqHz) || _currentFreqHz || 0;
+  const engine = opts.engine || ft8Engine || (jtcatManager && jtcatManager.getEngine(sliceId)) || null;
+  const mode = data.mode || (engine && engine._mode) || _currentMode || 'FT8';
+  const now = new Date();
+  const midnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const qtime = now.getTime() - midnight;
+  const txDf = engine && Number.isFinite(engine._txFreq) ? Math.round(engine._txFreq) : 0;
+  const myCall = settings.myCallsign || settings.operator || settings.callsign || '';
+  const myGrid = (settings.grid || '').toUpperCase();
+
+  extraUdpBridge.sendStatus({
+    dialFrequency,
+    mode,
+    txMode: mode,
+    txEnabled: !!(engine && engine._txEnabled),
+    transmitting: !!(engine && engine._txActive),
+    decoding: true,
+    rxDF: 0,
+    txDF: txDf,
+    deCall: myCall,
+    deGrid: myGrid,
+    trPeriod: mode === 'FT4' ? 7 : 15,
+  });
+
+  for (const r of data.results || []) {
+    extraUdpBridge.sendDecode({
+      isNew: true,
+      time: qtime,
+      snr: Math.round(Number(r.db) || 0),
+      deltaTime: Number.isFinite(r.dt) ? r.dt : 0,
+      deltaFrequency: Math.max(0, Math.round(Number(r.df) || 0)),
+      mode,
+      message: r.text || '',
+      lowConfidence: !!r.lowConfidence,
+      offAir: false,
+    });
+  }
+}
 // FT8 Battle Royale (ft8br) — per-QSO UDP fan-out for the contest. Runs in
 // parallel to extraUdpBridge so users keep their primary log4om/JTAlert
 // destination AND get scored. Only fires for FT8 / FT4 contacts; uses an
@@ -17768,6 +17831,7 @@ app.whenReady().then(() => {
             }
           }
         }
+        forwardJtcatDecodeToExtraUdp({ ...data, sliceId: s.sliceId }, { sliceId: s.sliceId, engine, freqHz: freqKhz * 1000 });
         // Forward to popout
         if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
           jtcatPopoutWin.webContents.send('jtcat-decode', { ...data, sliceId: s.sliceId, band: s.band });
