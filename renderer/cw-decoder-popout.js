@@ -9,10 +9,14 @@
     toneLabel: $('tone-label'),
     sensitivity: $('sensitivity'),
     sensitivityLabel: $('sensitivity-label'),
+    autoPitch: $('auto-pitch'),
     toggle: $('decode-toggle'),
     clear: $('clear-btn'),
     status: $('status'),
     wpm: $('wpm'),
+    detected: $('detected'),
+    snr: $('snr'),
+    keyState: $('key-state'),
     text: $('decode-text'),
     level: $('level-meter'),
     levelLabel: $('level-label'),
@@ -25,7 +29,10 @@
   let source = null;
   let processor = null;
   let level = 0;
-  let noise = 0.25;
+  let noise = 0.0005;
+  let keyedState = false;
+  let detectedHz = 0;
+  let detectedRatio = 0;
   let lastUiMs = 0;
   let lastSettings = {};
 
@@ -35,8 +42,9 @@
 
   function sensitivityThreshold() {
     const pct = parseInt(els.sensitivity.value, 10) || 55;
-    // Lower slider value means easier keying; higher means stricter.
-    return 1.15 + (pct / 100) * 2.35;
+    // Higher sensitivity means easier keying. Keep the floor low enough for
+    // real-world receiver audio that sounds clear but is not normalized hot.
+    return 2.6 - (pct / 100) * 1.55;
   }
 
   function setStatus(text) {
@@ -54,6 +62,10 @@
     lastUiMs = now;
     updateLabels();
     els.wpm.textContent = decoder ? (decoder.wpm + ' WPM') : '-- WPM';
+    els.detected.textContent = detectedHz ? ('Detected ' + Math.round(detectedHz) + ' Hz') : 'Detected -- Hz';
+    els.snr.textContent = detectedRatio ? ('SNR ' + detectedRatio.toFixed(1) + 'x') : 'SNR --';
+    els.keyState.textContent = keyedState ? 'Key down' : 'Key open';
+    els.keyState.style.color = keyedState ? 'var(--accent-green, #5dd683)' : 'var(--text-secondary, #b9c8dc)';
     els.text.textContent = decoder ? decoder.text : '';
     els.text.scrollTop = els.text.scrollHeight;
     const pct = Math.max(0, Math.min(100, Math.round(level * 100)));
@@ -77,23 +89,48 @@
     return (2 * Math.sqrt(Math.max(0, power))) / n;
   }
 
+  function findPitch(samples, sampleRate) {
+    let bestHz = toneHz();
+    let bestTone = 0;
+    let secondTone = 0;
+    for (let hz = 350; hz <= 1000; hz += 25) {
+      const tone = goertzel(samples, sampleRate, hz);
+      if (tone > bestTone) {
+        secondTone = bestTone;
+        bestTone = tone;
+        bestHz = hz;
+      } else if (tone > secondTone) {
+        secondTone = tone;
+      }
+    }
+    return { hz: bestHz, tone: bestTone, secondTone };
+  }
+
   function analyze(samples, sampleRate) {
-    const hz = toneHz();
-    const tone = goertzel(samples, sampleRate, hz);
+    const pitch = els.autoPitch.checked ? findPitch(samples, sampleRate) : null;
+    const hz = pitch ? pitch.hz : toneHz();
+    const tone = pitch ? pitch.tone : goertzel(samples, sampleRate, hz);
     const low = goertzel(samples, sampleRate, Math.max(80, hz - 120));
     const high = goertzel(samples, sampleRate, hz + 120);
-    const neighborhood = Math.max(0.000001, (low + high) * 0.5);
+    const neighborhood = Math.max(0.000001, (low + high + (pitch ? pitch.secondTone : 0)) / (pitch ? 3 : 2));
     let rms = 0;
     for (let i = 0; i < samples.length; i++) rms += samples[i] * samples[i];
     rms = Math.sqrt(rms / Math.max(1, samples.length));
 
     const ratio = tone / Math.max(neighborhood, noise, rms * 0.05, 0.00001);
-    if (ratio < 1.35 || tone < 0.0004) {
+    if (ratio < 1.25 || tone < 0.00025) {
       noise = noise * 0.985 + Math.max(neighborhood, tone * 0.5, 0.00001) * 0.015;
     }
-    const display = Math.max(0, Math.min(1, (ratio - 1.0) / 6.0));
+    const onThreshold = sensitivityThreshold();
+    const offThreshold = Math.max(1.02, onThreshold * 0.62);
+    const enoughAudio = tone > Math.max(0.00018, rms * 0.018);
+    const keyed = keyedState ? (ratio > offThreshold && enoughAudio) : (ratio > onThreshold && enoughAudio);
+    keyedState = keyed;
+    detectedHz = hz;
+    detectedRatio = ratio;
+    const display = Math.max(0, Math.min(1, (ratio - 0.85) / 4.0));
     level = level * 0.65 + display * 0.35;
-    return { keyed: ratio > sensitivityThreshold() && tone > Math.max(0.0005, rms * 0.03), ratio, tone, rms };
+    return { keyed, ratio, tone, rms };
   }
 
   function feedSamples(samples, sampleRate) {
@@ -125,7 +162,10 @@
     if (active || !decoder) return;
     decoder.reset();
     level = 0;
-    noise = 0.25;
+    noise = 0.0005;
+    keyedState = false;
+    detectedHz = 0;
+    detectedRatio = 0;
     active = true;
     els.toggle.classList.add('active');
     els.toggle.textContent = 'Stop Decode';
@@ -154,7 +194,7 @@
       ctx = new (window.AudioContext || window.webkitAudioContext)();
       if (ctx.state === 'suspended') await ctx.resume();
       source = ctx.createMediaStreamSource(stream);
-      processor = ctx.createScriptProcessor(2048, 1, 1);
+      processor = ctx.createScriptProcessor(1024, 1, 1);
       processor.onaudioprocess = (event) => {
         const input = event.inputBuffer.getChannelData(0);
         const copy = new Float32Array(input.length);
@@ -218,6 +258,7 @@
   });
   els.tone.addEventListener('input', updateUi.bind(null, true));
   els.sensitivity.addEventListener('input', updateUi.bind(null, true));
+  els.autoPitch.addEventListener('change', updateUi.bind(null, true));
   els.audioInput.addEventListener('change', () => {
     window.api.saveSettings({ cwDecoderAudioInput: els.audioInput.value || '' });
     if (active && !directAudio) {

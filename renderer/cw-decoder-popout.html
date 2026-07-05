@@ -93,6 +93,7 @@
       display: flex;
       align-items: center;
       gap: 10px;
+      flex-wrap: wrap;
     }
     .btn {
       border: 1px solid var(--border, #29384f);
@@ -114,6 +115,15 @@
       font-size: 13px;
       white-space: nowrap;
     }
+    .check-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-secondary, #b9c8dc);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .check-row input { width: auto; }
     .meter {
       height: 18px;
       border: 1px solid var(--border, #29384f);
@@ -188,8 +198,12 @@
       <div class="row" style="margin-top:12px;">
         <button class="btn" id="decode-toggle">Start Decode</button>
         <button class="btn" id="clear-btn">Clear</button>
+        <label class="check-row" for="auto-pitch"><input id="auto-pitch" type="checkbox" checked> Auto pitch</label>
         <span class="metric" id="status">Idle</span>
         <span class="metric" id="wpm">-- WPM</span>
+        <span class="metric" id="detected">Detected -- Hz</span>
+        <span class="metric" id="snr">SNR --</span>
+        <span class="metric" id="key-state">Key open</span>
       </div>
       <div class="field" style="margin-top:12px;">
         <label>Level <span id="level-label">0%</span></label>
