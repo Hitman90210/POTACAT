@@ -194,11 +194,16 @@
           <label for="sensitivity">Sensitivity <span id="sensitivity-label">55%</span></label>
           <input id="sensitivity" type="range" min="10" max="90" step="1" value="55">
         </div>
+        <div class="field">
+          <label for="manual-wpm">Manual WPM <span id="manual-wpm-label">20 WPM</span></label>
+          <input id="manual-wpm" type="range" min="5" max="45" step="1" value="20">
+        </div>
       </div>
       <div class="row" style="margin-top:12px;">
         <button class="btn" id="decode-toggle">Start Decode</button>
         <button class="btn" id="clear-btn">Clear</button>
         <label class="check-row" for="auto-pitch"><input id="auto-pitch" type="checkbox" checked> Auto pitch</label>
+        <label class="check-row" for="auto-wpm"><input id="auto-wpm" type="checkbox"> Auto WPM</label>
         <span class="metric" id="status">Idle</span>
         <span class="metric" id="wpm">-- WPM</span>
         <span class="metric" id="detected">Detected -- Hz</span>

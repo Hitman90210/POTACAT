@@ -13,6 +13,9 @@
     sensitivity: $('sensitivity'),
     sensitivityLabel: $('sensitivity-label'),
     autoPitch: $('auto-pitch'),
+    autoWpm: $('auto-wpm'),
+    manualWpm: $('manual-wpm'),
+    manualWpmLabel: $('manual-wpm-label'),
     toggle: $('decode-toggle'),
     clear: $('clear-btn'),
     status: $('status'),
@@ -36,6 +39,10 @@
   let keyedState = false;
   let detectedHz = 0;
   let detectedRatio = 0;
+  let lockedPitchHz = 0;
+  let pitchCandidateHz = 0;
+  let pitchCandidateMs = 0;
+  let pitchHoldMs = 0;
   let lastUiMs = 0;
   let lastSettings = {};
 
@@ -57,6 +64,7 @@
   function updateLabels() {
     els.toneLabel.textContent = toneHz() + ' Hz';
     els.sensitivityLabel.textContent = els.sensitivity.value + '%';
+    els.manualWpmLabel.textContent = els.manualWpm.value + ' WPM';
   }
 
   function updateUi(force) {
@@ -64,8 +72,8 @@
     if (!force && now - lastUiMs < 70) return;
     lastUiMs = now;
     updateLabels();
-    els.wpm.textContent = decoder ? (decoder.wpm + ' WPM') : '-- WPM';
-    els.detected.textContent = detectedHz ? ('Detected ' + Math.round(detectedHz) + ' Hz') : 'Detected -- Hz';
+    els.wpm.textContent = decoder ? ((els.autoWpm.checked ? 'Auto ' : 'Fixed ') + decoder.wpm + ' WPM') : '-- WPM';
+    els.detected.textContent = detectedHz ? ('Detected ' + Math.round(detectedHz) + ' Hz' + (lockedPitchHz ? ' lock' : '')) : 'Detected -- Hz';
     els.snr.textContent = detectedRatio ? ('SNR ' + detectedRatio.toFixed(1) + 'x') : 'SNR --';
     els.keyState.textContent = keyedState ? 'Key down' : 'Key open';
     els.keyState.style.color = keyedState ? 'var(--accent-green, #5dd683)' : 'var(--text-secondary, #b9c8dc)';
@@ -109,13 +117,44 @@
     return { hz: bestHz, tone: bestTone, secondTone };
   }
 
+  function resolvePitch(samples, sampleRate, frameMs) {
+    if (!els.autoPitch.checked) return { hz: toneHz(), tone: goertzel(samples, sampleRate, toneHz()), secondTone: 0 };
+    const candidate = findPitch(samples, sampleRate);
+    const candidateRatio = candidate.tone / Math.max(candidate.secondTone, noise, 0.00001);
+
+    if (candidateRatio > 1.45 && candidate.tone > 0.00025) {
+      if (Math.abs(candidate.hz - pitchCandidateHz) <= 35) {
+        pitchCandidateMs += frameMs;
+        pitchCandidateHz = pitchCandidateHz ? (pitchCandidateHz * 0.7 + candidate.hz * 0.3) : candidate.hz;
+      } else {
+        pitchCandidateHz = candidate.hz;
+        pitchCandidateMs = frameMs;
+      }
+      if (!lockedPitchHz || pitchCandidateMs >= 260 || Math.abs(candidate.hz - lockedPitchHz) > 120) {
+        lockedPitchHz = Math.round(pitchCandidateHz / 5) * 5;
+        pitchHoldMs = 900;
+      }
+    } else {
+      pitchCandidateMs = Math.max(0, pitchCandidateMs - frameMs);
+    }
+
+    if (pitchHoldMs > 0) pitchHoldMs -= frameMs;
+    if (!lockedPitchHz || pitchHoldMs <= 0) {
+      if (!keyedState) lockedPitchHz = 0;
+      return candidate;
+    }
+
+    return { hz: lockedPitchHz, tone: goertzel(samples, sampleRate, lockedPitchHz), secondTone: candidate.secondTone };
+  }
+
   function analyze(samples, sampleRate) {
-    const pitch = els.autoPitch.checked ? findPitch(samples, sampleRate) : null;
-    const hz = pitch ? pitch.hz : toneHz();
-    const tone = pitch ? pitch.tone : goertzel(samples, sampleRate, hz);
+    const frameMs = (samples.length / sampleRate) * 1000;
+    const pitch = resolvePitch(samples, sampleRate, frameMs);
+    const hz = pitch.hz;
+    const tone = pitch.tone;
     const low = goertzel(samples, sampleRate, Math.max(80, hz - 120));
     const high = goertzel(samples, sampleRate, hz + 120);
-    const neighborhood = Math.max(0.000001, (low + high + (pitch ? pitch.secondTone : 0)) / (pitch ? 3 : 2));
+    const neighborhood = Math.max(0.000001, (low + high + (els.autoPitch.checked ? pitch.secondTone : 0)) / (els.autoPitch.checked ? 3 : 2));
     let rms = 0;
     for (let i = 0; i < samples.length; i++) rms += samples[i] * samples[i];
     rms = Math.sqrt(rms / Math.max(1, samples.length));
@@ -166,12 +205,18 @@
   async function start() {
     if (active || !decoder) return;
     decoder.reset();
+    decoder.setAutoTiming(els.autoWpm.checked);
+    decoder.setWpm(parseInt(els.manualWpm.value, 10) || 20);
     if (signalGate) signalGate.reset();
     level = 0;
     noise = 0.0005;
     keyedState = false;
     detectedHz = 0;
     detectedRatio = 0;
+    lockedPitchHz = 0;
+    pitchCandidateHz = 0;
+    pitchCandidateMs = 0;
+    pitchHoldMs = 0;
     active = true;
     els.toggle.classList.add('active');
     els.toggle.textContent = 'Stop Decode';
@@ -265,6 +310,14 @@
   els.tone.addEventListener('input', updateUi.bind(null, true));
   els.sensitivity.addEventListener('input', updateUi.bind(null, true));
   els.autoPitch.addEventListener('change', updateUi.bind(null, true));
+  els.autoWpm.addEventListener('change', () => {
+    if (decoder) decoder.setAutoTiming(els.autoWpm.checked);
+    updateUi(true);
+  });
+  els.manualWpm.addEventListener('input', () => {
+    if (decoder && !els.autoWpm.checked) decoder.setWpm(parseInt(els.manualWpm.value, 10) || 20);
+    updateUi(true);
+  });
   els.audioInput.addEventListener('change', () => {
     window.api.saveSettings({ cwDecoderAudioInput: els.audioInput.value || '' });
     if (active && !directAudio) {

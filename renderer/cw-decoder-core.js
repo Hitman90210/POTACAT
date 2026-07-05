@@ -29,6 +29,7 @@
     constructor(opts = {}) {
       this.minWpm = opts.minWpm || 5;
       this.maxWpm = opts.maxWpm || 45;
+      this.autoTiming = opts.autoTiming !== false;
       this.reset();
     }
 
@@ -52,6 +53,11 @@
     setWpm(wpm) {
       const clamped = clamp(Number(wpm) || 18, this.minWpm, this.maxWpm);
       this.ditMs = 1200 / clamped;
+      this._recentUnits = [];
+    }
+
+    setAutoTiming(enabled) {
+      this.autoTiming = enabled !== false;
     }
 
     processKeyed(keyed, dtMs) {
@@ -137,10 +143,12 @@
     }
 
     _learnDit(unitMs) {
+      if (!this.autoTiming) return;
       if (!Number.isFinite(unitMs)) return;
       const minDit = 1200 / this.maxWpm;
       const maxDit = 1200 / this.minWpm;
       if (unitMs < minDit * 0.55 || unitMs > maxDit * 1.6) return;
+      if (unitMs < this.ditMs * 0.45 || unitMs > this.ditMs * 2.2) return;
       this._recentUnits.push(unitMs);
       if (this._recentUnits.length > 24) this._recentUnits.shift();
       const sorted = this._recentUnits.slice().sort((a, b) => a - b);

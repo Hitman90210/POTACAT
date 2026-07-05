@@ -59,6 +59,15 @@ test('signal gate ignores short dropouts inside a dash', () => {
   assert.strictEqual(decoder.text.trim(), 'T');
 });
 
+test('fixed WPM mode does not learn from short fragments', () => {
+  const decoder = new CwDecoderCore();
+  decoder.setWpm(20);
+  decoder.setAutoTiming(false);
+  decoder.processKeyed(true, 20);
+  decoder.processKeyed(false, 80);
+  assert.strictEqual(decoder.wpm, 20);
+});
+
 let passed = 0;
 for (const t of tests) {
   try {
