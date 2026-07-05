@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { CwDecoderCore, MORSE } = require('../renderer/cw-decoder-core');
+const { CwDecoderCore, CwSignalGate, MORSE } = require('../renderer/cw-decoder-core');
 
 const REVERSE = Object.fromEntries(Object.entries(MORSE).map(([k, v]) => [v, k]));
 
@@ -37,6 +37,26 @@ test('adapts WPM estimate from mark lengths', () => {
   const decoder = new CwDecoderCore();
   feedMessage(decoder, 'VVV', 28);
   assert.ok(decoder.wpm >= 24 && decoder.wpm <= 32, `WPM estimate was ${decoder.wpm}`);
+});
+
+test('signal gate ignores short dropouts inside a dash', () => {
+  const decoder = new CwDecoderCore();
+  const gate = new CwSignalGate({ attackMs: 8, releaseMs: 32 });
+  decoder.setWpm(20);
+
+  const feed = (keyed, ms) => {
+    for (const segment of gate.process(keyed, ms)) {
+      decoder.processKeyed(segment.keyed, segment.dtMs);
+    }
+  };
+
+  feed(true, 80);
+  feed(false, 12);
+  feed(true, 92);
+  feed(false, 260);
+  decoder.flush();
+
+  assert.strictEqual(decoder.text.trim(), 'T');
 });
 
 let passed = 0;

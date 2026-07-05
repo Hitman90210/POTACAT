@@ -1,4 +1,4 @@
-// Lightweight CW decoder core for the VFO popout.
+// Lightweight CW decoder core for the experimental CW decoder popout.
 //
 // This is intentionally small and dependency-free. The audio/UI layer feeds it
 // one keyed/unkeyed decision per frame; this class handles timing adaptation
@@ -93,7 +93,7 @@
 
     _finishMark(ms) {
       if (ms < 15) return;
-      const unit = ms < this.ditMs * 2.2 ? 1 : 3;
+      const unit = ms < this.ditMs * 2.05 ? 1 : 3;
       this.symbol += unit === 1 ? '.' : '-';
       this._learnDit(ms / unit);
       this.events.push({ type: 'mark', value: unit === 1 ? 'dit' : 'dah', ms });
@@ -101,21 +101,22 @@
 
     _finishSpace(ms) {
       if (!this.symbol) return;
-      if (ms >= this.ditMs * 6.2) {
+      this._learnGap(ms);
+      if (ms >= this.ditMs * 5.7) {
         this._flushChar();
         this._appendSpace();
-      } else if (ms >= this.ditMs * 2.4) {
+      } else if (ms >= this.ditMs * 2.25) {
         this._flushChar();
       }
     }
 
     _maybeFlushOngoingSpace() {
       if (!this.symbol) return;
-      if (!this._charFlushedForSpace && this.stateMs >= this.ditMs * 3.2) {
+      if (!this._charFlushedForSpace && this.stateMs >= this.ditMs * 3.0) {
         this._flushChar();
         this._charFlushedForSpace = true;
       }
-      if (!this._wordFlushedForSpace && this.stateMs >= this.ditMs * 7.0) {
+      if (!this._wordFlushedForSpace && this.stateMs >= this.ditMs * 6.7) {
         this._appendSpace();
         this._wordFlushedForSpace = true;
       }
@@ -123,7 +124,7 @@
 
     _flushChar() {
       const code = this.symbol;
-      const ch = MORSE[code] || '·';
+      const ch = MORSE[code] || '?';
       this.text += ch;
       this.events.push({ type: 'char', code, char: ch, text: this.text });
       this.symbol = '';
@@ -147,7 +148,60 @@
       this.ditMs = this.ditMs * 0.82 + median * 0.18;
       this.ditMs = clamp(this.ditMs, minDit, maxDit);
     }
+
+    _learnGap(ms) {
+      if (!Number.isFinite(ms)) return;
+      if (ms > this.ditMs * 0.45 && ms < this.ditMs * 1.85) this._learnDit(ms);
+    }
   }
 
-  return { CwDecoderCore, MORSE };
+  class CwSignalGate {
+    constructor(opts = {}) {
+      this.attackMs = opts.attackMs || 8;
+      this.releaseMs = opts.releaseMs || 32;
+      this.reset();
+    }
+
+    reset() {
+      this.state = false;
+      this.candidate = null;
+      this.candidateMs = 0;
+    }
+
+    process(rawKeyed, dtMs) {
+      rawKeyed = !!rawKeyed;
+      dtMs = Math.max(1, Number(dtMs) || 1);
+      const out = [];
+
+      if (rawKeyed === this.state) {
+        if (this.candidate !== null) {
+          out.push({ keyed: this.state, dtMs: this.candidateMs });
+          this.candidate = null;
+          this.candidateMs = 0;
+        }
+        out.push({ keyed: this.state, dtMs });
+        return out;
+      }
+
+      if (this.candidate !== rawKeyed) {
+        this.candidate = rawKeyed;
+        this.candidateMs = 0;
+      }
+      this.candidateMs += dtMs;
+
+      const threshold = rawKeyed ? this.attackMs : this.releaseMs;
+      if (this.candidateMs < threshold) return out;
+
+      const oldMs = Math.min(this.candidateMs, threshold * 0.5);
+      const newMs = this.candidateMs - oldMs;
+      if (oldMs > 0) out.push({ keyed: this.state, dtMs: oldMs });
+      this.state = rawKeyed;
+      if (newMs > 0) out.push({ keyed: this.state, dtMs: newMs });
+      this.candidate = null;
+      this.candidateMs = 0;
+      return out;
+    }
+  }
+
+  return { CwDecoderCore, CwSignalGate, MORSE };
 });

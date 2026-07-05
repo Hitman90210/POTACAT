@@ -1,6 +1,9 @@
 (function () {
   const $ = (id) => document.getElementById(id);
   const decoder = window.CwDecoderCore ? new window.CwDecoderCore.CwDecoderCore() : null;
+  const signalGate = window.CwDecoderCore && window.CwDecoderCore.CwSignalGate
+    ? new window.CwDecoderCore.CwSignalGate({ attackMs: 8, releaseMs: 32 })
+    : null;
 
   const els = {
     audioSource: $('audio-source'),
@@ -136,7 +139,9 @@
   function feedSamples(samples, sampleRate) {
     if (!active || !decoder || !samples || !samples.length) return;
     const result = analyze(samples, sampleRate);
-    decoder.processKeyed(result.keyed, (samples.length / sampleRate) * 1000);
+    const frameMs = (samples.length / sampleRate) * 1000;
+    const segments = signalGate ? signalGate.process(result.keyed, frameMs) : [{ keyed: result.keyed, dtMs: frameMs }];
+    for (const segment of segments) decoder.processKeyed(segment.keyed, segment.dtMs);
     updateUi(false);
   }
 
@@ -161,6 +166,7 @@
   async function start() {
     if (active || !decoder) return;
     decoder.reset();
+    if (signalGate) signalGate.reset();
     level = 0;
     noise = 0.0005;
     keyedState = false;
