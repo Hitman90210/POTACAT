@@ -376,6 +376,33 @@
       padding: 5px 10px; border-radius: 4px; font-size: 12px; cursor: pointer;
       font-weight: bold;
     }
+    .cw-decode-box {
+      margin: 4px 0 6px 40px; padding: 6px;
+      border: 1px solid var(--border); border-radius: 6px;
+      background: rgba(0, 0, 0, 0.18);
+    }
+    .cw-decode-row { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
+    .cw-decode-btn {
+      background: var(--bg-btn); border: 1px solid var(--border); color: var(--accent-green);
+      border-radius: 4px; padding: 4px 10px; font-size: 12px; font-weight: bold; cursor: pointer;
+    }
+    .cw-decode-btn.active { background: var(--accent-green); color: #102018; }
+    .cw-decode-small {
+      color: var(--text-dim); font-size: 11px; font-family: monospace;
+      white-space: nowrap;
+    }
+    .cw-decode-text {
+      min-height: 34px; max-height: 92px; overflow-y: auto;
+      border: 1px solid rgba(255,255,255,0.08); border-radius: 4px;
+      padding: 6px; background: rgba(0,0,0,0.22);
+      color: var(--accent-gold); font-family: monospace; font-size: 14px;
+      line-height: 1.35; white-space: pre-wrap; word-break: break-word;
+    }
+    .cw-decode-meter-wrap {
+      flex: 1; height: 8px; border: 1px solid #2a2a4a; border-radius: 3px;
+      overflow: hidden; background: var(--bg-input);
+    }
+    .cw-decode-meter { height: 100%; width: 0%; background: var(--accent-blue); }
   </style>
 </head>
 <body>
@@ -523,6 +550,26 @@
     <div class="widget-section" id="widget-cw">
       <div class="macro-row"><span class="macro-label">CW</span><div class="cw-macro-row" id="cw-macro-row" style="display:contents"></div></div>
     </div>
+    <div class="widget-section" id="widget-cw-decoder">
+      <div class="cw-decode-box">
+        <div class="cw-decode-row">
+          <button class="cw-decode-btn" id="cw-decode-toggle">Decode CW</button>
+          <span class="cw-decode-small" id="cw-decode-status">Idle</span>
+          <span class="cw-decode-small" id="cw-decode-wpm">-- WPM</span>
+        </div>
+        <div class="cw-decode-row">
+          <span class="cw-decode-small" style="width:42px;">Tone</span>
+          <input type="range" id="cw-decode-tone" min="350" max="1000" step="10" value="700" style="flex:1;">
+          <span class="cw-decode-small" id="cw-decode-tone-label">700 Hz</span>
+        </div>
+        <div class="cw-decode-row">
+          <span class="cw-decode-small" style="width:42px;">Level</span>
+          <div class="cw-decode-meter-wrap"><div class="cw-decode-meter" id="cw-decode-meter"></div></div>
+          <button class="cw-decode-btn" id="cw-decode-clear" title="Clear decoded text">Clear</button>
+        </div>
+        <div class="cw-decode-text" id="cw-decode-text"></div>
+      </div>
+    </div>
     <div class="widget-section" id="widget-voice">
       <div class="macro-row"><span class="macro-label">Voice</span><div class="cw-macro-row" id="voice-macro-row" style="display:contents"></div></div>
     </div>
@@ -643,6 +690,7 @@
       <label class="settings-toggle"><input type="checkbox" id="w-bearing"> Beam Heading (bearing to spot)</label>
       <label class="settings-toggle"><input type="checkbox" id="w-cw"> CW Macros</label>
       <label class="settings-toggle"><input type="checkbox" id="w-cw-controls"> CW Speed / Text Input</label>
+      <label class="settings-toggle"><input type="checkbox" id="w-cw-decoder"> CW Decoder (experimental)</label>
       <label class="settings-toggle"><input type="checkbox" id="w-voice"> Voice Macros</label>
       <div class="section-label">WebSDR</div>
       <label class="settings-toggle"><input type="checkbox" id="w-kiwi"> Enable WebSDR RX</label>
@@ -672,6 +720,7 @@
 <!-- Shared TX EQ chain (Phase 1). Also loaded by remote-audio.html so
      both audio sources apply identical DSP. -->
 <script src="tx-eq-chain.js"></script>
+<script src="cw-decoder-core.js"></script>
 <script>
 // --- State ---
 let currentFreqHz = 0;
@@ -1445,8 +1494,8 @@ function esc(s) {
 }
 
 // --- Widget visibility ---
-const WIDGETS = ['smeter', 'ptt', 'log', 'cw', 'cw-controls', 'voice'];
-let vfoWidgets = { smeter: false, ptt: false, log: false, cw: false, 'cw-controls': false, voice: false, bearing: false };
+const WIDGETS = ['smeter', 'ptt', 'log', 'cw', 'cw-controls', 'cw-decoder', 'voice'];
+let vfoWidgets = { smeter: false, ptt: false, log: false, cw: false, 'cw-controls': false, 'cw-decoder': false, voice: false, bearing: false };
 const SECTIONS = ['dial', 'solar', 'step', 'band', 'filter', 'filter-slider', 'controls', 'profiles-inline'];
 let vfoSections = { dial: true, solar: true, step: true, band: true, filter: true, 'filter-slider': true, controls: true, 'profiles-inline': false };
 
@@ -1507,6 +1556,7 @@ const wOpPhoto = document.getElementById('w-op-photo');
 const wBearing = document.getElementById('w-bearing');
 const wCw = document.getElementById('w-cw');
 const wCwControls = document.getElementById('w-cw-controls');
+const wCwDecoder = document.getElementById('w-cw-decoder');
 const wVoice = document.getElementById('w-voice');
 const sAlwaysOnTop = document.getElementById('s-always-on-top');
 const sDial = document.getElementById('s-dial');
@@ -1526,6 +1576,7 @@ function syncSettingsCheckboxes() {
   wBearing.checked = !!vfoWidgets.bearing;
   wCw.checked = !!vfoWidgets.cw;
   wCwControls.checked = !!vfoWidgets['cw-controls'];
+  wCwDecoder.checked = !!vfoWidgets['cw-decoder'];
   wVoice.checked = !!vfoWidgets.voice;
   sDial.checked = !!vfoSections.dial;
   sSolar.checked = !!vfoSections.solar;
@@ -1537,7 +1588,7 @@ function syncSettingsCheckboxes() {
   sProfilesInline.checked = !!vfoSections['profiles-inline'];
 }
 
-[wSmeter, wPtt, wLog, wOpPhoto, wBearing, wCw, wCwControls, wVoice].forEach(cb => {
+[wSmeter, wPtt, wLog, wOpPhoto, wBearing, wCw, wCwControls, wCwDecoder, wVoice].forEach(cb => {
   cb.addEventListener('change', () => {
     vfoWidgets.smeter = wSmeter.checked;
     vfoWidgets.ptt = wPtt.checked;
@@ -1546,6 +1597,7 @@ function syncSettingsCheckboxes() {
     vfoWidgets.bearing = wBearing.checked;
     vfoWidgets.cw = wCw.checked;
     vfoWidgets['cw-controls'] = wCwControls.checked;
+    vfoWidgets['cw-decoder'] = wCwDecoder.checked;
     vfoWidgets.voice = wVoice.checked;
     applyWidgets();
     saveWidgets();
@@ -2391,6 +2443,7 @@ audioBtn.addEventListener('contextmenu', (e) => {
 // player: schedule packets back-to-back with a play cursor, snapping the
 // cursor back if a burst pushes it more than 500 ms ahead of now.
 window.api.onSmartSdrAudio((d) => {
+  if (window.feedCwDecoderSmartSdr) window.feedCwDecoderSmartSdr(d);
   if (!audioMonitorActive || !audioMonitorDirect || !audioMonitorCtx) return;
   try {
     const sr = d.sampleRate || 24000;
@@ -2412,6 +2465,146 @@ window.api.onSmartSdrAudio((d) => {
 // through, so the user throttles click-to-listen audio without touching the
 // PC master volume. Persisted; applied live while the monitor is running.
 (function () {
+  const cwDecodeToggle = document.getElementById('cw-decode-toggle');
+  const cwDecodeClear = document.getElementById('cw-decode-clear');
+  const cwDecodeStatus = document.getElementById('cw-decode-status');
+  const cwDecodeWpm = document.getElementById('cw-decode-wpm');
+  const cwDecodeTone = document.getElementById('cw-decode-tone');
+  const cwDecodeToneLabel = document.getElementById('cw-decode-tone-label');
+  const cwDecodeText = document.getElementById('cw-decode-text');
+  const cwDecodeMeter = document.getElementById('cw-decode-meter');
+  const cwDecoderCore = window.CwDecoderCore ? new window.CwDecoderCore.CwDecoderCore() : null;
+  let cwDecodeActive = false;
+  let cwDecodeDirect = false;
+  let cwDecodeCtx = null;
+  let cwDecodeStream = null;
+  let cwDecodeSource = null;
+  let cwDecodeProcessor = null;
+  let cwDecodeEnv = 0;
+  let cwDecodeNoise = 0.01;
+  let cwDecodeLastUiMs = 0;
+
+  function cwDecodeToneHz() {
+    return parseInt(cwDecodeTone.value, 10) || 700;
+  }
+  function updateCwDecodeUi(force) {
+    const now = performance.now();
+    if (!force && now - cwDecodeLastUiMs < 80) return;
+    cwDecodeLastUiMs = now;
+    cwDecodeToneLabel.textContent = cwDecodeToneHz() + ' Hz';
+    cwDecodeWpm.textContent = cwDecoderCore ? (cwDecoderCore.wpm + ' WPM') : '-- WPM';
+    cwDecodeText.textContent = cwDecoderCore ? cwDecoderCore.text : '';
+    cwDecodeText.scrollTop = cwDecodeText.scrollHeight;
+    cwDecodeMeter.style.width = Math.max(0, Math.min(100, Math.round(cwDecodeEnv * 140))) + '%';
+  }
+  function setCwDecodeStatus(text) {
+    cwDecodeStatus.textContent = text;
+  }
+  function goertzelMagnitude(samples, sampleRate, toneHz) {
+    const n = samples.length;
+    if (!n || !sampleRate) return { tone: 0, rms: 0 };
+    const k = Math.round((n * toneHz) / sampleRate);
+    const omega = (2 * Math.PI * k) / n;
+    const coeff = 2 * Math.cos(omega);
+    let q0 = 0, q1 = 0, q2 = 0, rms = 0;
+    for (let i = 0; i < n; i++) {
+      const s = samples[i];
+      rms += s * s;
+      q0 = coeff * q1 - q2 + s;
+      q2 = q1;
+      q1 = q0;
+    }
+    const power = q1 * q1 + q2 * q2 - coeff * q1 * q2;
+    return { tone: (2 * Math.sqrt(Math.max(0, power))) / n, rms: Math.sqrt(rms / n) };
+  }
+  function feedCwDecoderSamples(samples, sampleRate) {
+    if (!cwDecodeActive || !cwDecoderCore || !samples || !samples.length) return;
+    const mag = goertzelMagnitude(samples, sampleRate, cwDecodeToneHz());
+    const tone = mag.tone || 0;
+    const rms = mag.rms || 0;
+    cwDecodeEnv = cwDecodeEnv * 0.75 + tone * 0.25;
+    if (tone < cwDecodeNoise * 2.5) cwDecodeNoise = cwDecodeNoise * 0.995 + tone * 0.005;
+    const keyed = tone > Math.max(0.012, cwDecodeNoise * 4.0) && tone > rms * 0.18;
+    cwDecoderCore.processKeyed(keyed, (samples.length / sampleRate) * 1000);
+    updateCwDecodeUi(false);
+  }
+  window.feedCwDecoderSmartSdr = function(d) {
+    if (!cwDecodeActive || !cwDecodeDirect || !d) return;
+    try {
+      const pcm = (d.pcm instanceof Float32Array) ? d.pcm : new Float32Array(d.pcm);
+      feedCwDecoderSamples(pcm, d.sampleRate || 24000);
+    } catch {}
+  };
+  async function startCwDecoder() {
+    if (cwDecodeActive || !cwDecoderCore) return;
+    cwDecoderCore.reset();
+    cwDecodeEnv = 0;
+    cwDecodeNoise = 0.01;
+    cwDecodeActive = true;
+    cwDecodeToggle.classList.add('active');
+    cwDecodeToggle.textContent = 'Stop Decode';
+    updateCwDecodeUi(true);
+    try {
+      const s = await window.api.getSettings();
+      if (s.audioSource === 'smartsdr') {
+        cwDecodeDirect = true;
+        setCwDecodeStatus('SmartSDR audio');
+        return;
+      }
+      const constraints = {
+        channelCount: 1,
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      };
+      if (s.remoteAudioInput) constraints.deviceId = { exact: s.remoteAudioInput };
+      cwDecodeStream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
+      cwDecodeCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (cwDecodeCtx.state === 'suspended') await cwDecodeCtx.resume();
+      cwDecodeSource = cwDecodeCtx.createMediaStreamSource(cwDecodeStream);
+      cwDecodeProcessor = cwDecodeCtx.createScriptProcessor(1024, 1, 1);
+      cwDecodeProcessor.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0);
+        const copy = new Float32Array(input.length);
+        copy.set(input);
+        feedCwDecoderSamples(copy, cwDecodeCtx.sampleRate);
+      };
+      cwDecodeSource.connect(cwDecodeProcessor);
+      cwDecodeProcessor.connect(cwDecodeCtx.destination);
+      setCwDecodeStatus('Listening');
+    } catch (e) {
+      console.error('[CW Decoder] start failed:', e);
+      stopCwDecoder(false);
+      setCwDecodeStatus('Audio failed');
+    }
+  }
+  function stopCwDecoder(flush) {
+    if (flush !== false && cwDecoderCore) cwDecoderCore.flush();
+    cwDecodeActive = false;
+    cwDecodeDirect = false;
+    if (cwDecodeProcessor) {
+      cwDecodeProcessor.disconnect();
+      cwDecodeProcessor.onaudioprocess = null;
+      cwDecodeProcessor = null;
+    }
+    if (cwDecodeSource) { cwDecodeSource.disconnect(); cwDecodeSource = null; }
+    if (cwDecodeStream) { cwDecodeStream.getTracks().forEach(t => t.stop()); cwDecodeStream = null; }
+    if (cwDecodeCtx) { cwDecodeCtx.close().catch(() => {}); cwDecodeCtx = null; }
+    cwDecodeToggle.classList.remove('active');
+    cwDecodeToggle.textContent = 'Decode CW';
+    setCwDecodeStatus('Idle');
+    updateCwDecodeUi(true);
+  }
+  cwDecodeToggle.addEventListener('click', () => {
+    if (cwDecodeActive) stopCwDecoder(true);
+    else startCwDecoder();
+  });
+  cwDecodeClear.addEventListener('click', () => {
+    if (cwDecoderCore) cwDecoderCore.reset();
+    updateCwDecodeUi(true);
+  });
+  cwDecodeTone.addEventListener('input', () => updateCwDecodeUi(true));
+
   const slider = document.getElementById('vol-slider');
   const label = document.getElementById('vol-text');
   if (!slider || !label) return;
