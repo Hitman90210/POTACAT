@@ -72,7 +72,9 @@
     if (!force && now - lastUiMs < 70) return;
     lastUiMs = now;
     updateLabels();
-    els.wpm.textContent = decoder ? ((els.autoWpm.checked ? 'Auto ' : 'Fixed ') + decoder.wpm + ' WPM') : '-- WPM';
+    els.wpm.textContent = decoder
+      ? ((els.autoWpm.checked ? (decoder.speedLocked ? 'Auto lock ' : 'Auto learn ') : 'Fixed ') + decoder.wpm + ' WPM')
+      : '-- WPM';
     els.detected.textContent = detectedHz ? ('Detected ' + Math.round(detectedHz) + ' Hz' + (lockedPitchHz ? ' lock' : '')) : 'Detected -- Hz';
     els.snr.textContent = detectedRatio ? ('SNR ' + detectedRatio.toFixed(1) + 'x') : 'SNR --';
     els.keyState.textContent = keyedState ? 'Key down' : 'Key open';

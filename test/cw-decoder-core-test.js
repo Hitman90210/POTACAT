@@ -43,6 +43,7 @@ test('signal gate ignores short dropouts inside a dash', () => {
   const decoder = new CwDecoderCore();
   const gate = new CwSignalGate({ attackMs: 8, releaseMs: 32 });
   decoder.setWpm(20);
+  decoder.setAutoTiming(false);
 
   const feed = (keyed, ms) => {
     for (const segment of gate.process(keyed, ms)) {
