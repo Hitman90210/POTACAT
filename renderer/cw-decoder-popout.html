@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>CW Decoder</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    body {
+      margin: 0;
+      background: var(--bg-primary, #101827);
+      color: var(--text-primary, #f3f7ff);
+      font-family: Arial, sans-serif;
+      overflow: hidden;
+    }
+    .titlebar {
+      height: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 8px 0 12px;
+      background: var(--bg-secondary, #172234);
+      border-bottom: 1px solid var(--border, #29384f);
+      -webkit-app-region: drag;
+      user-select: none;
+    }
+    .titlebar-title { font-weight: 700; letter-spacing: .2px; }
+    .titlebar-buttons { display: flex; gap: 4px; -webkit-app-region: no-drag; }
+    .titlebar-buttons button {
+      width: 28px;
+      height: 24px;
+      border: 0;
+      border-radius: 5px;
+      color: var(--text-primary, #f3f7ff);
+      background: transparent;
+      cursor: pointer;
+    }
+    .titlebar-buttons button:hover { background: rgba(255,255,255,.12); }
+    .wrap {
+      height: calc(100vh - 35px);
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      gap: 12px;
+      padding: 14px;
+      box-sizing: border-box;
+    }
+    .banner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      border: 1px solid #b97922;
+      border-radius: 10px;
+      background: linear-gradient(135deg, rgba(255, 169, 58, .2), rgba(255, 112, 67, .08));
+      color: #ffd99a;
+      font-size: 13px;
+    }
+    .panel {
+      border: 1px solid var(--border, #29384f);
+      border-radius: 12px;
+      background: rgba(255,255,255,.04);
+      padding: 12px;
+    }
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .field {
+      display: grid;
+      gap: 5px;
+      min-width: 0;
+    }
+    label {
+      color: var(--text-secondary, #b9c8dc);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+    select, input[type="range"] {
+      width: 100%;
+      box-sizing: border-box;
+    }
+    select {
+      border: 1px solid var(--border, #29384f);
+      border-radius: 8px;
+      background: var(--bg-input, #0e1725);
+      color: var(--text-primary, #f3f7ff);
+      padding: 7px 9px;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .btn {
+      border: 1px solid var(--border, #29384f);
+      border-radius: 9px;
+      color: var(--text-primary, #f3f7ff);
+      background: var(--bg-button, #223049);
+      padding: 8px 12px;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    .btn:hover { filter: brightness(1.12); }
+    .btn.active {
+      background: var(--accent-green, #5dd683);
+      color: #0b1c12;
+      border-color: transparent;
+    }
+    .metric {
+      color: var(--text-secondary, #b9c8dc);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    .meter {
+      height: 18px;
+      border: 1px solid var(--border, #29384f);
+      border-radius: 99px;
+      overflow: hidden;
+      background: rgba(0,0,0,.25);
+    }
+    .meter-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #4aa3ff, #65e391, #ffd166);
+      transition: width .08s linear;
+    }
+    .decode-text {
+      height: 100%;
+      min-height: 180px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      border: 1px solid var(--border, #29384f);
+      border-radius: 12px;
+      background: rgba(0,0,0,.28);
+      padding: 14px;
+      box-sizing: border-box;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 22px;
+      line-height: 1.45;
+      letter-spacing: .02em;
+    }
+    @media (max-width: 650px) {
+      .controls { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="titlebar">
+    <div class="titlebar-title">POTACAT CW Decoder</div>
+    <div class="titlebar-buttons">
+      <button id="min-btn" title="Minimize">-</button>
+      <button id="max-btn" title="Maximize">[]</button>
+      <button id="close-btn" title="Close">x</button>
+    </div>
+  </div>
+  <div class="wrap">
+    <div class="banner">
+      <strong>Experimental decoder build</strong>
+      <span>For testing only. Official POTACAT CW decode behavior is not established yet.</span>
+    </div>
+    <div class="panel">
+      <div class="controls">
+        <div class="field">
+          <label for="audio-source">Audio Source</label>
+          <select id="audio-source">
+            <option value="settings">Use POTACAT setting</option>
+            <option value="input">Soundcard / Windows audio input</option>
+            <option value="direct">Direct radio audio frames</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="audio-input">Audio Input</label>
+          <select id="audio-input"><option value="">Default input</option></select>
+        </div>
+        <div class="field">
+          <label for="tone">CW Pitch <span id="tone-label">700 Hz</span></label>
+          <input id="tone" type="range" min="350" max="1000" step="10" value="700">
+        </div>
+        <div class="field">
+          <label for="sensitivity">Sensitivity <span id="sensitivity-label">55%</span></label>
+          <input id="sensitivity" type="range" min="10" max="90" step="1" value="55">
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px;">
+        <button class="btn" id="decode-toggle">Start Decode</button>
+        <button class="btn" id="clear-btn">Clear</button>
+        <span class="metric" id="status">Idle</span>
+        <span class="metric" id="wpm">-- WPM</span>
+      </div>
+      <div class="field" style="margin-top:12px;">
+        <label>Level <span id="level-label">0%</span></label>
+        <div class="meter"><div class="meter-fill" id="level-meter"></div></div>
+      </div>
+    </div>
+    <div class="decode-text" id="decode-text"></div>
+  </div>
+  <script src="popout-theme-boot.js"></script>
+  <script src="cw-decoder-core.js"></script>
+  <script src="cw-decoder-popout.js"></script>
+</body>
+</html>

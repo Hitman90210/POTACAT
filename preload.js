@@ -353,6 +353,8 @@ contextBridge.exposeInMainWorld('api', {
   // SSTV pop-out
   sstvPopoutOpen: () => ipcRenderer.send('sstv-popout-open'),
   sstvPopoutTheme: (theme) => ipcRenderer.send('sstv-popout-theme', theme),
+  // CW Decoder pop-out
+  cwDecoderPopoutOpen: () => ipcRenderer.send('cw-decoder-popout-open'),
   // Bandspread pop-out
   bandspreadPopoutOpen: () => ipcRenderer.send('bandspread-popout-open'),
   bandspreadPopoutClose: () => ipcRenderer.send('bandspread-popout-close'),

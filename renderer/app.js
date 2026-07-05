@@ -11130,6 +11130,9 @@ function bindClick(el, handler) {
 }
 bindClick(viewJtcatBtn, () => window.api.jtcatPopoutOpen());
 bindClick(document.getElementById('view-sstv-btn'), () => window.api.sstvPopoutOpen());
+bindClick(document.getElementById('view-cw-decoder-btn'), () => {
+  if (window.api.cwDecoderPopoutOpen) window.api.cwDecoderPopoutOpen();
+});
 bindClick(document.getElementById('view-bandspread-btn'), () => {
   if (window.api.bandspreadPopoutOpen) window.api.bandspreadPopoutOpen();
 });

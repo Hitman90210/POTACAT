@@ -745,6 +745,7 @@ let vfoPopoutWin = null;     // pop-out VFO window
 let conditionsPopoutWin = null; // pop-out Conditions (solar / propagation)
 let jtcatPopoutWin = null;   // pop-out JTCAT window
 let sstvPopoutWin = null;    // pop-out SSTV window
+let cwDecoderPopoutWin = null; // pop-out experimental CW decoder window
 let bandspreadPopoutWin = null; // pop-out bandspread window
 let logPopoutWin = null;     // pop-out Log QSO window (W9TEF "ragchew logger" feature)
 let lastMergedSpots = [];        // most recent dedupe'd spot list, cached so the
@@ -7032,6 +7033,9 @@ function startSmartSdrAudio() {
     if (vfoPopoutWin) {
       audioSafeSend(vfoPopoutWin.webContents, 'smartsdr-audio-frame', { pcm, sampleRate });
     }
+    if (cwDecoderPopoutWin) {
+      audioSafeSend(cwDecoderPopoutWin.webContents, 'smartsdr-audio-frame', { pcm, sampleRate });
+    }
     // When the user picked "SmartSDR Direct" as the audio source, FT8/JTCAT
     // should decode from THIS VITA-49 stream too — not the separate Windows
     // "DAX Audio RX 1" device the renderer captures. On a SmartSDR-Direct
@@ -7619,6 +7623,9 @@ function handleIcomNetworkPacedRxFrame(pcm, sampleRate, meta = {}) {
   if (vfoPopoutWin) {
     audioSafeSend(vfoPopoutWin.webContents, 'smartsdr-audio-frame', { pcm, sampleRate });
   }
+  if (cwDecoderPopoutWin) {
+    audioSafeSend(cwDecoderPopoutWin.webContents, 'smartsdr-audio-frame', { pcm, sampleRate });
+  }
 
   if (settings.audioSource === 'icom-network') {
     const jtcatRunning = !!((jtcatManager && jtcatManager.running) || (ft8Engine && ft8Engine._running));
@@ -7860,6 +7867,9 @@ function handleK4AudioFrame(frame) {
   //    it is — it just wants PCM frames.
   if (remoteAudioWin) {
     audioSafeSend(remoteAudioWin.webContents, 'smartsdr-audio-frame', { pcm: monoF32, sampleRate: 12000 });
+  }
+  if (cwDecoderPopoutWin) {
+    audioSafeSend(cwDecoderPopoutWin.webContents, 'smartsdr-audio-frame', { pcm: monoF32, sampleRate: 12000 });
   }
   // 2) JTCAT (FT8) — engine wants 12 kHz mono, which is exactly what we have.
   //    Keyed off catTarget.type like every other K4 audio path — the old
@@ -19788,6 +19798,60 @@ app.whenReady().then(() => {
   ipcMain.on('sstv-popout-close', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.close(); });
   ipcMain.on('sstv-popout-minimize', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.minimize(); });
   ipcMain.on('sstv-popout-maximize', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) { if (w.isMaximized()) w.unmaximize(); else w.maximize(); } });
+
+  // Experimental CW decoder pop-out
+  ipcMain.on('cw-decoder-popout-open', () => {
+    if (cwDecoderPopoutWin && !cwDecoderPopoutWin.isDestroyed()) {
+      cwDecoderPopoutWin.focus();
+      return;
+    }
+    const isMac = process.platform === 'darwin';
+    cwDecoderPopoutWin = new BrowserWindow({
+      width: 760,
+      height: 520,
+      title: 'POTACAT - CW Decoder Experimental',
+      backgroundColor: getThemeWindowBg(),
+      show: false,
+      ...(isMac ? { titleBarStyle: 'hiddenInset' } : { frame: false }),
+      icon: getIconPath(),
+      webPreferences: {
+        preload: path.join(__dirname, 'preload-cw-decoder-popout.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        autoplayPolicy: 'no-user-gesture-required',
+      },
+    });
+    const saved = settings.cwDecoderPopoutBounds;
+    if (saved && saved.width > 420 && saved.height > 260 && isOnScreen(saved)) {
+      cwDecoderPopoutWin.setBounds(clampToWorkArea(saved));
+    }
+    cwDecoderPopoutWin.show();
+    cwDecoderPopoutWin.setMenuBarVisibility(false);
+    cwDecoderPopoutWin.loadFile(path.join(__dirname, 'renderer', 'cw-decoder-popout.html'), { query: { theme: settings.lightMode ? 'light' : 'dark', variant: settings.darkVariant || 'navy' } });
+    cwDecoderPopoutWin.on('close', () => {
+      if (cwDecoderPopoutWin && !cwDecoderPopoutWin.isDestroyed()) {
+        if (!cwDecoderPopoutWin.isMaximized() && !cwDecoderPopoutWin.isMinimized()) {
+          settings.cwDecoderPopoutBounds = cwDecoderPopoutWin.getBounds();
+          saveSettings(settings);
+        }
+      }
+    });
+    cwDecoderPopoutWin.on('closed', () => {
+      cwDecoderPopoutWin = null;
+    });
+    cwDecoderPopoutWin.webContents.on('did-finish-load', () => {
+      const themePayload = { theme: settings.lightMode ? 'light' : 'dark', variant: settings.darkVariant || 'navy' };
+      cwDecoderPopoutWin.webContents.send('cw-decoder-popout-theme', themePayload);
+    });
+    cwDecoderPopoutWin.webContents.on('before-input-event', (_e, input) => {
+      if (input.key === 'F12' && input.type === 'keyDown') {
+        cwDecoderPopoutWin.webContents.toggleDevTools();
+      }
+    });
+  });
+  ipcMain.on('cw-decoder-popout-close', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.close(); });
+  ipcMain.on('cw-decoder-popout-minimize', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.minimize(); });
+  ipcMain.on('cw-decoder-popout-maximize', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) { if (w.isMaximized()) w.unmaximize(); else w.maximize(); } });
 
   // --- SSTV Multi-Slice ---
 
