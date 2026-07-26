@@ -8307,15 +8307,17 @@ function connectSmartSdr() {
     // probe (lib/smartsdr.js) and the phone's rig-reconnect command, a
     // recovery can happen long after the banner went up.
     if (win && !win.isDestroyed()) win.webContents.send('smartsdr-reachable');
-    // Cleanup for stale slice audio_mute=1 that an earlier experimental
-    // build (since reverted) wrote to the radio. The Flex's band
-    // persistence retains the flag across POTACAT crashes and reboots,
-    // and `audio_mute` silences DAX too — so users who hit that build
-    // would otherwise have a silent DAX stream forever until something
-    // clears it. Send `audio_mute=0` once after connect; idempotent
-    // when already 0. Slice 0 only — that's the only slice the
-    // experimental code ever touched. (K3SBP 2026-05-27.)
-    setTimeout(() => smartSdr._send('slice set 0 audio_mute=0'), 200);
+    // NOTE: POTACAT used to blanket-send `slice set 0 audio_mute=0` here, as a
+    // cleanup for a stale audio_mute=1 an old experimental build (v1.8.15-17)
+    // left in the radio's band persistence. It ran on EVERY connect, hardcoded
+    // to slice 0, regardless of who owned that slice — so it also stomped a
+    // mute the operator (or another GUI client) had set deliberately, every
+    // time POTACAT started (KD0RC issue #67). Removed: the legacy flag is
+    // still cleared for the slice POTACAT actually owns by the self-host
+    // slice-ready branch below, and a slice we merely follow is not ours to
+    // unmute — we warn instead (see the 'slice-mute' handler). The radio's
+    // onboard SPEAKER is controlled by audio_level, not audio_mute, so this
+    // removal cannot make the rig louder.
     // DAX-free audio path lives on a SEPARATE TCP connection (non-GUI
     // client) — see startSmartSdrAudio() below. The primary client
     // here is GUI-bound for CW + spots and can't subscribe to audio.
@@ -8489,6 +8491,21 @@ function connectSmartSdr() {
   });
   // DAX-route health: the Flex tells us which DAX channel the slice is on. If
   // it isn't the channel our dax_rx listens on, audio arrives silent (the
+  // Monitor-mute health. `audio_mute=1` silences the DAX tap too, so a slice
+  // muted by the operator or another GUI client makes POTACAT's RX audio and
+  // the JTCAT/SSTV decoders go silent with no error. POTACAT no longer
+  // force-unmutes a slice it doesn't own (that stomped deliberate mutes —
+  // KD0RC #67); it says so instead, so a silent waterfall is explainable.
+  // Only for the slice we actually listen to, and only on a change.
+  smartSdr.on('slice-mute', ({ index, muted }) => {
+    const target = smartSdr.ourSliceIndex != null ? smartSdr.ourSliceIndex : getFlexSliceIndex();
+    if (index !== target) return;
+    if (muted) {
+      sendCatLog(`[SmartSDR] Slice ${index} is MUTED on the radio — POTACAT's RX audio (PC monitor, JTCAT/SSTV decode) will be silent until it's unmuted. To silence only the radio's own speaker, leave the slice unmuted and turn off "Play RX audio on the radio's built-in speaker" instead.`);
+    } else {
+      sendCatLog(`[SmartSDR] Slice ${index} unmuted — RX audio restored.`);
+    }
+  });
   // "Slice A not on DAX 1 → all zeros" trap, which has no error to catch).
   // Surface it loudly instead of decoding zeros forever.
   smartSdr.on('slice-dax', ({ index, channel }) => {
