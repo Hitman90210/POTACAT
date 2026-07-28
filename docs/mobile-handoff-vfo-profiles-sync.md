@@ -215,3 +215,29 @@ and synced.**
   / `apply-vfo-profile` rows).
 - Prior VFO handoff (layout is device-local; profiles = content, synced):
   `docs/mobile-handoff-vfo-layout.md`.
+
+---
+
+## Addendum 2026-07-28 — `txPower` field added to the profile
+
+A VFO profile now carries an **optional** `txPower` field (watts, number).
+Desktop shipped: the popout snapshots the current TX power on Save, applies it
+on tap (through the one rig-control dispatcher), and shows it in the profile
+detail line (`… BW:2400 100W`). The `apply-vfo-profile` handler applies it for
+remote taps too, and `sanitizeVfoProfiles` validates it (finite, 0–2000, else
+dropped). Older profiles have **no** `txPower` and everything skips it — fully
+backward-compatible, no schema/version bump.
+
+Mobile TODO (parity):
+- **Capture:** include `txPower: <current rig power>` when the user saves a
+  profile (only if power is known; omit otherwise — don't write `null`).
+- **Display:** show it in the profile row like the desktop (`100W`).
+- **Apply:** on tap, set rig power — the desktop already does this server-side
+  in `apply-vfo-profile`, so a phone tap that sends the profile with `txPower`
+  gets power applied for free; you only need to **send** the field and show it.
+- **Round-trip:** `txPower` is a normal profile field now — preserve it through
+  edits/reorders like `filterWidth`. The sanitizer keeps unknown fields, so even
+  before you add UI it survives the round-trip.
+
+Deliberately NOT added to profiles: NB / NR / squelch — those stay reactive to
+daily conditions (operator preference, K3SBP's IC-7100). Only TX power.

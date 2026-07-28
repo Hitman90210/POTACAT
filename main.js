@@ -12107,6 +12107,11 @@ function connectRemote() {
       const fw = Number(p.filterWidth);
       if (Number.isFinite(fw) && fw > 0) clean.filterWidth = fw;
       else delete clean.filterWidth;
+      // TX power (watts) — optional; validate/clamp so a bad value can't ride
+      // the profile onto the rig. Absent on legacy profiles (apply skips it).
+      const tp = Number(p.txPower);
+      if (Number.isFinite(tp) && tp >= 0 && tp <= 2000) clean.txPower = tp;
+      else delete clean.txPower;
       out.push(clean);
       if (out.length >= 500) break;
     }
@@ -12144,6 +12149,11 @@ function connectRemote() {
       if (profile.filterWidth && cat.setFilterWidth) {
         cat.setFilterWidth(profile.filterWidth);
       }
+    }
+    // TX power — through the one rig-control dispatcher (handles flex + gating +
+    // persistence + broadcast). Older profiles have no txPower and skip it.
+    if (profile.txPower != null) {
+      applyRigControl({ action: 'set-tx-power', value: Number(profile.txPower) }, 'echocat');
     }
     // Mirror to the desktop popout so its label/dial reflect the new state.
     if (vfoPopoutWin && !vfoPopoutWin.isDestroyed()) {
@@ -14425,6 +14435,7 @@ function sendVfoState() {
     filterWidth: _currentFilterWidth || 0,
     nb: _currentNbState,
     atu: _currentAtuState,
+    txPower: _currentTxPower,   // lets the popout snapshot power into a VFO profile
     customCatButtons: settings.customCatButtons || [],
   });
 }

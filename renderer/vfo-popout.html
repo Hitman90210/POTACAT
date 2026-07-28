@@ -721,6 +721,7 @@ function tuneFromPopout(freqKhz, mode, bearing, slicePort) {
   window.api.tune(freqKhz, mode, bearing, slicePort);
 }
 let currentFilterWidth = 0;
+let currentTxPower = null; // watts — tracked from vfo-radio-state so profiles can snapshot it
 let profiles = [];
 let profileDragFrom = null; // index of the profile being dragged (drag-to-reorder)
 let vfoHiddenBands = []; // band labels to hide, e.g. ['160m', '2m', '70cm']
@@ -830,6 +831,7 @@ window.api.onRadioState((s) => {
     filterVal.textContent = hz >= 1000 ? (hz / 1000).toFixed(1) + ' kHz' : hz + ' Hz';
     updateFilterQuickHighlight();
   }
+  if (s.txPower != null) currentTxPower = s.txPower; // so "Save profile" can snapshot it
   if (s.nb != null) {
     nbOn = s.nb;
     document.querySelectorAll('.nb-toggle').forEach(b => b.classList.toggle('on', nbOn));
@@ -1296,7 +1298,7 @@ function renderProfiles() {
     item.innerHTML = `
       <span class="profile-drag" title="Drag to reorder">&#x2630;</span>
       <span class="profile-name">${esc(p.name)}</span>
-      <span class="profile-detail">${freqMhz} MHz ${p.mode || ''}${p.filterWidth ? ' BW:' + p.filterWidth : ''}</span>
+      <span class="profile-detail">${freqMhz} MHz ${p.mode || ''}${p.filterWidth ? ' BW:' + p.filterWidth : ''}${p.txPower != null ? ' ' + p.txPower + 'W' : ''}</span>
       <button class="profile-edit" title="Rename profile">&#x270E;</button>
       <button class="profile-del" title="Delete profile">&times;</button>
     `;
@@ -1406,7 +1408,7 @@ function renderInlineProfiles() {
     const freqMhz = p.freqKhz ? (p.freqKhz / 1000).toFixed(3) : '?';
     item.innerHTML = `
       <span class="profile-name">${esc(p.name)}</span>
-      <span class="profile-detail">${freqMhz} MHz ${p.mode || ''}${p.filterWidth ? ' BW:' + p.filterWidth : ''}</span>
+      <span class="profile-detail">${freqMhz} MHz ${p.mode || ''}${p.filterWidth ? ' BW:' + p.filterWidth : ''}${p.txPower != null ? ' ' + p.txPower + 'W' : ''}</span>
     `;
     item.addEventListener('click', () => applyProfile(p));
     list.appendChild(item);
@@ -1430,6 +1432,12 @@ function applyProfile(p) {
     filterVal.textContent = p.filterWidth >= 1000
       ? (p.filterWidth / 1000).toFixed(1) + ' kHz'
       : p.filterWidth + ' Hz';
+  }
+  // TX power — apply through the one rig-control dispatcher (flex/gating/persist
+  // handled there). Older profiles have no txPower and just skip it.
+  if (p.txPower != null) {
+    currentTxPower = p.txPower;
+    window.api.rigControl({ action: 'set-tx-power', value: p.txPower });
   }
   updateDisplay();
   updateModeHighlight();
@@ -1460,6 +1468,7 @@ document.getElementById('profile-save-btn').addEventListener('click', async () =
     freqKhz: currentFreqHz / 1000,
     mode: currentMode,
     filterWidth: currentFilterWidth,
+    ...(currentTxPower != null ? { txPower: currentTxPower } : {}),
   });
   await saveProfiles();
   renderProfiles();
