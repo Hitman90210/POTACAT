@@ -1260,6 +1260,21 @@
         updateEchoTxMeter(msg.value);
         break;
 
+      // Shack-side TX drive — desktop is authoritative. Sent at connect and on
+      // every change from any surface. Don't clobber the slider mid-drag.
+      case 'tx-drive-state': {
+        var tdRow = document.getElementById('so-tx-drive-row');
+        var tdEl = document.getElementById('rc-tx-drive');
+        var tdVal = document.getElementById('rc-tx-drive-val');
+        if (tdRow) tdRow.classList.remove('hidden'); // desktop supports it
+        var tdPct = Math.round(Number(msg.value));
+        if (tdEl && isFinite(tdPct) && document.activeElement !== tdEl) {
+          tdEl.value = tdPct;
+          if (tdVal) tdVal.textContent = tdPct + '%';
+        }
+        break;
+      }
+
       case 'tgxl-status':
         echoTgxlSection.classList.remove('hidden');
         echoTgxlUpdateButtons(msg.antenna || 0, msg.labels);
@@ -4067,6 +4082,24 @@
     rcTxGainVal.textContent = pct + '%';
     if (txGainNode) txGainNode.gain.value = pct / 100;
   });
+
+  // Shack-side TX drive — what POTACAT feeds the RADIO (vs rcTxGain above,
+  // which scales this browser's own mic and never leaves the page). Sends on
+  // release, not per-input, so a drag doesn't spray the wire; the desktop
+  // echoes tx-drive-state back and every client stays in sync. The row is
+  // revealed by that echo, so it stays hidden against older desktops.
+  var rcTxDrive = document.getElementById('rc-tx-drive');
+  var rcTxDriveVal = document.getElementById('rc-tx-drive-val');
+  if (rcTxDrive) {
+    rcTxDrive.addEventListener('input', function() {
+      if (rcTxDriveVal) rcTxDriveVal.textContent = parseInt(rcTxDrive.value, 10) + '%';
+    });
+    rcTxDrive.addEventListener('change', function() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'set-tx-drive', value: parseInt(rcTxDrive.value, 10) }));
+      }
+    });
+  }
 
   // RX clipping telemetry — when samples hit ±full-scale the ADC is pinning
   // and POTACAT's sliders can't rescue the signal. Throttled to one toast per

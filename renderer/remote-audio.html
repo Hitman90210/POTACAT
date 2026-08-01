@@ -122,6 +122,10 @@ window.api.onStartAudio(async (config) => {
       // <audio> element stays muted in this mode so the audio doesn't
       // also reach a Windows DAX device (which would double-feed the
       // slice and produce echo / distortion). K3SBP 2026-05-15.
+      // Seed the shack-side TX drive from the bridge config before either
+      // route starts, so the first syllable already goes out at the operator's
+      // level instead of unity-then-correct.
+      if (config.txDrive != null) _txDrivePct = Number(config.txDrive);
       if (config.daxTxDirect) {
         audioEl.muted = true;
         try { await startDaxTxTap(event.streams[0], config.txEq, config.txGuardMs); }
@@ -136,6 +140,7 @@ window.api.onStartAudio(async (config) => {
             window.api.sendAudioStatus({ error: 'Failed to set output device: ' + e.message });
           }
         }
+        _applyTxDrive(); // sink route: drive via <audio>.volume
       }
       // PC-side TX peak meter — tap the incoming stream with an AnalyserNode
       // and push peaks to the VFO popout via main. The audio still plays
@@ -255,6 +260,37 @@ let _daxTxDelay = null;   // first-syllable PTT guard (DelayNode), null when off
 const _txEqChain = TxEqChain.create();
 let _txEqState = { enabled: false, preset: 'ragchew' };
 
+// --- Shack-side TX drive ---------------------------------------------------
+// The level of the CLIENT-MIC audio POTACAT feeds the radio. Distinct from the
+// web client's own #rc-tx-gain, which scales that browser's mic before WebRTC
+// and never leaves the browser. Percent, 100 = unity, clamped 0-200.
+//
+// Two mic->rig routes, so two levers:
+//   * DAX-direct (Flex / K4 network): a real GainNode ahead of the EQ chain,
+//     full 0-200 range.
+//   * setSinkId (generic USB CODEC): that route has no WebAudio graph (same
+//     reason the PTT guard delay is DAX-only), so we drive the <audio>
+//     element's .volume — which HTML caps at 1.0. Above 100% we clamp and say
+//     so rather than pretend the boost applied.
+let _txDrivePct = 100;
+let _txDriveGain = null;   // GainNode on the DAX path (null on the sink route)
+function _applyTxDrive() {
+  const g = Math.max(0, Math.min(200, Number(_txDrivePct))) / 100;
+  if (_txDriveGain) _txDriveGain.gain.value = g;
+  // setSinkId route: <audio>.volume is 0..1 only.
+  if (audioEl) audioEl.volume = Math.min(1, g);
+  if (!_txDriveGain && g > 1) {
+    window.api.sendAudioStatus({
+      note: `TX drive ${Math.round(g * 100)}% clamped to 100% — boost above unity needs the DAX-direct path; ` +
+            `raise the radio's USB MOD LEVEL (or Windows mic level) instead.`,
+    });
+  }
+}
+window.api.onTxDriveUpdate((pct) => {
+  _txDrivePct = Number(pct);
+  _applyTxDrive();
+});
+
 async function startDaxTxTap(stream, eqConfig, guardMs) {
   stopDaxTxTap();
   if (!stream || !window.api.daxTxChunk) {
@@ -293,10 +329,15 @@ async function startDaxTxTap(stream, eqConfig, guardMs) {
     enabled: !!(eqConfig && eqConfig.enabled),
     preset:  (eqConfig && eqConfig.preset) || 'ragchew',
   };
-  // The EQ chain hangs off the guard delay when present. wire() disconnects
-  // whatever it's handed as `source`, which is the delay's OUTPUT — the
-  // _daxTxSource → _daxTxDelay hop above survives every live re-wire.
-  TxEqChain.wire(_txEqChain, _daxTxCtx, _daxTxDelay || _daxTxSource, _daxTxNode, _txEqState);
+  // TX drive sits AHEAD of the EQ chain (drive the level, then shape it) and
+  // downstream of the guard delay, so it's the one node wire() never touches.
+  _txDriveGain = _daxTxCtx.createGain();
+  (_daxTxDelay || _daxTxSource).connect(_txDriveGain);
+  _applyTxDrive();
+  // The EQ chain hangs off the TX-drive gain. wire() disconnects whatever it's
+  // handed as `source`, which is the gain's OUTPUT — the
+  // _daxTxSource → _daxTxDelay → _txDriveGain hops survive every live re-wire.
+  TxEqChain.wire(_txEqChain, _daxTxCtx, _txDriveGain, _daxTxNode, _txEqState);
 
   // Connect to destination so the worklet stays scheduled. The dest is
   // muted (default 0 gain on a hidden window output) so this doesn't
@@ -308,8 +349,9 @@ function stopDaxTxTap() {
   // Drop the EQ nodes by wiring through "disabled" once (which disconnects
   // and nulls them out) so we don't leak references on stop.
   if (_daxTxSource && _daxTxNode) {
-    try { TxEqChain.wire(_txEqChain, _daxTxCtx, _daxTxDelay || _daxTxSource, _daxTxNode, { enabled: false }); } catch {}
+    try { TxEqChain.wire(_txEqChain, _daxTxCtx, _txDriveGain || _daxTxDelay || _daxTxSource, _daxTxNode, { enabled: false }); } catch {}
   }
+  if (_txDriveGain) { try { _txDriveGain.disconnect(); } catch {} _txDriveGain = null; }
   if (_daxTxDelay) { try { _daxTxDelay.disconnect(); } catch {} _daxTxDelay = null; }
   if (_daxTxNode) { try { _daxTxNode.disconnect(); } catch {} _daxTxNode = null; }
   if (_daxTxSource) { try { _daxTxSource.disconnect(); } catch {} _daxTxSource = null; }
@@ -325,7 +367,7 @@ window.api.onTxEqUpdate((eqConfig) => {
     preset:  (eqConfig && eqConfig.preset) || 'ragchew',
   };
   if (_daxTxCtx && _daxTxSource && _daxTxNode) {
-    TxEqChain.wire(_txEqChain, _daxTxCtx, _daxTxDelay || _daxTxSource, _daxTxNode, _txEqState);
+    TxEqChain.wire(_txEqChain, _daxTxCtx, _txDriveGain || _daxTxDelay || _daxTxSource, _daxTxNode, _txEqState);
   }
 });
 

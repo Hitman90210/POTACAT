@@ -11675,6 +11675,10 @@ function connectRemote() {
         customParams: settings.txEqCustomParams || null,
       });
     } catch { /* ignore */ }
+    // Shack-side TX drive — hydrate at connect so the client's slider renders
+    // the authoritative value instead of a default it then "corrects" (the
+    // jtcatUseDataMode display-lie class of bug).
+    try { remoteServer.broadcastTxDriveState(currentTxDrive()); } catch { /* ignore */ }
     // Send worked parks for new-to-me filter
     if (workedParks.size > 0) {
       remoteServer.sendWorkedParks([...workedParks.keys()]);
@@ -12411,6 +12415,10 @@ function connectRemote() {
     settings.audioSource = rig.audioSource || RigFamily.defaultAudioSourceFor(RigFamily.rigFamily(rig));
     try { remoteServer.setRigModel(rig.model || ''); } catch {}
     _applyRigEqDefault(rig);
+    // Shack-side TX drive is per-rig (each radio wants its own drive level) —
+    // ride the switch like the audio devices above. Funnels through the choke
+    // point so the bridge, desktop UIs and the client echo all update.
+    ipcMain.emit('tx-drive-set', null, rig.txDrive != null ? rig.txDrive : 100);
     // Per-rig CW key port
     if (rig.cwKeyPort !== undefined) {
       settings.cwKeyPort = rig.cwKeyPort || '';
@@ -12702,6 +12710,19 @@ function connectRemote() {
       } catch { /* ignore */ }
     }
   });
+  // Client moved the shack-side TX drive — funnel through the one IPC choke
+  // point so persistence + bridge + desktop UIs + the S2C echo all happen in
+  // one place. Guest Pass clients are refused in the remote-server demux.
+  remoteServer.on('set-tx-drive', ({ value }) => {
+    ipcMain.emit('tx-drive-set', null, value);
+  });
+  // A guest tried to move it — re-send the real value so their slider snaps
+  // back rather than displaying a change that never reached the radio.
+  remoteServer.on('tx-drive-refused', () => {
+    sendCatLog('[Audio] TX drive change refused — Guest Pass clients cannot change the host TX level.');
+    try { remoteServer.broadcastTxDriveState(currentTxDrive()); } catch { /* ignore */ }
+  });
+
   remoteServer.on('tx-eq-set', (eqConfig) => {
     // Funnel through the same IPC path the desktop UIs use so settings
     // persistence + bridge update + VFO update + broadcastTxEqState
@@ -14787,7 +14808,18 @@ function _buildAudioBridgeConfig() {
     // 120ms; settings.echoTxGuardMs = 0 disables, clamped ≤300.
     txGuardMs: Math.max(0, Math.min(300,
       settings.echoTxGuardMs != null ? (parseInt(settings.echoTxGuardMs, 10) || 0) : 120)),
+    // Shack-side TX drive (percent, 100 = unity) applied to the client-mic
+    // audio before it reaches the rig. See ipcMain.on('tx-drive-set').
+    txDrive: currentTxDrive(),
   };
+}
+
+/** Effective shack-side TX drive percent (0-200, default 100 = unity).
+ *  Per-rig (`rig.txDrive`) with the global `settings.txDrive` as the mirror —
+ *  same pattern as remoteAudioOutput, so it follows a rig switch. */
+function currentTxDrive() {
+  const v = Number(settings.txDrive);
+  return Number.isFinite(v) ? Math.max(0, Math.min(200, v)) : 100;
 }
 
 // Apply per-rig TX EQ defaults if the rig profile has any. No-op when
@@ -25314,6 +25346,27 @@ app.whenReady().then(() => {
     saveSettings(settings);
     sendCatLog(`[TX EQ] Saved as default for rig "${rigs[idx].name || activeId}": ${rigs[idx].txEqPreset}${rigs[idx].txEqEnabled ? '' : ' (off)'}`);
     return { ok: true, rigName: rigs[idx].name || activeId };
+  });
+
+  // Shack-side TX drive — ONE choke point (mirrors tx-eq-set): clamp, persist
+  // globally AND onto the active rig so it follows a rig switch, push live to
+  // the audio bridge, mirror to desktop UIs, and echo to clients. Every
+  // surface (web slider, mobile, desktop UI, rig switch) funnels through here.
+  ipcMain.on('tx-drive-set', (_e, value) => {
+    const v = Math.max(0, Math.min(200, Math.round(Number(value))));
+    if (!Number.isFinite(v)) return;
+    settings.txDrive = v;
+    const activeRig = (settings.rigs || []).find((r) => r.id === settings.activeRigId);
+    if (activeRig) activeRig.txDrive = v;
+    saveSettings(settings);
+    if (remoteAudioWin && !remoteAudioWin.isDestroyed()) {
+      remoteAudioWin.webContents.send('tx-drive-update', v);
+    }
+    if (win && !win.isDestroyed()) win.webContents.send('tx-drive-update', v);
+    if (vfoPopoutWin && !vfoPopoutWin.isDestroyed()) vfoPopoutWin.webContents.send('tx-drive-update', v);
+    if (remoteServer && remoteServer.running) {
+      try { remoteServer.broadcastTxDriveState(v); } catch { /* ignore */ }
+    }
   });
 
   ipcMain.on('tx-eq-set', (_e, eqConfig) => {

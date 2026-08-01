@@ -68,4 +68,6 @@ contextBridge.exposeInMainWorld('api', {
   // TX EQ + compressor — main pushes live updates here when the user
   // toggles enable/preset in Settings without rebuilding WebRTC.
   onTxEqUpdate: (cb) => ipcRenderer.on('tx-eq-update', (_e, eqConfig) => cb(eqConfig)),
+  // Shack-side TX drive percent (0-200) — live changes from any surface.
+  onTxDriveUpdate: (cb) => ipcRenderer.on('tx-drive-update', (_e, pct) => cb(pct)),
 });
