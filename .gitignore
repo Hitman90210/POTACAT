@@ -26,3 +26,37 @@ dbg.wav
 lib/ft8_native/build/
 lib/ft8_native/bin/
 lib/rade_native/build/
+
+# ── Local-only working files (present on Casey's machine, never committed) ──
+# NOTE: gitignoring only stops them being staged — nothing here is deleted.
+
+# Certificates + PRIVATE KEY MATERIAL. Highest priority: remote-key.pem sitting
+# untracked was one `git add -A` away from being published to a public repo.
+*.pem
+*.crt
+*.key
+
+# Operator + third-party log data. ADIF/logbook exports contain real QSOs
+# (and other operators' data under logbooks/) — never belongs in the repo.
+logbooks/
+*.adi
+*.adif
+
+# Working spreadsheets / paperwork / reference PDFs kept beside the project
+*.xlsx
+*.csv
+*.pdf
+
+# Nested clone of the docs repo (separate git repo — must never be committed
+# into this one as a gitlink)
+potacat-docs/
+
+# Local test + screenshot output, and the Cloudflare Worker dev cache
+test-output/
+worker/.wrangler/
+worker/donors/.wrangler/
+
+# One-off UI screenshot / harness scratch scripts from dev sessions
+scripts/shot-*.mjs
+scripts/psk-macros-entry.js
+ui-test-entry.js
