@@ -91,8 +91,9 @@ Application close codes (mirrored in `CLOSE_CODES` in
 | `spots` | S→C | Bulk push of current spot list. |
 | `sources` | S→C | Which spot sources are currently enabled (POTA, SOTA, etc.). |
 | `set-sources` | C→S | Toggle which spot sources to subscribe to. |
-| `echo-filters` | S→C | Server-side filter state (band/mode/distance). |
-| `set-echo-filters` | C→S | Update server-side filter state. |
+| `echo-filters` | S→C | Server-side filter state (band/mode/distance). `data.muteRules` (2026-08-03) additionally carries the desktop-owned per-band region mutes (`[{continent:'AS', band:'40m'}]` — "hide Asia on 40m", other bands unaffected). Apply them in the spot filter AND display active rules — an invisible filter reads as missing spots. |
+| `set-echo-filters` | C→S | Update server-side filter state. Does NOT carry muteRules — they are desktop-owned and merged into `echo-filters` at send, so this message can never clobber them. |
+| `set-spot-mute-rules` | C→S | Full-list replace of the per-band region mutes from a client editor. Desktop sanitizes (valid continents, deduped, capped 50) and echoes the accepted set inside the next `echo-filters` push. |
 | `worked-parks` | S→C | List of park refs the user has worked (drives ATNO badges). |
 | `worked-qsos` | S→C | List of recent worked callsigns/refs (drives "worked" highlighting). |
 
@@ -110,7 +111,8 @@ The `status` message is a kitchen-sink snapshot. The canonical fields are:
 | `rigType` | string | "flex", "yaesu", "icom", "kenwood", "rigctld", "wsjtx" |
 | `nb` | boolean | Noise blanker on/off |
 | `atu` | boolean | ATU enabled |
-| `vfo` | string | "A" or "B" |
+| `vfo` | string | "A" or "B" — READBACK-fed since 2026-08-03 (Kenwood `IF;` / rigctld `v`, polled every cycle), so it now follows front-panel and custom-CAT VFO changes instead of only POTACAT-initiated ones |
+| `split` | boolean | rig split on/off, readback-fed (Kenwood `IF;` P12 / rigctld `s`). NEW 2026-08-03 — absent from older desktops. Live split is commanded via `rig-control {action:'set-split', value}`; the similarly-named `set-enable-split` only toggles the spot-tune setting |
 | `filterWidth` | number | Hz |
 | `rfgain` | number | 0–255 |
 | `txpower` | number | TX power *setting* (slider) |

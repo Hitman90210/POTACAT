@@ -240,6 +240,7 @@ const { CatClient, RigctldClient, CivClient, listSerialPorts } = require('./lib/
 // New rig abstraction layer
 const { RigController } = require('./lib/rig-controller');
 const { RIG_CONTROLS } = require('./lib/rig-controls');
+const { normalizeMuteRules } = require('./lib/spot-mute-rules'); // per-band region mutes (N7BBQ)
 const { TcpTransport, SerialTransport } = require('./lib/transport');
 const { RsBa1Transport } = require('./lib/rsba1-transport');
 const { KenwoodCodec } = require('./lib/codecs/kenwood-codec');
@@ -1311,6 +1312,7 @@ let _currentAlc = 0;
 let _currentPower = 0; // live wattmeter reading from the rig (during TX)
 let _currentAtuState = false;
 let _currentVfo = 'A';
+let _currentSplit = false; // rig split state, readback-fed (IF; P12 / rigctld s)
 let _currentFilterWidth = 0;
 let _currentRfGain = 0;
 let _currentSquelch = 0; // FM squelch threshold 0-100 (see applyRigControl 'set-squelch')
@@ -1528,6 +1530,12 @@ function getRigCapabilities(rigType) {
     // mode. See lib/rig-controls.js 'set-squelch'. An unsupported SQ just
     // returns a harmless rejection.
     caps.squelch = true;
+    // VFO/split — readback-backed on Kenwood serial (IF;) and rigctld (v/s),
+    // so those get the split control + trustworthy indicator. Yaesu keeps
+    // vfo (VS;/SV; writes work; indicator optimistic) but not split until
+    // its readback lands. Models may override either.
+    if (caps.vfo == null) caps.vfo = model.brand === 'Kenwood' || model.brand === 'Yaesu' || model.protocol === 'rigctld';
+    if (caps.split == null) caps.split = model.brand === 'Kenwood' || model.protocol === 'rigctld';
     return caps;
   }
   // Fallback to generic per-type. squelch:true on every real CAT backend (not
@@ -1538,9 +1546,9 @@ function getRigCapabilities(rigType) {
                              // only show what the Flex can actually do (and the dispatcher gates).
                              nr: true, anf: true, apf: true, comp: true, vox: true, agc: true, mon: true, rit: true, cwSidetone: true };
     case 'yaesu':   return { nb: true, atu: true, vfo: true, filter: true, filterType: 'indexed', rfgain: true, txpower: true, power: true, squelch: true };
-    case 'kenwood': return { nb: true, atu: true, vfo: true, filter: true, filterType: 'direct', rfgain: true, txpower: true, power: true, squelch: true };
+    case 'kenwood': return { nb: true, atu: true, vfo: true, split: true, filter: true, filterType: 'direct', rfgain: true, txpower: true, power: true, squelch: true };
     case 'icom':    return { nb: false, atu: false, vfo: false, filter: false, filterType: 'none', rfgain: false, txpower: false, power: true, squelch: true };
-    case 'rigctld': return { nb: true, atu: true, vfo: true, filter: true, filterType: 'passband', rfgain: true, txpower: true, power: true, squelch: true };
+    case 'rigctld': return { nb: true, atu: true, vfo: true, split: true, filter: true, filterType: 'passband', rfgain: true, txpower: true, power: true, squelch: true };
     default:        return { nb: false, atu: false, vfo: false, filter: false, filterType: 'none', rfgain: false, txpower: false, power: false };
   }
 }
@@ -2032,6 +2040,26 @@ function bindRigStateEvents(controller) {
   controller.on('micGain', sendCatMicGain);
   controller.on('breakIn', sendCatBreakIn);
   controller.on('antennaPort', sendCatAntennaPort);
+  controller.on('vfo', sendCatVfo);
+  controller.on('split', sendCatSplit);
+}
+
+// Readback-fed VFO/split (polled every cycle) — broadcast only on CHANGE so
+// the poll stream doesn't become a broadcast storm.
+function sendCatVfo(vfo) {
+  if (vfo !== 'A' && vfo !== 'B') return;
+  if (vfo === _currentVfo) return;
+  _currentVfo = vfo;
+  sendCatLog(`[CAT] Rig is on VFO ${vfo}`);
+  broadcastRigState();
+}
+
+function sendCatSplit(on) {
+  const v = !!on;
+  if (v === _currentSplit) return;
+  _currentSplit = v;
+  sendCatLog(`[CAT] Split ${v ? 'ON' : 'OFF'}`);
+  broadcastRigState();
 }
 
 function sendCatSmeter(val) {
@@ -2108,6 +2136,11 @@ function broadcastRigState() {
     preampTarget: _currentPreampTarget,
     preampLevel: _currentPreampLevel,
     antennaPort: _currentAntennaPort,
+    // Active VFO + split, readback-fed (Kenwood IF; / rigctld v+s) — was
+    // optimistic-only, so a front-panel or custom-CAT VFO change left every
+    // display lying (LZ3AW, TS-480). See sendCatVfo/sendCatSplit.
+    vfo: _currentVfo,
+    split: _currentSplit,
     capabilities: caps,
     // Control registry — lets clients render the rig panel (labels, grouping,
     // TX-only tags, which caps gate each) from one source of truth instead of
@@ -11725,9 +11758,16 @@ function connectRemote() {
     if (workedQsos.size > 0) {
       remoteServer.sendWorkedQsos([...workedQsos.entries()]);
     }
-    // Restore saved ECHOCAT filters (bands, modes, regions, sort, etc.)
-    if (settings.echoFilters) {
-      remoteServer.sendFiltersToClient(settings.echoFilters);
+    // Restore saved ECHOCAT filters (bands, modes, regions, sort, etc.).
+    // muteRules (per-band region mutes, desktop-owned settings.spotMuteRules)
+    // are merged in at SEND time only — echoFilters itself stays the client's
+    // own roaming filter blob, so a client's set-echo-filters can never
+    // clobber the rules.
+    if (settings.echoFilters || (settings.spotMuteRules && settings.spotMuteRules.length)) {
+      remoteServer.sendFiltersToClient({
+        ...(settings.echoFilters || {}),
+        muteRules: normalizeMuteRules(settings.spotMuteRules),
+      });
     }
     // FreeDV enabled state
     remoteServer.sendToClient({ type: 'freedv-enabled', enabled: !!settings.enableFreedv });
@@ -12407,6 +12447,20 @@ function connectRemote() {
     saveSettings(settings);
   });
 
+  // Per-band region mutes edited from a client (mobile parity for the
+  // desktop right-click flow). Sanitized, persisted, and echoed back inside
+  // echo-filters so every surface converges on the accepted set.
+  remoteServer.on('set-spot-mute-rules', (rules) => {
+    settings.spotMuteRules = normalizeMuteRules(rules);
+    saveSettings(settings);
+    // Desktop table/map/scan pick up a client-originated change live.
+    if (win && !win.isDestroyed()) win.webContents.send('spot-mute-rules', settings.spotMuteRules);
+    remoteServer.sendFiltersToClient({
+      ...(settings.echoFilters || {}),
+      muteRules: settings.spotMuteRules,
+    });
+  });
+
   remoteServer.on('rig-reconnect', () => {
     // Phone-initiated "my radio is back on, retry now" — same blessed pair
     // the desktop settings-save and switch-rig paths use. connect() resets
@@ -12538,31 +12592,11 @@ function connectRemote() {
     console.log('[Echo CAT] ATU:', on ? 'ON' : 'OFF');
   });
 
-  remoteServer.on('set-vfo', ({ vfo }) => {
-    if (flexSdr()) {
-      smartSdr.setActiveSlice(vfo === 'B' ? 1 : 0);
-    } else if (cat && cat.connected) {
-      cat.setVfo(vfo);
-    }
-    _currentVfo = vfo;
-    broadcastRigState();
-    console.log('[Echo CAT] VFO:', vfo);
-  });
-
-  remoteServer.on('swap-vfo', () => {
-    const rigType = detectRigType();
-    const newVfo = _currentVfo === 'A' ? 'B' : 'A';
-    if (rigType === 'yaesu' && cat && cat.connected) {
-      cat.swapVfo();
-    } else if (flexSdr()) {
-      smartSdr.setActiveSlice(newVfo === 'B' ? 1 : 0);
-    } else if (cat && cat.connected) {
-      cat.setVfo(newVfo);
-    }
-    _currentVfo = newVfo;
-    broadcastRigState();
-    console.log('[Echo CAT] Swap VFO ->', newVfo);
-  });
+  // VFO messages route through the ONE dispatcher (applyRigControl) — these
+  // used to be a private second implementation, which is how the optimistic
+  // _currentVfo drift lived unnoticed (LZ3AW 2026-08-03).
+  remoteServer.on('set-vfo', ({ vfo }) => applyRigControl({ action: 'set-vfo', vfo }, 'echocat'));
+  remoteServer.on('swap-vfo', () => applyRigControl({ action: 'swap-vfo' }, 'echocat'));
 
   // RF Gain from ECHOCAT — debounce to avoid serial command flooding and feedback loops
   let _rfGainTimer = null;
@@ -14564,6 +14598,8 @@ function sendVfoState() {
     nb: _currentNbState,
     atu: _currentAtuState,
     txPower: _currentTxPower,   // lets the popout snapshot power into a VFO profile
+    vfo: _currentVfo,           // active VFO letter + split badge (LZ3AW)
+    split: _currentSplit,
     customCatButtons: settings.customCatButtons || [],
   });
 }
@@ -14607,6 +14643,7 @@ function broadcastRemoteRadioStatus() {
     nb: _currentNbState,
     atu: _currentAtuState,
     vfo: _currentVfo,
+    split: _currentSplit,
     filterWidth: _currentFilterWidth,
     rfgain: rfg,
     squelch: _currentSquelch,
@@ -24107,6 +24144,42 @@ app.whenReady().then(() => {
         broadcastRigState();
         break;
       }
+      // --- VFO / split (LZ3AW 2026-08-03). State is optimistic here but the
+      // per-cycle readback (Kenwood IF; / rigctld v+s) confirms or corrects
+      // within ~1s, so a front-panel change can no longer strand the UI.
+      case 'set-vfo': {
+        const vfo = (data.vfo || 'A').toUpperCase() === 'B' ? 'B' : 'A';
+        if (flexSdr()) {
+          smartSdr.setActiveSlice(vfo === 'B' ? 1 : 0);
+        } else if (cat && cat.connected && typeof cat.setVfo === 'function') {
+          cat.setVfo(vfo);
+        }
+        _currentVfo = vfo;
+        broadcastRigState();
+        break;
+      }
+      case 'swap-vfo': {
+        const newVfo = _currentVfo === 'A' ? 'B' : 'A';
+        if (rigType === 'yaesu' && cat && cat.connected && typeof cat.swapVfo === 'function') {
+          cat.swapVfo();
+        } else if (flexSdr()) {
+          smartSdr.setActiveSlice(newVfo === 'B' ? 1 : 0);
+        } else if (cat && cat.connected && typeof cat.setVfo === 'function') {
+          cat.setVfo(newVfo);
+        }
+        _currentVfo = newVfo;
+        broadcastRigState();
+        break;
+      }
+      case 'set-split': {
+        const on = !!data.value;
+        if (cat && cat.connected && typeof cat.setSplit === 'function') {
+          cat.setSplit(on);
+        }
+        _currentSplit = on;
+        broadcastRigState();
+        break;
+      }
       case 'set-comp': {
         if (flexNeedsApi) { _flexWarnOnce('Compressor requires SmartSDR API — not connected'); break; }
         const on = !!data.value;
@@ -26080,6 +26153,18 @@ app.whenReady().then(() => {
 
   ipcMain.handle('save-settings', (_e, newSettings) => {
     markUserActive();
+    // Per-band region mutes: sanitize on every write (never store a payload
+    // verbatim) and ship the updated set to connected ECHOCAT clients so a
+    // rule added on the desktop hides the spots on the mobile device too.
+    if (newSettings.spotMuteRules !== undefined) {
+      newSettings.spotMuteRules = normalizeMuteRules(newSettings.spotMuteRules);
+      if (remoteServer && remoteServer.running) {
+        remoteServer.sendFiltersToClient({
+          ...(settings.echoFilters || {}),
+          muteRules: newSettings.spotMuteRules,
+        });
+      }
+    }
     const adifLogPathChanged = newSettings.adifLogPath !== settings.adifLogPath;
     const potaParksPathChanged = newSettings.potaParksPath !== settings.potaParksPath;
 

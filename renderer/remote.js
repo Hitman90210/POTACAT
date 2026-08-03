@@ -1914,6 +1914,10 @@
       rcVfoA.classList.toggle('active', s.vfo === 'A');
       rcVfoB.classList.toggle('active', s.vfo === 'B');
     }
+    if (s.split != null) {
+      const sp = document.getElementById('rc-split');
+      if (sp) sp.classList.toggle('active', !!s.split);
+    }
     if (s.filterWidth !== undefined) {
       currentFilterWidth = s.filterWidth;
       rcBwLabel.textContent = formatBw(s.filterWidth);
@@ -1945,7 +1949,9 @@
         else if (s.mode !== undefined) soSquelchRow.classList.toggle('hidden', !(sqCap && s.mode === 'FM'));
       }
       soTxPowerRow.classList.toggle('hidden', !s.capabilities.txpower);
-      rcVfoGroup.classList.toggle('hidden', !s.capabilities.vfo);
+      rcVfoGroup.classList.toggle('hidden', !s.capabilities.vfo && !s.capabilities.split);
+      const rcSplitBtn = document.getElementById('rc-split');
+      if (rcSplitBtn) rcSplitBtn.classList.toggle('hidden', !s.capabilities.split);
       // Rig On/Off — show wherever the radio's CAT set supports PS0/PS1, 0x18, or equivalent.
       // Applies to both the Settings-overlay group and the VFO widget row.
       const rcPowerGroup = document.getElementById('rc-power');
@@ -2038,6 +2044,7 @@
       if (bands && !bands.has(s.band)) return false;
       if (modes && !modes.has(spotModeCategory(s.mode))) return false;
       if (regions && s.continent && !regions.has(s.continent)) return false;
+      if (spotMatchesMuteRule(s)) return false;
       if (showNewOnly && !isNewPark(s)) return false;
       if (hideWorked && isWorkedSpot(s)) return false;
       // Band-scoped hide (Hide button on each row). Drops out as soon as the
@@ -2645,8 +2652,45 @@
       const cb = document.getElementById('rc-hide-worked');
       if (cb) cb.checked = f.hideWorked;
     }
+    // Per-band region mutes — desktop-owned (settings.spotMuteRules), merged
+    // into this payload at send. Applied here, displayed under the region
+    // filter so an active mute is never invisible. (N7BBQ 2026-08-03.)
+    if (f.muteRules !== undefined) {
+      spotMuteRules = Array.isArray(f.muteRules) ? f.muteRules.filter(function(r) {
+        return r && r.continent && r.band;
+      }) : [];
+      renderMuteRuleNote();
+    }
     renderSpots();
     if (activeTab === 'map') renderMapSpots();
+  }
+
+  var CONTINENT_NAMES = { AF:'Africa', AN:'Antarctica', AS:'Asia', EU:'Europe', NA:'North America', OC:'Oceania', SA:'South America' };
+  var spotMuteRules = []; // mirrors the desktop lib/spot-mute-rules.js predicate
+  function spotMatchesMuteRule(s) {
+    if (!spotMuteRules.length || !s.continent || !s.band) return false;
+    var cont = String(s.continent).toUpperCase();
+    var band = String(s.band).toLowerCase();
+    for (var i = 0; i < spotMuteRules.length; i++) {
+      if (spotMuteRules[i].continent === cont && spotMuteRules[i].band === band) return true;
+    }
+    return false;
+  }
+  function renderMuteRuleNote() {
+    var host = regionFilterEl && regionFilterEl.parentElement;
+    if (!host) return;
+    var note = document.getElementById('rc-mute-rules-note');
+    if (!note) {
+      note = document.createElement('div');
+      note.id = 'rc-mute-rules-note';
+      note.style.cssText = 'font-size:11px;color:var(--text-secondary,#888);padding:2px 4px;';
+      host.appendChild(note);
+    }
+    if (!spotMuteRules.length) { note.textContent = ''; note.style.display = 'none'; return; }
+    note.style.display = '';
+    note.textContent = 'Muted: ' + spotMuteRules.map(function(r) {
+      return (CONTINENT_NAMES[r.continent] || r.continent) + ' on ' + r.band;
+    }).join(', ') + ' (edit on desktop)';
   }
 
   // --- Sort ---
@@ -3764,6 +3808,21 @@
       ws.send(JSON.stringify({ type: 'swap-vfo' }));
     }
   });
+
+  // Split — rides the generic rig-control demux; state settles from the
+  // readback-fed status echo rather than latching the tap (LZ3AW 2026-08-03).
+  const rcSplit = document.getElementById('rc-split');
+  if (rcSplit) {
+    rcSplit.addEventListener('click', () => {
+      if (txState) return;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        // Canonical rig-control shape nests under `data` (the demux reads
+        // msg.data.action — a top-level action was silently dropped until
+        // the 2026-08-03 hardening).
+        ws.send(JSON.stringify({ type: 'rig-control', data: { action: 'set-split', value: !rcSplit.classList.contains('active') } }));
+      }
+    });
+  }
 
   // RF Gain slider
   rcRfGainSlider.addEventListener('input', () => {

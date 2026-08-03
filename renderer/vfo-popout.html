@@ -424,6 +424,8 @@
   </div>
   <div style="display:flex; align-items:center; justify-content:center; gap:10px; padding:0 0 2px;">
     <span class="filter-badge" id="filter-badge"></span>
+    <span id="vfo-badge" style="display:none;font-size:10px;font-weight:bold;background:var(--bg-tertiary);color:var(--text-primary);padding:1px 6px;border-radius:8px;letter-spacing:0.5px;" title="Active VFO (from the radio)">VFO A</span>
+    <span id="split-badge" style="display:none;font-size:10px;font-weight:bold;background:#f0a500;color:#000;padding:1px 6px;border-radius:8px;letter-spacing:0.5px;" title="Split operation — transmitting on the other VFO">SPLIT</span>
     <span id="kiwi-rx-badge" style="display:none;font-size:10px;font-weight:bold;background:var(--accent-green);color:#000;padding:1px 6px;border-radius:8px;letter-spacing:0.5px;">SDR RX</span>
   </div>
   <!-- Widgets (always visible when enabled) -->
@@ -839,6 +841,21 @@ window.api.onRadioState((s) => {
   if (s.atu != null) {
     atuOn = s.atu;
     document.querySelectorAll('.atu-toggle').forEach(b => b.classList.toggle('on', atuOn));
+  }
+  // Active VFO + split badges — readback-fed from the radio (LZ3AW). The
+  // VFO badge only appears once the rig reports B at least this session,
+  // so single-VFO workflows keep today's clean strip.
+  if (s.vfo === 'A' || s.vfo === 'B') {
+    const vb = document.getElementById('vfo-badge');
+    if (vb) {
+      vb.textContent = 'VFO ' + s.vfo;
+      if (s.vfo === 'B') vb.dataset.seenB = '1';
+      vb.style.display = (s.vfo === 'B' || vb.dataset.seenB) ? '' : 'none';
+    }
+  }
+  if (s.split != null) {
+    const sb = document.getElementById('split-badge');
+    if (sb) sb.style.display = s.split ? '' : 'none';
   }
   if (s.customCatButtons) {
     customCatButtons = s.customCatButtons;

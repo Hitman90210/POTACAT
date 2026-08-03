@@ -18,6 +18,12 @@ let enableSplitView = true; // allow Table+Map simultaneously
 // User preferences (loaded from settings)
 let distUnit = 'mi';    // 'mi' or 'km'
 let watchlist = []; // parsed watchlist rules: [{ callsign, band, mode }]
+// RAW watchlist string mirroring settings.watchlist. The right-click
+// watchlist-add buttons referenced a module-global `settings` that NEVER
+// existed — a live ReferenceError that killed the whole hide-spot menu on
+// every right-click since the feature shipped (found via the mute-rules
+// work, 2026-08-03). This global is what that code always assumed.
+let watchlistRaw = '';
 // Watchlist groups — three user-defined color-coded buckets that decorate
 // the callsign cell. Lookup is a Map<UPPERCASE_CALL, groupIndex 0|1|2> so
 // the table render is O(1) per cell. Built from settings.watchlistGroups
@@ -280,6 +286,7 @@ let hideWorkedParks = false;
 let hideWorkedCallRef = false; // strict: hide only when CALL + REF + UTC-date + BAND + MODE all match a logged QSO
 let prioritizeNewParks = false; // sort unworked-park spots to the top of the table
 let hideQrt = true; // hide spots with QRT in comments (default on)
+let spotMuteRules = []; // "hide {continent} on {band}" rules — lib/spot-mute-rules.js (N7BBQ)
 let showBearing = false;
 let respotDefault = true; // default: re-spot on POTA after logging
 // Per-network re-spot templates (Chris NR9Q request). Empty WWFF/LLOTA/WWBOTA
@@ -1597,6 +1604,15 @@ async function loadPrefs() {
   distUnit = settings.distUnit || 'mi';
   scanDwell = parseInt(settings.scanDwell, 10) || 7;
   watchlist = parseWatchlist(settings.watchlist);
+  watchlistRaw = settings.watchlist || '';
+  // try/catch: settings application must never abort because the mute-rules
+  // addon failed (an aborted loadPrefs breaks the whole session quietly).
+  try {
+    spotMuteRules = SpotMuteRules.normalizeMuteRules(settings.spotMuteRules);
+    renderMuteRules();
+  } catch (err) {
+    console.error('[mute-rules] init failed:', err);
+  }
   enablePota = settings.enablePota !== false; // default true
   enableSota = settings.enableSota === true;  // default false
   enableWwff = settings.enableWwff === true;  // default false
@@ -8516,6 +8532,7 @@ function getFiltered() {
       if (bands && !bands.has(s.band)) return false;
       if (!modeMatches(s.mode, modes)) return false;
       if (continents && !continents.has(s.continent)) return false;
+      if (typeof SpotMuteRules !== 'undefined' && SpotMuteRules.matchesMuteRule(s, spotMuteRules)) return false;
       return true;
     }
     const sourceOff =
@@ -8551,6 +8568,11 @@ function getFiltered() {
     if (bands && !bands.has(s.band)) return false;
     if (!modeMatches(s.mode, modes)) return false;
     if (continents && !continents.has(s.continent)) return false;
+    // Per-band region mutes (N7BBQ: JA on 40m unworkable daily, but the same
+    // stations on 15m are wanted — a global Asia filter is too blunt). Table,
+    // map, and scan all inherit this via getFiltered. typeof-guarded: the
+    // whole spot table must not die if the lib ever fails to load.
+    if (typeof SpotMuteRules !== 'undefined' && SpotMuteRules.matchesMuteRule(s, spotMuteRules)) return false;
     // Cluster spotter-origin filter (F4HXJ): hide spots reported by stations
     // in regions/zones the user doesn't care about. Unknown spotters
     // (no resolution from cty.dat) always pass through.
@@ -11694,10 +11716,10 @@ function render() {
         tr.classList.add('spot-selected');
       }
 
-      // Right-click to hide spot
+      // Right-click to hide spot (also offers the region-on-band mute)
       tr.addEventListener('contextmenu', (e) => {
         e.preventDefault();
-        showHideSpotMenu(e.clientX, e.clientY, s.callsign, s.frequency);
+        showHideSpotMenu(e.clientX, e.clientY, s.callsign, s.frequency, s);
       });
 
       // WSJT-X decode indicator — show if this activator was recently decoded
@@ -13136,11 +13158,35 @@ const hideSpotFreqLabel = document.getElementById('hide-spot-freq-label');
 let hideSpotTarget = '';
 let hideSpotFreq = '';
 
-function showHideSpotMenu(x, y, callsign, frequency) {
+function showHideSpotMenu(x, y, callsign, frequency, spot) {
   hideSpotTarget = callsign.toUpperCase();
   hideSpotFreq = String(Math.round(parseFloat(frequency)));
   hideSpotCallEl.textContent = callsign;
   hideSpotFreqLabel.textContent = `Hide on ${frequency} kHz only`;
+  // Region-on-band mute (N7BBQ): offered only when the spot resolved a
+  // continent AND a band, and no such rule exists yet. One click creates
+  // the rule from the row under the cursor — no dialog. try/catch: the menu's
+  // core job (hide/watchlist) must never die because this addon threw.
+  try {
+    const regionBtn = document.getElementById('hide-spot-region-btn');
+    const regionSection = document.getElementById('hide-spot-region-section');
+    const canMute = !!(spot && spot.continent && spot.band &&
+      typeof SpotMuteRules !== 'undefined' &&
+      !SpotMuteRules.matchesMuteRule(spot, spotMuteRules));
+    if (regionBtn && regionSection) {
+      regionSection.classList.toggle('hidden', !canMute);
+      regionBtn.classList.toggle('hidden', !canMute);
+      if (canMute) {
+        const rule = SpotMuteRules.normalizeMuteRules([{ continent: spot.continent, band: spot.band }])[0];
+        regionBtn.textContent = rule ? `Hide ${SpotMuteRules.describeMuteRule(rule)}` : '';
+        regionBtn.dataset.continent = rule ? rule.continent : '';
+        regionBtn.dataset.band = rule ? rule.band : '';
+        if (!rule) { regionSection.classList.add('hidden'); regionBtn.classList.add('hidden'); }
+      }
+    }
+  } catch (err) {
+    console.error('[mute-rules] region-button setup failed:', err);
+  }
   // Show unhide button if already hidden
   const unhideBtn = hideSpotMenu.querySelector('.hide-spot-unhide');
   unhideBtn.classList.toggle('hidden', !isSpotHidden(callsign, frequency));
@@ -13172,9 +13218,77 @@ function computeExpiry(dur) {
   return Date.now() + parseInt(dur, 10);
 }
 
+// --- Region-on-band mute rules (N7BBQ 2026-08-03) ---
+// Rules persist in settings.spotMuteRules (main also ships them to ECHOCAT
+// clients inside the echo-filters payload). The list in the Region submenu +
+// the count badge keep them visible — an invisible filter is a future
+// "where did my spots go" report.
+function saveMuteRules() {
+  spotMuteRules = SpotMuteRules.normalizeMuteRules(spotMuteRules);
+  window.api.saveSettings({ spotMuteRules });
+  renderMuteRules();
+  render();
+}
+
+function renderMuteRules() {
+  const list = document.getElementById('mute-rules-list');
+  const section = document.getElementById('mute-rules-section');
+  const badge = document.getElementById('mute-rules-count');
+  if (!list || !section) return;
+  list.innerHTML = '';
+  section.classList.toggle('hidden', spotMuteRules.length === 0);
+  if (badge) {
+    badge.textContent = String(spotMuteRules.length);
+    badge.classList.toggle('hidden', spotMuteRules.length === 0);
+  }
+  spotMuteRules.forEach((rule, idx) => {
+    const row = document.createElement('label');
+    row.className = 'multi-dropdown-item';
+    row.style.justifyContent = 'space-between';
+    const txt = document.createElement('span');
+    txt.textContent = SpotMuteRules.describeMuteRule(rule);
+    const x = document.createElement('button');
+    x.textContent = '×';
+    x.title = 'Remove this mute';
+    x.style.cssText = 'background:none;border:0;color:var(--accent-red);cursor:pointer;font-size:13px;padding:0 4px;';
+    x.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      spotMuteRules.splice(idx, 1);
+      saveMuteRules();
+    });
+    row.appendChild(txt);
+    row.appendChild(x);
+    list.appendChild(row);
+  });
+}
+
+// Client-originated rule changes (mobile edit path) land live.
+if (window.api.onSpotMuteRules) {
+  window.api.onSpotMuteRules((rules) => {
+    spotMuteRules = SpotMuteRules.normalizeMuteRules(rules);
+    renderMuteRules();
+    render();
+  });
+}
+
+const _hideSpotRegionBtn = document.getElementById('hide-spot-region-btn');
+if (_hideSpotRegionBtn) {
+  _hideSpotRegionBtn.addEventListener('click', () => {
+    const continent = _hideSpotRegionBtn.dataset.continent;
+    const band = _hideSpotRegionBtn.dataset.band;
+    if (continent && band) {
+      spotMuteRules.push({ continent, band });
+      saveMuteRules();
+    }
+    closeHideSpotMenu();
+  });
+}
+
 hideSpotMenu.addEventListener('click', (e) => {
   const btn = e.target.closest('.hide-spot-btn');
   if (!btn || !hideSpotTarget) return;
+  if (btn.id === 'hide-spot-region-btn') return; // has its own handler above
   const dur = btn.dataset.dur;
   const scope = btn.dataset.scope;
   if (dur === 'unhide') {
@@ -13193,7 +13307,7 @@ hideSpotMenu.addEventListener('click', (e) => {
 // Empty/unnamed group slots are skipped. If the callsign is already in a
 // list we show "Remove from <name>" instead so the menu is symmetric.
 function _hasInGeneralWatchlist(callsign) {
-  const raw = (settings && settings.watchlist) || '';
+  const raw = watchlistRaw || '';
   const up = callsign.toUpperCase();
   return raw.split(/[\s,;]+/).map(s => s.split(':')[0].trim().toUpperCase()).includes(up);
 }
@@ -13205,10 +13319,10 @@ function _hasInGroupCallsigns(idx, callsign) {
 }
 
 function _addToGeneralWatchlist(callsign) {
-  const raw = (settings && settings.watchlist) || '';
+  const raw = watchlistRaw || '';
   const sep = raw && !raw.endsWith(',') && !raw.endsWith('\n') ? ', ' : '';
   const next = (raw + sep + callsign).replace(/^[,\s]+/, '');
-  settings.watchlist = next;
+  watchlistRaw = next;
   watchlist = parseWatchlist(next);
   // Keep the Settings textarea in sync in case it's open behind the menu.
   if (setWatchlist) setWatchlist.value = next;
@@ -13217,7 +13331,7 @@ function _addToGeneralWatchlist(callsign) {
 
 function _removeFromGeneralWatchlist(callsign) {
   const up = callsign.toUpperCase();
-  const raw = (settings && settings.watchlist) || '';
+  const raw = watchlistRaw || '';
   // Preserve original separator style (commas/newlines) by splitting on a
   // capturing group, keeping non-matching tokens + their following separator.
   const parts = raw.split(/([\s,;]+)/);
@@ -13229,7 +13343,7 @@ function _removeFromGeneralWatchlist(callsign) {
     next += tok + sep;
   }
   next = next.replace(/^[,\s]+|[,\s]+$/g, '');
-  settings.watchlist = next;
+  watchlistRaw = next;
   watchlist = parseWatchlist(next);
   if (setWatchlist) setWatchlist.value = next;
   window.api.saveSettings({ watchlist: next });
@@ -14530,7 +14644,9 @@ document.getElementById('settings-import').addEventListener('click', async () =>
 });
 
 settingsSave.addEventListener('click', async () => {
-  const watchlistRaw = setWatchlist.value.trim();
+  // Assigns the module global (no `const`) so the right-click watchlist
+  // buttons see the newly saved list without a reload.
+  watchlistRaw = setWatchlist.value.trim();
   // Read the three watchlist groups out of their form controls. The
   // runtime cache fields (remoteEntries / lastFetchedAt / lastFetchError)
   // are owned by main and preserved across saves — re-attach the
@@ -19812,6 +19928,11 @@ const rigRfGainLabel = document.getElementById('rig-rfgain-label');
 const rigSquelch = document.getElementById('rig-squelch');
 const rigSquelchLabel = document.getElementById('rig-squelch-label');
 const rigSquelchRow = document.getElementById('rig-squelch-row');
+// VFO A/B + split (LZ3AW 2026-08-03) — readback-fed active states.
+const rigVfoRow   = document.getElementById('rig-vfo-row');
+const rigVfoABtn  = document.getElementById('rig-vfo-a-btn');
+const rigVfoBBtn  = document.getElementById('rig-vfo-b-btn');
+const rigSplitBtn = document.getElementById('rig-split-btn');
 const rigTxPower = document.getElementById('rig-txpower');
 const rigTxPowerSelect = document.getElementById('rig-txpower-select');
 const rigTxPowerLabel = document.getElementById('rig-txpower-label');
@@ -20096,6 +20217,10 @@ function rigApplyCapabilities(caps) {
   // whole modifiers row only if every modifier is unsupported (keeps the
   // popover compact for rigs that expose none of them, like the legacy
   // 706MkIIG entry as it was before this expansion).
+  if (rigVfoRow)   rigVfoRow.style.display   = (caps.vfo || caps.split) ? '' : 'none';
+  if (rigVfoABtn)  rigVfoABtn.style.display  = caps.vfo   ? '' : 'none';
+  if (rigVfoBBtn)  rigVfoBBtn.style.display  = caps.vfo   ? '' : 'none';
+  if (rigSplitBtn) rigSplitBtn.style.display = caps.split ? '' : 'none';
   if (rigPreampBtn) rigPreampBtn.style.display = caps.preamp ? '' : 'none';
   if (rigAttBtn)    rigAttBtn.style.display    = caps.att    ? '' : 'none';
   if (rigCompBtn)   rigCompBtn.style.display   = caps.comp   ? '' : 'none';
@@ -20262,6 +20387,13 @@ function _bindModifierBtn(btn, action) {
     window.api.rigControl({ action, value: newState });
   });
 }
+// VFO A/B are commands, not toggles; Split is a toggle. Readback confirms
+// within a poll cycle, so the active classes follow the radio, not the click.
+if (rigVfoABtn) rigVfoABtn.addEventListener('click', () => window.api.rigControl({ action: 'set-vfo', vfo: 'A' }));
+if (rigVfoBBtn) rigVfoBBtn.addEventListener('click', () => window.api.rigControl({ action: 'set-vfo', vfo: 'B' }));
+if (rigSplitBtn) rigSplitBtn.addEventListener('click', () => {
+  window.api.rigControl({ action: 'set-split', value: !rigSplitBtn.classList.contains('active') });
+});
 _bindModifierBtn(rigPreampBtn, 'set-preamp');
 _bindModifierBtn(rigAttBtn,    'set-att');
 _bindModifierBtn(rigCompBtn,   'set-comp');
@@ -20426,6 +20558,12 @@ window.api.onRigState((state) => {
     if (!btn || val == null) return;
     if (val) btn.classList.add('active'); else btn.classList.remove('active');
   }
+  // VFO A/B — segmented pair driven by the readback-fed state.vfo.
+  if (state.vfo === 'A' || state.vfo === 'B') {
+    if (rigVfoABtn) rigVfoABtn.classList.toggle('active', state.vfo === 'A');
+    if (rigVfoBBtn) rigVfoBBtn.classList.toggle('active', state.vfo === 'B');
+  }
+  _syncModBtn(rigSplitBtn,  state.split);
   _syncModBtn(rigPreampBtn, state.preamp);
   _syncModBtn(rigAttBtn,    state.att);
   _syncModBtn(rigCompBtn,   state.comp);

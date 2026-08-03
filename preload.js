@@ -259,6 +259,7 @@ contextBridge.exposeInMainWorld('api', {
   getBugReportLog: () => ipcRenderer.invoke('get-bug-report-log'),
   onWorkedQsos: (cb) => ipcRenderer.on('worked-qsos', (_e, data) => cb(data)),
   onWorkedParks: (cb) => ipcRenderer.on('worked-parks', (_e, data) => cb(data)),
+  onSpotMuteRules: (cb) => ipcRenderer.on('spot-mute-rules', (_e, rules) => cb(rules)),
   onCreditedParks: (cb) => ipcRenderer.on('credited-parks', (_e, refs) => cb(refs)),
   choosePotaParksFile: () => ipcRenderer.invoke('choose-pota-parks-file'),
   onWsjtxStatus: (cb) => ipcRenderer.on('wsjtx-status', (_e, s) => cb(s)),

@@ -1387,6 +1387,126 @@ test('watchdog: TX never counts toward staleness (TS-480 mutes CAT in TX)', () =
 });
 
 // =========================================================================
+// VFO A/B + split readback (LZ3AW, TS-480SAT, 2026-08-03). The whole stack
+// was hardwired to FA (VFO A): a radio on VFO B displayed VFO A's frequency
+// forever, spot-tunes wrote the inactive VFO, and _currentVfo/_split were
+// optimistic-only. These pin the Kenwood IF; parse, the VFO-aware freq
+// poll/tune, and the rigctld v/s parse (incl. the VFOB-as-phantom-mode trap).
+console.log('\n=== VFO/split readback (LZ3AW) ===');
+
+const KENWOOD_VFO_MODEL = { brand: 'Kenwood', protocol: 'kenwood', caps: {}, cw: {} };
+// Kenwood 38-char IF; layout: P10 (idx 31) = RX VFO, P12 (idx 33) = split.
+function kenwoodIf({ freq = '00014074000', vfo = '0', split = '0' } = {}) {
+  return 'IF' + freq + '     ' + '+00000' + '0' + '0' + '0' + '00' + '0' + '2' + vfo + '0' + split + '0' + '00' + '0' + ';';
+}
+
+test('kenwood IF; parse -> vfo B + split on', () => {
+  const { codec } = captureWrites(KenwoodCodec, KENWOOD_VFO_MODEL);
+  let vfo = null, split = null;
+  codec.on('vfo', (v) => { vfo = v; });
+  codec.on('split', (s) => { split = s; });
+  codec.onData(Buffer.from(kenwoodIf({ vfo: '1', split: '1' })));
+  assert.strictEqual(vfo, 'B');
+  assert.strictEqual(split, true);
+});
+
+test('kenwood IF; memory mode (P10=2) leaves vfo untouched, split still parsed', () => {
+  const { codec } = captureWrites(KenwoodCodec, KENWOOD_VFO_MODEL);
+  let vfo = null, split = null;
+  codec.on('vfo', (v) => { vfo = v; });
+  codec.on('split', (s) => { split = s; });
+  codec.onData(Buffer.from(kenwoodIf({ vfo: '2', split: '0' })));
+  assert.strictEqual(vfo, null);
+  assert.strictEqual(split, false);
+});
+
+test('kenwood freq poll follows the active VFO: FA; then FB; after IF says B', () => {
+  const { codec, writes } = captureWrites(KenwoodCodec, KENWOOD_VFO_MODEL);
+  codec.getFrequency();
+  codec.onData(Buffer.from(kenwoodIf({ vfo: '1' })));
+  codec.getFrequency();
+  assert.deepStrictEqual(writes, ['FA;', 'FB;']);
+});
+
+test('kenwood FB response parses as frequency', () => {
+  const { codec } = captureWrites(KenwoodCodec, KENWOOD_VFO_MODEL);
+  let hz = 0;
+  codec.on('frequency', (v) => { hz = v; });
+  codec.onData(Buffer.from('FB00007074000;'));
+  assert.strictEqual(hz, 7074000);
+});
+
+test('kenwood tune targets the active VFO (FB write after IF says B)', () => {
+  const { codec, writes } = captureWrites(KenwoodCodec, KENWOOD_VFO_MODEL);
+  codec.onData(Buffer.from(kenwoodIf({ vfo: '1' })));
+  codec.setFrequency(7074000);
+  assert.strictEqual(writes[0], 'FB00007074000;');
+});
+
+test('kenwood setVfo(B) retargets the next freq poll optimistically', () => {
+  const { codec, writes } = captureWrites(KenwoodCodec, KENWOOD_VFO_MODEL);
+  codec.setVfo('B');
+  codec.getFrequency();
+  assert.deepStrictEqual(writes, ['FR1;', 'FB;']);
+});
+
+test('kenwood getVfoSplit polls IF;', () => {
+  const { codec, writes } = captureWrites(KenwoodCodec, KENWOOD_VFO_MODEL);
+  codec.getVfoSplit();
+  assert.strictEqual(writes[0], 'IF;');
+});
+
+test('Yaesu is gated out: getVfoSplit no-ops, IF-shaped input emits nothing, FA polling unchanged', () => {
+  const { codec, writes } = captureWrites(KenwoodCodec, FT891_MODEL);
+  let emitted = false;
+  codec.on('vfo', () => { emitted = true; });
+  codec.on('split', () => { emitted = true; });
+  codec.getVfoSplit();
+  codec.onData(Buffer.from(kenwoodIf({ vfo: '1', split: '1' })));
+  codec.setVfo('B');           // VS1; write still works (no readback yet)
+  codec.getFrequency();        // must stay FA; — no _rxVfo flip without readback
+  assert.strictEqual(emitted, false);
+  assert.ok(!writes.includes('IF;'));
+  assert.strictEqual(writes[writes.length - 1], 'FA;');
+});
+
+test('rigctld v/s parse: VFOB is consumed, never a phantom mode', () => {
+  const { codec } = captureWrites(RigctldCodec, RIGCTLD_MODEL);
+  let vfo = null, split = null;
+  const modes = [];
+  codec.on('vfo', (v) => { vfo = v; });
+  codec.on('split', (s) => { split = s; });
+  codec.on('mode', (m) => modes.push(m));
+  codec.getVfoSplit();
+  codec.onData('VFOB\n1\nVFOA\n'); // v answer, then s's two lines
+  assert.strictEqual(vfo, 'B');
+  assert.strictEqual(split, true);
+  assert.deepStrictEqual(modes, []);
+});
+
+test('rigctld split off parses and the TX-VFO line is swallowed', () => {
+  const { codec } = captureWrites(RigctldCodec, RIGCTLD_MODEL);
+  let split = null;
+  const modes = [];
+  codec.on('split', (s) => { split = s; });
+  codec.on('mode', (m) => modes.push(m));
+  codec.getVfoSplit();
+  codec.onData('VFOA\n0\nVFOA\n');
+  assert.strictEqual(split, false);
+  assert.deepStrictEqual(modes, []);
+});
+
+test('rigctld RPRT clears vfo/split expects; mode parsing resumes', () => {
+  const { codec } = captureWrites(RigctldCodec, RIGCTLD_MODEL);
+  const modes = [];
+  codec.on('mode', (m) => modes.push(m));
+  codec.getVfoSplit();
+  codec.onData('RPRT -11\n');   // backend without get_vfo — expects must clear
+  codec.onData('USB\n3000\n');  // a real mode response must parse normally
+  assert.deepStrictEqual(modes, ['USB']);
+});
+
+// =========================================================================
 // Summary
 console.log(`\n${'='.repeat(50)}`);
 console.log(`Results: ${passed} passed, ${failed} failed`);

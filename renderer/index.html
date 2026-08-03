@@ -126,7 +126,7 @@
             </div>
           </div>
           <div class="spots-category">
-            <span class="spots-category-label">Region</span>
+            <span class="spots-category-label">Region <span id="mute-rules-count" class="spots-hidden-badge hidden">0</span></span>
             <span class="spots-category-arrow">&#x25B8;</span>
             <div class="spots-submenu">
               <div id="continent-filter" class="multi-dropdown-menu" style="position:static;box-shadow:none;background:transparent;padding:0;border:0;">
@@ -137,6 +137,12 @@
                 <label class="multi-dropdown-item"><input type="checkbox" value="NA"> North America</label>
                 <label class="multi-dropdown-item"><input type="checkbox" value="OC"> Oceania</label>
                 <label class="multi-dropdown-item"><input type="checkbox" value="SA"> South America</label>
+              </div>
+              <!-- Per-band region mutes (right-click a spot to add). Must stay
+                   visible while active — invisible filters breed bug reports. -->
+              <div id="mute-rules-section" class="hidden" style="border-top:1px solid var(--border-secondary);margin-top:4px;padding-top:4px;">
+                <div style="font-size:11px;color:var(--text-secondary);padding:2px 6px;" title="Hides one region on one band only — the spot stays visible on other bands. Add from a spot's right-click menu.">Muted region/band</div>
+                <div id="mute-rules-list"></div>
               </div>
             </div>
           </div>
@@ -252,6 +258,12 @@
             <label>SQL</label>
             <input type="range" id="rig-squelch" min="0" max="100" value="0" style="flex:1;accent-color:#4ecca3;">
             <span id="rig-squelch-label">0</span>
+          </div>
+          <div class="rig-popover-row" id="rig-vfo-row" style="display:none;">
+            <label>VFO</label>
+            <button id="rig-vfo-a-btn" class="rig-btn" title="Switch to VFO A">A</button>
+            <button id="rig-vfo-b-btn" class="rig-btn" title="Switch to VFO B">B</button>
+            <button id="rig-split-btn" class="rig-btn" title="Split operation — transmit on the other VFO">Split</button>
           </div>
           <div class="rig-popover-row" id="rig-txpower-row">
             <label>TX Power</label>
@@ -1125,6 +1137,8 @@
     <div class="hide-spot-title" id="hide-spot-call"></div>
     <div class="hide-spot-section" id="hide-spot-watch-section">Watchlist</div>
     <div id="hide-spot-watch-buttons"></div>
+    <div class="hide-spot-section hidden" id="hide-spot-region-section">Region</div>
+    <button class="hide-spot-btn hidden" id="hide-spot-region-btn"></button>
     <div class="hide-spot-section" id="hide-spot-freq-label">Hide on this frequency</div>
     <button class="hide-spot-btn" data-dur="3600000" data-scope="freq">1 hour</button>
     <button class="hide-spot-btn" data-dur="7200000" data-scope="freq">2 hours</button>
@@ -4205,6 +4219,7 @@
 
   <script src="../node_modules/leaflet/dist/leaflet.js"></script>
   <script src="../lib/rig-family.js"></script>
+  <script src="../lib/spot-mute-rules.js"></script>
   <script src="../lib/watchlist-groups.js"></script>
   <script src="jtcat-parser.js"></script>
   <script src="remote-ptt.js"></script>
