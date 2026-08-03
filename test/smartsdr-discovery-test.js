@@ -74,5 +74,46 @@ check('discovering our ghost remembers its handle (so a later line still skips i
   assert.strictEqual(c._discoveredGuiClients.length, 0);
 });
 
+// --- Transmit dax= tracking (bound-mode dead-carrier fix, 2026-08-03) -------
+// The radio only modulates POTACAT's direct dax_tx audio while the global
+// transmit dax= switch is 1; main.js asserts/restores it around each TX via
+// smartSdr.txDaxOn / setTxDax(). These pin the status parse and command shape.
+
+check('txDaxOn is null before any transmit status', () => {
+  const c = newClient();
+  assert.strictEqual(c.txDaxOn, null);
+});
+
+check('transmit status dax=0 -> txDaxOn false (dead-carrier condition visible)', () => {
+  const c = newClient();
+  c._handleLine('S2EE80C53|transmit rfpower=100 tune_power=10 dax=0 mon=0');
+  assert.strictEqual(c.txDaxOn, false);
+});
+
+check('transmit status dax=1 -> txDaxOn true', () => {
+  const c = newClient();
+  c._handleLine('S2EE80C53|transmit rfpower=100 dax=1');
+  assert.strictEqual(c.txDaxOn, true);
+});
+
+check('transmit delta WITHOUT dax leaves txDaxOn unchanged', () => {
+  const c = newClient();
+  c._handleLine('S2EE80C53|transmit dax=1');
+  c._handleLine('S2EE80C53|transmit rfpower=55');   // delta line, no dax field
+  assert.strictEqual(c.txDaxOn, true);
+});
+
+check('setTxDax sends the global transmit switch, never the per-slice field', () => {
+  const c = newClient();
+  const sent = [];
+  c._send = (cmd) => sent.push(cmd);
+  c.setTxDax(true);
+  c.setTxDax(false);
+  assert.deepStrictEqual(sent, ['transmit set dax=1', 'transmit set dax=0']);
+  // Regression tripwire for the 2026-06-25 RX-kill: nothing may ever write
+  // the per-slice dax_tx field.
+  assert.ok(!sent.some((s) => /slice set .*dax_tx/.test(s)), 'per-slice dax_tx must never be sent');
+});
+
 console.log(`\nSmartSDR discovery: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

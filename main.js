@@ -1352,6 +1352,7 @@ let _flexDaxChannel = 1;       // the DAX RX channel POTACAT actually uses (auto
 let _daxFixTimes = [];         // recent auto-fix timestamps, for flap detection
 let _daxConflictWarned = false;// true once we've warned about a DAX-channel tug-of-war
 let _daxBringupQuietAt = 0;    // conflict latch armed only after this — bring-up grace
+let _daxSettleTimer = null;    // pending settled-state judgment (see slice-dax handler)
 
 // Pick the DAX RX channel POTACAT should use. When self-hosting alongside
 // SmartSDR (multiFlex) we CANNOT share a DAX channel with its slice, so if the
@@ -8318,6 +8319,7 @@ function connectSmartSdr() {
     _daxFixTimes = [];
     _daxConflictWarned = false;
     _daxBringupQuietAt = Date.now() + 15000;
+    if (_daxSettleTimer) { clearTimeout(_daxSettleTimer); _daxSettleTimer = null; }
     sendCatLog('SmartSDR API connected (port 4992) — rig controls active');
     // Clear the "SmartSDR API unreachable" banner — with the background
     // probe (lib/smartsdr.js) and the phone's rig-reconnect command, a
@@ -8541,29 +8543,40 @@ function connectSmartSdr() {
       _daxFixAttempted = false; // re-arm for any future drift
     } else {
       _daxRouteOk = false;
-      // Flap guard: if we've auto-fixed this slice several times in a few
-      // seconds, another client (SmartSDR) is fighting us for the channel —
-      // STOP re-setting it (that was the 12×/sec loop) and warn ONCE.
-      // NOT during bring-up: self-host registration (client bind, profile
-      // apply, stream creates) legitimately rewrites slice config several
-      // times in the first seconds, and those own-echo flaps latched a false
-      // CONFLICT with zero other clients connected (2026-08-02). Keep
-      // auto-fixing through the grace; only flapping that persists past it
-      // is another client.
-      const now = Date.now();
-      _daxFixTimes = _daxFixTimes.filter((t) => now - t < 4000);
-      const flapping = _daxFixTimes.length >= 3 && now >= _daxBringupQuietAt;
-      if (flapping) {
-        if (!_daxConflictWarned) {
-          _daxConflictWarned = true;
-          sendCatLog(`⚠ DAX channel ${want} CONFLICT — another SmartSDR client keeps taking it back; POTACAT can't share a DAX channel. `
-            + `Set a different DAX channel for POTACAT, or close the other client. (No longer fighting for it.)`);
-        }
-      } else if (settings.flexDaxAutoFix !== false && !_daxFixAttempted && typeof smartSdr.setSliceDax === 'function') {
-        _daxFixAttempted = true;
-        _daxFixTimes.push(now);
-        sendCatLog(`⚠ DAX mismatch — slice ${index} on DAX ${channel === 0 ? 'OFF' : channel}; auto-setting to DAX ${want} so RX isn't silent.`);
-        smartSdr.setSliceDax(index, want);
+      // Judge the SETTLED state, never a single delta. The radio answers each
+      // `slice set N dax=` with a transient dax=0/dax=1 status pair ~80ms
+      // later, so reacting per-delta made the auto-fix SELF-OSCILLATE at
+      // 12.5Hz — our own fix scheduled the next phantom mismatch, forever
+      // (2026-08-03; the old 4s conflict latch was accidentally the only
+      // thing breaking the loop). Instead: on mismatch, arm one 400ms timer
+      // and act only if the slice is STILL mismatched when it fires. The
+      // transient pair settles at dax=1 well inside the window, so a healthy
+      // radio never triggers a fix — and a REAL external fighter or genuine
+      // drift still does, at most ~2 fixes/sec.
+      if (!_daxSettleTimer) {
+        _daxSettleTimer = setTimeout(() => {
+          _daxSettleTimer = null;
+          if (!smartSdr || !smartSdr.connected) return;
+          if (_currentSliceDax === _flexDaxChannel) return; // transient — settled fine
+          const now = Date.now();
+          // Flap guard: repeated SETTLED mismatches despite our fixes =
+          // another client genuinely fighting for the channel. Warn once and
+          // stop. Bring-up grace covers self-host registration noise.
+          _daxFixTimes = _daxFixTimes.filter((t) => now - t < 4000);
+          const flapping = _daxFixTimes.length >= 3 && now >= _daxBringupQuietAt;
+          if (flapping) {
+            if (!_daxConflictWarned) {
+              _daxConflictWarned = true;
+              sendCatLog(`⚠ DAX channel ${_flexDaxChannel} CONFLICT — another SmartSDR client keeps taking it back; POTACAT can't share a DAX channel. `
+                + `Set a different DAX channel for POTACAT, or close the other client. (No longer fighting for it.)`);
+            }
+          } else if (settings.flexDaxAutoFix !== false && !_daxFixAttempted && typeof smartSdr.setSliceDax === 'function') {
+            _daxFixAttempted = true;
+            _daxFixTimes.push(now);
+            sendCatLog(`⚠ DAX mismatch — slice ${index} on DAX ${_currentSliceDax === 0 ? 'OFF' : _currentSliceDax}; auto-setting to DAX ${_flexDaxChannel} so RX isn't silent.`);
+            smartSdr.setSliceDax(index, _flexDaxChannel);
+          }
+        }, 400);
       }
     }
     broadcastRigState();
@@ -14267,6 +14280,70 @@ let _ssbModeBeforePtt = null; // original mode saved during DATA-mode PTT workar
 let _ssbFreqBeforePtt = 0;    // dial freq saved at swap time — restore re-anchors here, never to a mid-TX polled freq
 let _ssbOverDataYaesuWarned = false; // log the rig-menu hint once per session
 
+// --- Flex TX audio source (transmit set dax=) -------------------------------
+// The radio transmits POTACAT's direct VITA-49 dax_tx audio ONLY while the
+// global transmit dax= switch is 1 (SmartSDR's "DAX" button). With it 0 the
+// radio keys a dead carrier — the June 2026 bound-mode symptom (SmartSDR open,
+// POTACAT following its slice: "DAX TX queued 1853 pkts", red TX, no
+// modulation). Self mode appeared immune only because a radio whose TX
+// profile had DAX persisted on (Casey's 8600, from pre-POTACAT WSJT-X days)
+// inherits dax=1; a fresh radio dead-carriers in self mode too.
+//
+// Assert-and-restore around each POTACAT transmission, at the one PTT choke
+// point every source uses (FT8/FT4, ECHOCAT voice, SSTV, WSPR, Mercury, voice
+// macros — they all flow through handleRemotePtt, as do all the TX failsafes):
+// on key-down, if the direct dax_tx route will carry this transmission and
+// dax= isn't already 1, set it; on key-up restore a captured explicit 0 so a
+// host operator's mic TX (SmartSDR open, DAX button off) works again between
+// our cycles. An unknown prior (no transmit status seen yet) is left ON —
+// restoring a guess is worse than leaving the working state.
+// NEVER touch the per-slice dax_tx field — that kills the slice's DAX RX
+// (proven and reverted 2026-06-25).
+let _flexTxDaxPrior = null; // null = untouched this TX; false = we must restore to 0
+
+// Flex transmit config is per-STATION: an unbound client's `transmit set dax`
+// is silently ignored (probe 2026-08-03: radio re-broadcast dax=0 after the
+// set). Prefer the AUDIO connection — it is always client-bound (self mode:
+// our own GUI client; bound mode: the discovered host client) and owns the
+// dax_tx stream the flag routes. The main API connection is a fallback only
+// (it binds just when the CW keyer needs it, and IS the station in self mode).
+function _sendFlexTxDax(on) {
+  if (smartSdrAudio && smartSdrAudio.connected && typeof smartSdrAudio.setTxDax === 'function') {
+    smartSdrAudio.setTxDax(on);
+    return true;
+  }
+  if (smartSdr && smartSdr.connected && typeof smartSdr.setTxDax === 'function') {
+    smartSdr.setTxDax(on);
+    return true;
+  }
+  return false;
+}
+
+function assertFlexTxDaxForTx() {
+  // Only when this transmission's audio actually rides our dax_tx stream.
+  // audioSource 'dax' (Windows DAX device + DAX program) keeps the operator's
+  // own SmartSDR DAX-button discipline — not ours to flip.
+  if (settings.audioSource !== 'smartsdr' || !smartSdrAudio || !smartSdrAudio.txReady) return;
+  // Readback from the AUDIO connection's bound station context (same context
+  // the set writes to — per-station config, probe 2026-08-03); the main API
+  // connection is only trustworthy when it IS the station (self mode).
+  const prior = (smartSdrAudio.txDaxOn != null)
+    ? smartSdrAudio.txDaxOn
+    : (smartSdr && smartSdr.connected ? smartSdr.txDaxOn : null); // true/false/null
+  if (prior === true) return;     // already the TX source — nothing to do or restore
+  if (!_sendFlexTxDax(true)) return;
+  _flexTxDaxPrior = (prior === false) ? false : null;
+  sendCatLog(`[SmartSDR] TX source → DAX for POTACAT transmit${prior === false ? ' (was mic — restoring after)' : ' (prior state unknown — leaving on)'}`);
+}
+
+function restoreFlexTxDax() {
+  if (_flexTxDaxPrior !== false) { _flexTxDaxPrior = null; return; }
+  _flexTxDaxPrior = null;
+  if (_sendFlexTxDax(false)) {
+    sendCatLog('[SmartSDR] TX source → mic (restored)');
+  }
+}
+
 function handleRemotePtt(state, opts = {}) {
   // SWR-guard latch backstop — covers every PTT source (voice macros, mobile
   // device PTT, naked PTT) in one place. Releases (state=false) always pass.
@@ -14362,7 +14439,14 @@ function handleRemotePtt(state, opts = {}) {
       const sliceIndex = (settings.catTarget.port || 5002) - 5002;
       smartSdr.setActiveSlice(sliceIndex);
       smartSdr.setTxSlice(sliceIndex);
+      // TX audio source before keying: dax=1 must be in effect when RF
+      // starts or the radio transmits a dead carrier (same TCP socket, so
+      // ordering ahead of the xmit command is guaranteed). Restore follows
+      // every release — including the failsafe paths, which all come
+      // through here as handleRemotePtt(false).
+      if (state) assertFlexTxDaxForTx();
       gatedSmartSdrTransmit(state);
+      if (!state) restoreFlexTxDax();
     } else if (cat && cat.connected) {
       if (state) sendCatLog('[PTT] SmartSDR API unavailable — falling back to TS-2000 TX; command (slice selection skipped)');
       gatedSetTransmit(state);
