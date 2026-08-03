@@ -153,14 +153,37 @@ window.api.onStartAudio(async (config) => {
 
     // ICE candidates — relay to phone via main process
     // Must extract plain object — RTCIceCandidate getters are lost during IPC structured clone
+    // Also tally candidate types: a host-only gather with STUN/TURN servers
+    // configured means the network-service DNS/UDP path is broken (seen
+    // 2026-08-02: every ICE hostname failed -105) — surfaced as one summary
+    // line in the [CAT] log instead of only in Chromium stderr.
+    const _iceTally = { host: 0, srflx: 0, relay: 0, prflx: 0 };
+    let _iceTallySent = false;
     pc.onicecandidate = (event) => {
       if (event.candidate) {
+        const tm = / typ (host|srflx|relay|prflx)/.exec(event.candidate.candidate || '');
+        if (tm) _iceTally[tm[1]]++;
         window.api.sendSignal({ type: 'ice', candidate: {
           candidate: event.candidate.candidate,
           sdpMid: event.candidate.sdpMid,
           sdpMLineIndex: event.candidate.sdpMLineIndex,
         }});
+      } else if (!_iceTallySent) {
+        // null candidate = gathering complete
+        _iceTallySent = true;
+        window.api.sendAudioStatus({ iceGathered: { ..._iceTally, servers: iceServers.length } });
       }
+    };
+    // Per-server gather failures (STUN timeout, TURN auth, DNS). One report
+    // per unique URL — Chromium can fire these repeatedly per interface.
+    const _iceErrUrls = new Set();
+    pc.onicecandidateerror = (event) => {
+      const url = (event && event.url) || '?';
+      if (_iceErrUrls.has(url)) return;
+      _iceErrUrls.add(url);
+      window.api.sendAudioStatus({ iceCandidateError: {
+        url, errorCode: event.errorCode || 0, errorText: event.errorText || '',
+      }});
     };
 
     pc.onconnectionstatechange = () => {

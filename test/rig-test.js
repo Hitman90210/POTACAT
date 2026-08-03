@@ -1208,6 +1208,185 @@ test('Non-Kenwood non-Yaesu brand passes through (no unmeasured scaling)', () =>
 });
 
 // =========================================================================
+// K6RBJ hamlib-controls regression (2026-08-03): the works/fails inventory
+// mapped 1:1 to correct-vs-wrong rigctl verbs. RF gain used the nonexistent
+// level token RFGAIN (hamlib's is RF), preamp/ATT were sent as functions
+// (hamlib has them only as dB LEVELS), NR wasn't implemented at all. These
+// pin the corrected verbs, the dump_caps dB probe, and RPRT attribution.
+console.log('\n=== RigctldCodec hamlib verbs (K6RBJ) ===');
+// (Reuses RIGCTLD_MODEL / RIGCTLD_YAESU_MODEL declared above.)
+
+test('rigctld setRfGain -> L RF (hamlib token is RF, not RFGAIN)', () => {
+  const { codec, writes } = captureWrites(RigctldCodec, RIGCTLD_MODEL);
+  codec.setRfGain(0.5);
+  assert.strictEqual(writes[0], 'L RF 0.500\n');
+});
+
+test('rigctld setRfGain Yaesu raw passthrough unchanged', () => {
+  const { codec, writes } = captureWrites(RigctldCodec, RIGCTLD_YAESU_MODEL);
+  codec.setRfGain(0.5);
+  assert.strictEqual(writes[0], 'w RG0128;\n');
+});
+
+test('rigctld setPreamp is a LEVEL: on -> L PREAMP 10 (default), off -> L PREAMP 0', () => {
+  const { codec, writes } = captureWrites(RigctldCodec, RIGCTLD_MODEL);
+  codec.setPreamp(true);
+  codec.setPreamp(false);
+  assert.deepStrictEqual(writes, ['L PREAMP 10\n', 'L PREAMP 0\n']);
+});
+
+test('rigctld setAttenuator is a LEVEL: on -> L ATT 12 (default), off -> L ATT 0', () => {
+  const { codec, writes } = captureWrites(RigctldCodec, RIGCTLD_MODEL);
+  codec.setAttenuator(true);
+  codec.setAttenuator(false);
+  assert.deepStrictEqual(writes, ['L ATT 12\n', 'L ATT 0\n']);
+});
+
+test('rigctld Yaesu preamp/ATT raw passthrough unchanged', () => {
+  const { codec, writes } = captureWrites(RigctldCodec, RIGCTLD_YAESU_MODEL);
+  codec.setPreamp(true);
+  codec.setAttenuator(true);
+  assert.deepStrictEqual(writes, ['w PA01;\n', 'w RA01;\n']);
+});
+
+test('rigctld setNoiseReduction -> U NR 1/0', () => {
+  const { codec, writes } = captureWrites(RigctldCodec, RIGCTLD_MODEL);
+  codec.setNoiseReduction(true);
+  codec.setNoiseReduction(false);
+  assert.deepStrictEqual(writes, ['U NR 1\n', 'U NR 0\n']);
+});
+
+test('rigctld setNrLevel 50 (app pct) -> L NR 0.500', () => {
+  const { codec, writes } = captureWrites(RigctldCodec, RIGCTLD_MODEL);
+  codec.setNrLevel(50);
+  assert.strictEqual(writes[0], 'L NR 0.500\n');
+});
+
+test('rigctld setNrLevel Yaesu -> w RL0nn; (1..15 depth scale)', () => {
+  const { codec, writes } = captureWrites(RigctldCodec, RIGCTLD_YAESU_MODEL);
+  codec.setNrLevel(50);
+  assert.strictEqual(writes[0], 'w RL008;\n');
+});
+
+test('dump_caps probe adopts the rig\'s real preamp/ATT dB steps', () => {
+  const { codec, writes } = captureWrites(RigctldCodec, RIGCTLD_MODEL);
+  codec.probeCaps();
+  assert.strictEqual(writes[0], '\\dump_caps\n');
+  codec.onData('Preamp: 20dB\nAttenuator: 6dB 12dB\nRPRT 0\n');
+  codec.setPreamp(true);
+  codec.setAttenuator(true);
+  assert.strictEqual(writes[1], 'L PREAMP 20\n');
+  assert.strictEqual(writes[2], 'L ATT 6\n'); // lowest step = safe "on"
+});
+
+test('dump_caps swallow mode: dump lines cannot misparse as frequency', () => {
+  const { codec } = captureWrites(RigctldCodec, RIGCTLD_MODEL);
+  const freqs = [];
+  codec.on('frequency', (hz) => freqs.push(hz));
+  codec.probeCaps();
+  // A bare large integer inside the dump must be swallowed; after the RPRT
+  // terminator, real responses parse normally again.
+  codec.onData('Max power: 100 W\n14074000\nPreamp: 10dB\nRPRT 0\n');
+  assert.deepStrictEqual(freqs, []);
+  codec.onData('14074000\n');
+  assert.deepStrictEqual(freqs, [14074000]);
+});
+
+test('RPRT rejection within 1.5s of a control names the command', () => {
+  const { codec } = captureWrites(RigctldCodec, RIGCTLD_MODEL);
+  const logs = [];
+  codec.on('log', (m) => logs.push(m));
+  codec.setPreamp(true);
+  codec.onData('RPRT -11\n');
+  assert.ok(logs.some((l) => l.includes('likely rejecting "L PREAMP 10"')), `got: ${logs.join(' | ')}`);
+  // Attribution is consumed — a repeat of the same code without a fresh
+  // user command falls back to the on-change dedup (no second line).
+  const before = logs.length;
+  codec.onData('RPRT -11\n');
+  assert.strictEqual(logs.length, before);
+});
+
+// =========================================================================
+// RigController: unsupported controls are LOUD refusals (return false + one
+// log line), and the poll-staleness watchdog flips status when the radio
+// behind a live transport stops answering (K6RBJ's rigctld staleness trap).
+console.log('\n=== RigController guards + staleness watchdog ===');
+
+const { RigController } = require('../lib/rig-controller');
+const { EventEmitter } = require('events');
+
+function stubRig(codecMethods = {}) {
+  const transport = new EventEmitter();
+  transport.connect = () => {};
+  transport.disconnect = () => {};
+  transport.write = () => {};
+  const codec = new EventEmitter();
+  codec.setTransmit = () => {};
+  Object.assign(codec, codecMethods);
+  const rig = new RigController({ brand: 'Test', protocol: 'rigctld', caps: {}, cw: {} }, transport, codec);
+  // Simulate an established link WITHOUT emitting transport 'connect' (that
+  // schedules real polling timers, which would keep the test process alive).
+  rig.connected = true;
+  rig._target = { host: 'test' };
+  return { rig, transport, codec };
+}
+
+test('unsupported control returns false and logs once', () => {
+  const { rig } = stubRig(); // codec has no setNoiseReduction
+  const logs = [];
+  rig.on('log', (m) => logs.push(m));
+  assert.strictEqual(rig.setNoiseReduction(true), false);
+  assert.strictEqual(rig.setNoiseReduction(true), false);
+  const warnings = logs.filter((l) => l.includes('NR is not supported'));
+  assert.strictEqual(warnings.length, 1);
+});
+
+test('supported control returns true and reaches the codec', () => {
+  const calls = [];
+  const { rig } = stubRig({ setNoiseReduction: (on) => calls.push(on) });
+  assert.strictEqual(rig.setNoiseReduction(true), true);
+  assert.deepStrictEqual(calls, [true]);
+});
+
+test('watchdog: silent polls flip status to disconnected (stale)', () => {
+  const { rig } = stubRig();
+  const statuses = [];
+  rig.on('status', (s) => statuses.push(s));
+  rig._lastReadOkMs = Date.now() - (RigController.POLL_STALE_MS + 1000);
+  rig._checkPollStaleness();
+  assert.strictEqual(rig.connected, false);
+  assert.strictEqual(rig._linkStale, true);
+  assert.strictEqual(statuses.length, 1);
+  assert.strictEqual(statuses[0].connected, false);
+  assert.strictEqual(statuses[0].stale, true);
+});
+
+test('watchdog: first successful read recovers the link', () => {
+  const { rig, codec } = stubRig();
+  const statuses = [];
+  rig.on('status', (s) => statuses.push(s));
+  rig._lastReadOkMs = Date.now() - (RigController.POLL_STALE_MS + 1000);
+  rig._checkPollStaleness();
+  codec.emit('frequency', 14074000); // poll answered again
+  assert.strictEqual(rig.connected, true);
+  assert.strictEqual(rig._linkStale, false);
+  assert.strictEqual(statuses.length, 2);
+  assert.strictEqual(statuses[1].connected, true);
+});
+
+test('watchdog: TX never counts toward staleness (TS-480 mutes CAT in TX)', () => {
+  const { rig } = stubRig();
+  const statuses = [];
+  rig.on('status', (s) => statuses.push(s));
+  rig._transmitting = true;
+  rig._lastReadOkMs = Date.now() - (RigController.POLL_STALE_MS + 60000);
+  rig._checkPollStaleness();
+  assert.strictEqual(rig.connected, true);
+  assert.strictEqual(rig._linkStale, false);
+  assert.deepStrictEqual(statuses, []);
+});
+
+// =========================================================================
 // Summary
 console.log(`\n${'='.repeat(50)}`);
 console.log(`Results: ${passed} passed, ${failed} failed`);

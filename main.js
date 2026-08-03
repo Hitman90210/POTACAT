@@ -1351,6 +1351,7 @@ let _daxFixAttempted = false;  // debounce: one auto-fix per mismatch episode
 let _flexDaxChannel = 1;       // the DAX RX channel POTACAT actually uses (auto-picked free in multiFlex)
 let _daxFixTimes = [];         // recent auto-fix timestamps, for flap detection
 let _daxConflictWarned = false;// true once we've warned about a DAX-channel tug-of-war
+let _daxBringupQuietAt = 0;    // conflict latch armed only after this — bring-up grace
 
 // Pick the DAX RX channel POTACAT should use. When self-hosting alongside
 // SmartSDR (multiFlex) we CANNOT share a DAX channel with its slice, so if the
@@ -2804,6 +2805,11 @@ function _buildCloudDevicePayload() {
     lanHost,
     tsHost: altHosts.tsHost || '',
     cloudHost: altHosts.cloudHost || '',
+    // Cert trust mode for the ts leg (see the pairing-QR tsCertPublic
+    // comment). cloudlog's register endpoint destructures a fixed field
+    // list today, so this is ignored server-side until it grows a column —
+    // sent now so desktops in the field populate it the day it does.
+    tsCertPublic: !!altHosts.tsCertPublic,
   };
 }
 
@@ -3082,7 +3088,7 @@ function ensureRemoteClient() {
     settings.activeTargetId = null;
     saveSettings(settings);
     tearDownRemoteClient();
-    try { connectCat(); } catch {}
+    connectCatSafe('guest pass ended');
     if (win && !win.isDestroyed()) {
       win.webContents.send('remote-client-status', { state: 'pass-ended', reason });
       win.webContents.send('connection-targets-updated', settings.connectionTargets);
@@ -3099,7 +3105,7 @@ function ensureRemoteClient() {
     settings.activeTargetId = null;
     saveSettings(settings);
     tearDownRemoteClient();
-    try { connectCat(); } catch {}
+    connectCatSafe('pairing revoked');
     if (win && !win.isDestroyed()) {
       win.webContents.send('remote-client-status', { state: 'revoked', reason });
       win.webContents.send('connection-targets-updated', settings.connectionTargets);
@@ -3227,6 +3233,15 @@ function connectCatWithStartupDelay() {
   } else {
     connectCat().catch((err) => sendCatLog(`[CAT] Startup connect failed: ${err.message || err}`));
   }
+}
+
+// Every fire-and-forget connectCat() must go through this. A rejected
+// connect (bad host, wrong transport for the rig — the K6RBJ RS-BA1 case,
+// 2026-07-17) otherwise surfaces only as a [FATAL] unhandledRejection line
+// in startup.log, invisible next to the Settings panel the user just
+// touched. async functions never throw synchronously, so no try needed.
+function connectCatSafe(context) {
+  connectCat().catch((err) => sendCatLog(`[CAT] Connect failed (${context}): ${err.message || err}`));
 }
 
 async function connectCat() {
@@ -5924,7 +5939,7 @@ function disconnectWsjtx() {
 
   // Reconnect CAT now that WSJT-X is no longer managing the radio
   if (wasRunning) {
-    connectCat();
+    connectCatSafe('WSJT-X released the radio');
   }
 }
 
@@ -8302,6 +8317,7 @@ function connectSmartSdr() {
     _currentSliceDax = null;
     _daxFixTimes = [];
     _daxConflictWarned = false;
+    _daxBringupQuietAt = Date.now() + 15000;
     sendCatLog('SmartSDR API connected (port 4992) — rig controls active');
     // Clear the "SmartSDR API unreachable" banner — with the background
     // probe (lib/smartsdr.js) and the phone's rig-reconnect command, a
@@ -8454,6 +8470,9 @@ function connectSmartSdr() {
   smartSdr.on('slice-ready', ({ index }) => {
     if (smartSdr.mode === 'self') {
       sendCatLog(`Flex Direct: tuning radio slice ${index}`);
+      // Slice setup begins here — extend the DAX conflict-latch grace in case
+      // GUI registration landed long after 'connected' (busy radio).
+      _daxBringupQuietAt = Math.max(_daxBringupQuietAt, Date.now() + 10000);
       // POTACAT owns this slice — bind it to a DAX channel so RX/TX audio
       // routes to the dedicated audio connection (no SmartSDR to do it). In
       // multiFlex, pick a channel SmartSDR's slice isn't already using.
@@ -8525,9 +8544,15 @@ function connectSmartSdr() {
       // Flap guard: if we've auto-fixed this slice several times in a few
       // seconds, another client (SmartSDR) is fighting us for the channel —
       // STOP re-setting it (that was the 12×/sec loop) and warn ONCE.
+      // NOT during bring-up: self-host registration (client bind, profile
+      // apply, stream creates) legitimately rewrites slice config several
+      // times in the first seconds, and those own-echo flaps latched a false
+      // CONFLICT with zero other clients connected (2026-08-02). Keep
+      // auto-fixing through the grace; only flapping that persists past it
+      // is another client.
       const now = Date.now();
       _daxFixTimes = _daxFixTimes.filter((t) => now - t < 4000);
-      const flapping = _daxFixTimes.length >= 3;
+      const flapping = _daxFixTimes.length >= 3 && now >= _daxBringupQuietAt;
       if (flapping) {
         if (!_daxConflictWarned) {
           _daxConflictWarned = true;
@@ -12377,9 +12402,7 @@ function connectRemote() {
     // background probe. Safe for every rig type: connectCat() re-dials the
     // active catTarget, connectSmartSdr() no-ops for non-Flex rigs.
     sendCatLog('[Echo CAT] Rig reconnect requested from phone');
-    try { if (!settings.enableWsjtx) connectCat(); } catch (err) {
-      sendCatLog('[Echo CAT] rig-reconnect connectCat failed: ' + err.message);
-    }
+    if (!settings.enableWsjtx) connectCatSafe('phone rig-reconnect');
     try { connectSmartSdr(); } catch (err) {
       sendCatLog('[Echo CAT] rig-reconnect connectSmartSdr failed: ' + err.message);
     }
@@ -12425,7 +12448,7 @@ function connectRemote() {
       connectCwKeyPort();
     }
     saveSettings(settings);
-    if (!settings.enableWsjtx) connectCat();
+    if (!settings.enableWsjtx) connectCatSafe('rig switch from mobile device');
     connectSmartSdr();
     // Restart audio bridge with new rig's audio devices
     if (remoteAudioWin && !remoteAudioWin.isDestroyed()) {
@@ -14487,7 +14510,10 @@ function broadcastRemoteRadioStatus() {
   const status = {
     freq: freqVal,
     mode: modeVal,
-    catConnected: (cat && cat.connected) || (smartSdr && smartSdr.connected),
+    // Coerced with !! so the wire always carries an explicit boolean — a
+    // null here (both objects absent) reads as "missing" to the mobile
+    // merge-over-previous logic and would hold a stale connected state.
+    catConnected: !!((cat && cat.connected) || (smartSdr && smartSdr.connected)),
     // Effective state — covers user PTT, FT8, voice macros, AND the CW
     // text path (which doesn't engage handleRemotePtt). The iOS app's
     // defensive audio-health gate keys off this field per the mobile-
@@ -14585,6 +14611,7 @@ function broadcastRemoteRadioStatus() {
 let _turnIceServers = null;   // last minted iceServers array (null = none)
 let _turnExpiresAt = 0;       // ms epoch the current grant expires
 let _turnRemintTimer = null;  // setTimeout handle for the pre-expiry re-mint
+let _turnIceServersResolved = null; // bridge-only copy with IP-literal twin URLs
 
 function _turnCloudActive() {
   return !!(
@@ -14619,6 +14646,7 @@ async function _mintTurnCredentials() {
     sendCatLog(`[TURN] relay creds minted${resp.cached ? ' (cached)' : ''} — ${resp.iceServers.length} ICE servers, ~${remainMin} min left` +
       (typeof resp.dailyRemainingMb === 'number' ? `, ${resp.dailyRemainingMb} MB/day left` : ''));
     _scheduleTurnRemint();
+    _resolveTurnIceForBridge();
     return _turnIceServers;
   } catch (err) {
     const m = (err && err.message) || String(err);
@@ -14629,8 +14657,63 @@ async function _mintTurnCredentials() {
     }
     _turnIceServers = null;
     _turnExpiresAt = 0;
+    _turnIceServersResolved = null;
     return null;
   }
+}
+
+// Chromium's network-service resolver in the hidden bridge window has been
+// seen failing DNS for EVERY ICE hostname instantly (errorcode -105,
+// 2026-08-02 startup log) while the main process resolved the same names
+// fine — so the offerer gathered host candidates only, and an off-LAN
+// client would have gotten no audio at all. Mitigation: resolve the
+// stun:/turn: hostnames HERE with Node's resolver and append IP-literal
+// twin URLs to the copy the bridge window gets. turns:/stuns: are left
+// alone (TLS validates the cert against the hostname, an IP literal can't
+// pass). The wire copy the client receives via stun-config is deliberately
+// NOT augmented — the client side resolved fine in the incident, and its
+// parser isn't ours to gamble with. Non-blocking: runs once per mint; if
+// audio starts before it finishes, the bridge gets the unaugmented
+// originals (exactly the status quo).
+async function _resolveTurnIceForBridge() {
+  const src = _turnIceServers;
+  _turnIceServersResolved = null;
+  if (!Array.isArray(src) || !src.length) return;
+  try {
+    const dns = require('dns').promises;
+    const ipCache = new Map(); // hostname → IPv4 string, or null on failure
+    const out = [];
+    let twins = 0;
+    for (const srv of src) {
+      const urls = Array.isArray(srv.urls) ? srv.urls.slice() : [srv.urls];
+      const extra = [];
+      for (const url of urls) {
+        const m = /^(stun|turn):([^:?/]+)(:\d+)?(\?.*)?$/i.exec(String(url || ''));
+        if (!m) continue; // turns:/stuns:/unparseable — skip
+        const host = m[2];
+        if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) continue; // already a literal
+        if (!ipCache.has(host)) {
+          // .catch() attached BEFORE the race so a lookup that rejects after
+          // the timeout won won't surface as an unhandled rejection.
+          const lookup = dns.lookup(host, { family: 4 })
+            .then((r) => r.address).catch(() => null);
+          const ip = await Promise.race([
+            lookup,
+            new Promise((res) => setTimeout(() => res(null), 2000)),
+          ]);
+          ipCache.set(host, ip);
+        }
+        const ip = ipCache.get(host);
+        if (ip) { extra.push(`${m[1].toLowerCase()}:${ip}${m[3] || ''}${m[4] || ''}`); twins++; }
+      }
+      out.push(extra.length ? { ...srv, urls: urls.concat(extra) } : srv);
+    }
+    // Adopt only if this mint is still current (a re-mint may have raced us).
+    if (twins > 0 && _turnIceServers === src) {
+      _turnIceServersResolved = out;
+      sendCatLog(`[TURN] pre-resolved ${ipCache.size} ICE hostnames for the audio bridge (${twins} IP fallback URLs)`);
+    }
+  } catch { /* best-effort — bridge falls back to the hostname-only originals */ }
 }
 
 // Re-mint shortly before the grant expires so a >1h session keeps a fresh
@@ -14788,7 +14871,12 @@ function _buildAudioBridgeConfig() {
     // Cloud TURN relay creds (when minted) so the desktop audio bridge — the
     // WebRTC OFFERER — gathers a relay candidate too, not just the phone.
     // Stale/expired creds are withheld so the bridge falls back to STUN.
-    iceServers:     (_turnIceServers && _turnExpiresAt > Date.now()) ? _turnIceServers : undefined,
+    // Prefer the pre-resolved copy (IP-literal twin URLs appended) so the
+    // bridge still gathers srflx/relay when its own DNS is broken — see
+    // _resolveTurnIceForBridge.
+    iceServers:     (_turnIceServers && _turnExpiresAt > Date.now())
+      ? (_turnIceServersResolved || _turnIceServers)
+      : undefined,
     audioSource:    settings.audioSource || 'dax',
     daxTxDirect,
     // TX EQ + compressor — applied in the bridge renderer to mic audio
@@ -23915,7 +24003,12 @@ app.whenReady().then(() => {
         const on = !!data.value;
         // Flex 6000/8000 have no discrete preamp toggle — RF gain handles
         // it. Accept the call so the UI logic stays uniform; no-op on Flex.
-        if (cat && cat.connected && typeof cat.setPreamp === 'function') cat.setPreamp(on);
+        // A rig layer that REFUSES (returns false — codec has no such
+        // control) must not flip the state: the toggle showing "applied"
+        // while nothing was sent is the silent lie K6RBJ burned weeks on.
+        if (cat && cat.connected && typeof cat.setPreamp === 'function') {
+          if (cat.setPreamp(on) === false) break;
+        }
         _currentPreampState = on;
         broadcastRigState();
         break;
@@ -23923,7 +24016,9 @@ app.whenReady().then(() => {
       case 'set-att': {
         if (flexNeedsApi) { _flexWarnOnce('Attenuator requires SmartSDR API — not connected'); break; }
         const on = !!data.value;
-        if (cat && cat.connected && typeof cat.setAttenuator === 'function') cat.setAttenuator(on);
+        if (cat && cat.connected && typeof cat.setAttenuator === 'function') {
+          if (cat.setAttenuator(on) === false) break;
+        }
         _currentAttState = on;
         broadcastRigState();
         break;
@@ -23932,7 +24027,9 @@ app.whenReady().then(() => {
         if (flexNeedsApi) { _flexWarnOnce('Compressor requires SmartSDR API — not connected'); break; }
         const on = !!data.value;
         if (flexSdr()) smartSdr.setCompressor(0, on);
-        else if (cat && cat.connected && typeof cat.setCompressor === 'function') cat.setCompressor(on);
+        else if (cat && cat.connected && typeof cat.setCompressor === 'function') {
+          if (cat.setCompressor(on) === false) break;
+        }
         _currentCompState = on;
         broadcastRigState();
         break;
@@ -23949,7 +24046,9 @@ app.whenReady().then(() => {
             smartSdr.setNrLevel(0, lvl);
             _currentNrLevel = lvl;
           }
-        } else if (cat && cat.connected && typeof cat.setNoiseReduction === 'function') cat.setNoiseReduction(on);
+        } else if (cat && cat.connected && typeof cat.setNoiseReduction === 'function') {
+          if (cat.setNoiseReduction(on) === false) break;
+        }
         _currentNrState = on;
         broadcastRigState();
         break;
@@ -23958,7 +24057,9 @@ app.whenReady().then(() => {
         if (flexNeedsApi) { _flexWarnOnce('Auto-notch requires SmartSDR API — not connected'); break; }
         const on = !!data.value;
         if (flexSdr()) smartSdr.setAutoNotch(0, on);
-        else if (cat && cat.connected && typeof cat.setAutoNotch === 'function') cat.setAutoNotch(on);
+        else if (cat && cat.connected && typeof cat.setAutoNotch === 'function') {
+          if (cat.setAutoNotch(on) === false) break;
+        }
         _currentAnfState = on;
         broadcastRigState();
         break;
@@ -23967,7 +24068,9 @@ app.whenReady().then(() => {
         if (flexNeedsApi) { _flexWarnOnce('APF requires SmartSDR API — not connected'); break; }
         const on = !!data.value;
         if (flexSdr()) smartSdr.setApf(0, on);
-        else if (cat && cat.connected && typeof cat.setApf === 'function') cat.setApf(on);
+        else if (cat && cat.connected && typeof cat.setApf === 'function') {
+          if (cat.setApf(on) === false) break;
+        }
         _currentApfState = on;
         broadcastRigState();
         break;
@@ -24111,7 +24214,9 @@ app.whenReady().then(() => {
         if (flexNeedsApi) { _flexWarnOnce('NR level requires SmartSDR API — not connected'); break; }
         const pct = Math.max(0, Math.min(100, Number(data.value) || 0));
         if (flexSdr()) smartSdr.setNrLevel(0, pct);
-        else if (cat && cat.connected && typeof cat.setNrLevel === 'function') cat.setNrLevel(pct);
+        else if (cat && cat.connected && typeof cat.setNrLevel === 'function') {
+          if (cat.setNrLevel(pct) === false) break;
+        }
         _currentNrLevel = pct;
         if (pct > 0) { settings.nrLevelDefault = pct; saveSettings(settings); } // remember for next enable
         broadcastRigState();
@@ -24123,7 +24228,9 @@ app.whenReady().then(() => {
         const max = caps.maxNbLevel != null ? caps.maxNbLevel : 100;
         const level = Math.max(0, Math.min(max, Number(data.value) || 0));
         if (flexSdr()) smartSdr.setNbLevel(0, level);
-        else if (cat && cat.connected && typeof cat.setNbLevel === 'function') cat.setNbLevel(level);
+        else if (cat && cat.connected && typeof cat.setNbLevel === 'function') {
+          if (cat.setNbLevel(level) === false) break;
+        }
         _currentNbLevel = level;
         _currentNbState = level > 0;
         if (level > 0) { settings.nbLevelDefault = level; saveSettings(settings); } // remember for next enable
@@ -24650,12 +24757,22 @@ app.whenReady().then(() => {
     if (effectiveMode === 'cloud') {
       qrParamsObj.cloudHost = cloudHost;
       if (tsHost) qrParamsObj.tsHost = tsHost;
+      // Cloud-mode QRs used to omit the fingerprint entirely, which
+      // permanently stripped the pinned-Tailscale option from that pairing
+      // (LZ3AW 2026-08-03 — no fp means the ts leg can never validate a
+      // self-signed cert). Embed it whenever a cert is being served; the
+      // phone ignores it when tsCertPublic says no pin is needed.
+      if (fingerprint) qrParamsObj.fp = fingerprint;
     } else {
       qrParamsObj.host = wsUrl;
       qrParamsObj.fp = fingerprint;
       if (cloudHost) qrParamsObj.cloudHost = cloudHost;
       if (tsHost) qrParamsObj.tsHost = tsHost;
     }
+    // Cert trust mode for the ts leg: '1' = the served cert is a
+    // Tailscale-issued LE cert that validates publicly (dial tsHost with
+    // standard TLS, no pin). Absent = self-signed or unknown → pin `fp`.
+    if (altHosts.tsCertPublic) qrParamsObj.tsCertPublic = '1';
     const qrParams = new URLSearchParams(qrParamsObj);
     const qrText = `potacat://pair?${qrParams.toString()}`;
     // Generate BOTH formats best-effort. The QR is a convenience: the
@@ -24777,6 +24894,7 @@ app.whenReady().then(() => {
     qrParamsObj.fp = fingerprint;
     if (tsHost) qrParamsObj.tsHost = tsHost;
     if (cloudHost) qrParamsObj.cloudHost = cloudHost;
+    if (altHosts.tsCertPublic) qrParamsObj.tsCertPublic = '1'; // ts leg: public cert, no pin needed
     const url = `potacat://pair?${new URLSearchParams(qrParamsObj).toString()}`;
 
     // Optional QR for the same link — same dual-format dance as
@@ -24926,7 +25044,7 @@ app.whenReady().then(() => {
       saveSettings(settings);
       tearDownRemoteClient();
       // Re-engage local CAT if a rig is configured.
-      try { connectCat(); } catch {}
+      connectCatSafe('remote session ended');
       if (win && !win.isDestroyed()) {
         win.webContents.send('remote-client-status', { state: 'idle' });
       }
@@ -25528,7 +25646,7 @@ app.whenReady().then(() => {
       saveSettings(settings);
     }
     // Reconnect to rebuild codec with clean defaults
-    if (cat) connectCat();
+    if (cat) connectCatSafe('command override change');
   });
 
   // --- Remote Launcher IPC ---
@@ -25624,6 +25742,22 @@ app.whenReady().then(() => {
     }
     // Relay diagnostics for the [CAT] log — the offerer (shack) side of the
     // double-CGNAT proof. Mirrors the answerer's rac-state logging.
+    // Gather summary: proves whether the shack side actually has srflx/relay
+    // candidates. Host-only WITH servers configured = the bridge window's
+    // STUN/TURN path is broken (DNS -105 incident, 2026-08-02) — the session
+    // will still connect on the LAN but an off-LAN client cannot.
+    if (status.iceGathered) {
+      const g = status.iceGathered;
+      const starved = g.servers > 0 && g.srflx === 0 && g.relay === 0;
+      sendCatLog(`[Echo CAT Audio] ICE gathered — host ${g.host}, srflx ${g.srflx}, relay ${g.relay}` +
+        ` (${g.servers} servers configured)` +
+        (starved ? ' — HOST-ONLY: STUN/TURN unreachable from the bridge (DNS or UDP blocked); off-LAN clients will NOT get audio' : ''));
+    }
+    if (status.iceCandidateError) {
+      const e = status.iceCandidateError;
+      sendCatLog(`[Echo CAT Audio] ICE gather error ${e.errorCode} for ${e.url}` +
+        (e.errorText ? ` — ${e.errorText}` : ''));
+    }
     if (status.selectedPair) {
       const p = status.selectedPair;
       const relayed = (p.local === 'relay' || p.remote === 'relay');
@@ -26044,7 +26178,10 @@ app.whenReady().then(() => {
     // (N4RDX crash). refreshSpots still runs on every full save so source
     // toggles take effect immediately.
     if (!isPartialSave) {
-      if (catRelevantChanged && !settings.enableWsjtx) connectCat();
+      // connectCatSafe, not bare: this is the path a user exercises when they
+      // SELECT a new transport in Settings (the K6RBJ RS-BA1 selection) —
+      // a rejected connect must land in the CAT log, not startup.log.
+      if (catRelevantChanged && !settings.enableWsjtx) connectCatSafe('settings change');
       refreshSpots();
       // Restart spot timer with new interval
       if (spotTimer) clearInterval(spotTimer);
@@ -26169,7 +26306,7 @@ app.whenReady().then(() => {
         }
       }
       if (settings.catTarget && settings.catTarget.type === 'icom-network') {
-        connectCat();
+        connectCatSafe('icom-network audio-source change');
       }
     }
 
@@ -27030,7 +27167,7 @@ app.whenReady().then(() => {
       }
       // Restart live rigctld if one was running before the test
       if (hadLiveRigctld && settings.catTarget && settings.catTarget.type === 'rigctld') {
-        connectCat();
+        connectCatSafe('rigctld restore after test');
       }
     }
   });
@@ -27159,7 +27296,7 @@ app.whenReady().then(() => {
       sendCatLog('[CAT] Skipping local CAT connect — running in remote-client mode');
       return;
     }
-    if (!settings.enableWsjtx) connectCat();
+    if (!settings.enableWsjtx) connectCatSafe('rig target change');
     // Flex rigs ALSO need the FlexLib API client (smartSdr) — it's what
     // tuneRadio's Flex Direct branch (no SmartSDR-Win running) drives, plus
     // it's required for panadapter spots, slice XIT, ATU, and the rig
