@@ -1369,6 +1369,39 @@ section('Pre-encode race — concurrent setTxFreq + setTxMessage');
       assertEq(D({ phase: 'reply', txRetries: 2, maxCq: 15, maxQso: 3, runMode: true, closeoutEligible: false }),
         { retries: 3, action: 'rearm' }, 'configurable X re-arms CQ in run mode');
 
+      // -- Try-counter gate (shouldCountRetry) --
+      // A try = a TRANSMISSION. Decode events land every period (including
+      // our own TX period and deferred-TX periods); counting each burned the
+      // cap twice per QSO cycle — "tries 5" gave up after 3 transmissions
+      // (KQ4MHD 2026-08-04).
+      section('shouldCountRetry — tries count transmissions, not periods');
+      const G = sm.shouldCountRetry;
+      assertEq(G({ periodKey: '01:00:15', txPeriodKey: '', lastCountedTxPeriod: '' }),
+        false, 'no TX yet → nothing to count');
+      assertEq(G({ periodKey: '01:00:00', txPeriodKey: '01:00:00', lastCountedTxPeriod: '' }),
+        false, 'TX period\'s own decode → reply window still open, no count');
+      assertEq(G({ periodKey: '01:00:15', txPeriodKey: '01:00:00', lastCountedTxPeriod: '' }),
+        true, 'the period after a TX counts that TX once');
+      assertEq(G({ periodKey: '01:00:30', txPeriodKey: '01:00:00', lastCountedTxPeriod: '01:00:00' }),
+        false, 'deferred/held TX periods do not re-count the same TX');
+      assertEq(G({ periodKey: '01:00:45', txPeriodKey: '01:00:30', lastCountedTxPeriod: '01:00:00' }),
+        true, 'a new TX counts again on its following period');
+      // Full QSO-cycle walk: 5 tries = 5 transmissions (TX every other
+      // period), not ceil(5/2) = 3 as the old per-period counter produced.
+      {
+        let counted = 0, lastCounted = '';
+        let txPk = '';
+        for (let p = 0; p < 10; p++) {
+          const pk = '02:00:' + String(p * 15).padStart(2, '0');
+          if (p % 2 === 0) txPk = pk; // our TX slot
+          if (G({ periodKey: pk, txPeriodKey: txPk, lastCountedTxPeriod: lastCounted })) {
+            counted++;
+            lastCounted = txPk;
+          }
+        }
+        assertEq(counted, 5, '10 periods / 5 transmissions → exactly 5 tries counted');
+      }
+
       // -- Test 4: drive the REAL lib/ft8-engine.js _preEncode + setTxMessage
       // pipeline with a stubbed encodeMessage, so the algorithm-level
       // simulation above is corroborated by the actual code on disk.
