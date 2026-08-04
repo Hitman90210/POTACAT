@@ -42,7 +42,7 @@ class JtcatProcessor extends AudioWorkletProcessor {
       this.filterCoeffs = designLowPass(cutoffRatio, numTaps);
       this.filterHistory = new Float32Array(numTaps);
       this.filterIdx = 0;
-      this.decimateCounter = 0;
+      this.decimatePhase = 0;
     }
   }
 
@@ -54,17 +54,21 @@ class JtcatProcessor extends AudioWorkletProcessor {
       const coeffs = this.filterCoeffs;
       const history = this.filterHistory;
       const numTaps = coeffs.length;
-      const ratio = Math.round(this.dsRatio);
+      // Fractional decimation phase — dsRatio must NOT be rounded to an
+      // integer stride: 44.1k-family contexts (44100/12000 = 3.675) would
+      // decimate by 4 and hand the engine 11025 Hz audio it reads as
+      // 12000 Hz (+8.9% symbol clock and tone spacing = zero decodes).
+      const ratio = this.dsRatio;
 
       for (let i = 0; i < input.length; i++) {
         // Feed sample into FIR filter ring buffer
         history[this.filterIdx] = input[i];
         this.filterIdx = (this.filterIdx + 1) % numTaps;
-        this.decimateCounter++;
+        this.decimatePhase++;
 
-        // Output one sample every dsRatio input samples
-        if (this.decimateCounter >= ratio) {
-          this.decimateCounter = 0;
+        // Output one sample every dsRatio input samples (on average)
+        if (this.decimatePhase >= ratio) {
+          this.decimatePhase -= ratio;
           // Convolve: compute filtered output
           let sum = 0;
           let idx = this.filterIdx; // oldest sample

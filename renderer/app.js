@@ -24757,13 +24757,15 @@ async function startJtcatAudio() {
           var samples;
           if (dsRatio > 1.01) {
             var out = [];
-            var ratio = Math.round(dsRatio);
+            // Fractional phase, never Math.round(dsRatio): a 44.1k context
+            // (dsRatio 3.675) decimated by 4 feeds the engine 11025 Hz as
+            // 12000 Hz — zero decodes.
             for (var i = 0; i < rawSamples.length; i++) {
               firHistory[firIdx] = rawSamples[i];
               firIdx = (firIdx + 1) % firCoeffs.length;
               decCounter++;
-              if (decCounter >= ratio) {
-                decCounter = 0;
+              if (decCounter >= dsRatio) {
+                decCounter -= dsRatio;
                 var sum = 0, idx = firIdx;
                 for (var t = 0; t < firCoeffs.length; t++) {
                   sum += firHistory[idx] * firCoeffs[t];

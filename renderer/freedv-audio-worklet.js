@@ -9,15 +9,16 @@ class FreedvProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
     const dsRatio = (options.processorOptions && options.processorOptions.dsRatio) || 6;
-    this.ratio = Math.round(dsRatio);
+    // Fractional ratio, never rounded: a 44.1k context (44100/8000 = 5.5125)
+    // rounded to 6 would feed the modem 7350 Hz audio as 8000 Hz.
+    this.ratio = dsRatio;
     this.buffer = [];
     this.chunkSize = 640; // one 700E frame at 8kHz
 
     // Design windowed-sinc low-pass FIR filter
-    if (this.ratio > 1) {
+    if (this.ratio > 1.01) {
       const cutoff = 0.45 / this.ratio;
-      const numTaps = Math.max(31, (this.ratio * 16) | 1);
-      if (numTaps % 2 === 0) numTaps++;
+      const numTaps = Math.max(31, Math.round(this.ratio * 16) | 1);
       this.filterCoeffs = new Float32Array(numTaps);
       this.filterHistory = new Float32Array(numTaps);
       this.filterIdx = 0;
@@ -47,7 +48,7 @@ class FreedvProcessor extends AudioWorkletProcessor {
     const input = inputs[0] && inputs[0][0];
     if (!input) return true;
 
-    if (this.ratio > 1) {
+    if (this.ratio > 1.01) {
       const coeffs = this.filterCoeffs;
       const history = this.filterHistory;
       const numTaps = coeffs.length;
@@ -58,7 +59,7 @@ class FreedvProcessor extends AudioWorkletProcessor {
         this.decimateCounter++;
 
         if (this.decimateCounter >= this.ratio) {
-          this.decimateCounter = 0;
+          this.decimateCounter -= this.ratio;
           // Convolve
           let val = 0;
           let idx = this.filterIdx;

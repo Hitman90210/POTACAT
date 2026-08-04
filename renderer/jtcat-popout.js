@@ -1773,14 +1773,19 @@ function _applyPopoutTheme(payload) {
           var bufSize = Math.pow(2, Math.ceil(Math.log2(4096 * Math.ceil(dsRatio))));
           if (bufSize > 16384) bufSize = 16384;
           var sp = ctx.createScriptProcessor(bufSize, 1, 1);
-          var acc = new Float32Array(0);
           sp.onaudioprocess = (function(id, ratio) {
+            // Fractional phase (per slice), never an integer stride: a 44.1k
+            // context (ratio 3.675) floored to 3 hands the engine 14700 Hz
+            // as 12000 Hz — zero decodes.
+            var phase = 0;
             return function(e) {
               var input = e.data ? e.data : e.inputBuffer.getChannelData(0);
-              var step = Math.floor(ratio);
-              var out = new Float32Array(Math.floor(input.length / step));
-              for (var i = 0; i < out.length; i++) out[i] = input[i * step];
-              window.api.jtcatSliceAudio(id, out);
+              var out = [];
+              for (var i = 0; i < input.length; i++) {
+                phase++;
+                if (phase >= ratio) { phase -= ratio; out.push(input[i]); }
+              }
+              window.api.jtcatSliceAudio(id, new Float32Array(out));
             };
           })(sliceId, dsRatio);
           source.connect(sp);
@@ -3260,13 +3265,15 @@ function _applyPopoutTheme(payload) {
             var samples;
             if (dsRatio > 1.01) {
               var out = [];
-              var ratio = Math.round(dsRatio);
+              // Fractional phase, never Math.round(dsRatio): a 44.1k context
+              // (dsRatio 3.675) decimated by 4 feeds the engine 11025 Hz as
+              // 12000 Hz — zero decodes.
               for (var i = 0; i < rawSamples.length; i++) {
                 firHistory[firIdx] = rawSamples[i];
                 firIdx = (firIdx + 1) % firCoeffs.length;
                 decCounter++;
-                if (decCounter >= ratio) {
-                  decCounter = 0;
+                if (decCounter >= dsRatio) {
+                  decCounter -= dsRatio;
                   var sum = 0, idx = firIdx;
                   for (var t = 0; t < firCoeffs.length; t++) {
                     sum += firHistory[idx] * firCoeffs[t];
@@ -3305,10 +3312,21 @@ function _applyPopoutTheme(payload) {
       // turned "waterfall is blank" into a two-hour forensic hunt. One line
       // per start makes the next report a one-glance diagnosis.
       if (window.api.jtcatLog) {
+        // Include the device label the capture actually landed on — after a
+        // default-input fallback the configured and captured devices differ,
+        // and the label is the only way a bug report shows which one fed the
+        // decoder. KB2UXB 2026-08-03.
+        var capLabel = '';
+        if (audioSource !== 'smartsdr') {
+          try {
+            var capTrack = popoutAudioStream && popoutAudioStream.getAudioTracks()[0];
+            if (capTrack && capTrack.label) capLabel = ' [' + capTrack.label + ']';
+          } catch (e) {}
+        }
         window.api.jtcatLog('[JTCAT popout] Audio started: ' +
           (audioSource === 'smartsdr' ? 'SmartSDR Direct (VITA-49)' :
            audioSource === 'icom-network' ? 'Icom network' : 'device capture') +
-          ' @ ' + nativeRate + ' Hz — waterfall live');
+          capLabel + ' @ ' + nativeRate + ' Hz — waterfall live');
       }
     } catch (err) {
       if (_audioStartWatchdog) { clearTimeout(_audioStartWatchdog); _audioStartWatchdog = null; }
