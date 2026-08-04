@@ -269,7 +269,7 @@ const { stripSecrets, restoreSecrets } = require('./lib/settings-secrets');
 const { buildContestHistory } = require('./lib/contest-history');
 const { getAllContests } = require('./lib/contests-db');
 const { eventDecodeMatch } = require('./lib/event-decode-match');
-const { DxClusterClient } = require('./lib/dxcluster');
+const { DxClusterClient, looksLikeCallsign: clusterCallsignOk } = require('./lib/dxcluster');
 const { RbnClient } = require('./lib/rbn');
 const mercuryProcess = require('./lib/mercury-process');
 const { MercuryClient } = require('./lib/mercury-client');
@@ -3954,6 +3954,16 @@ function connectCluster() {
     sendClusterStatus();
     return;
   }
+  // A public cluster login must be an actual callsign. POTACAT only checked
+  // that the box was non-empty, so demo instances dialed KD4D's node as
+  // "POTACAT-DEMO-1" and were refused on every one of thousands of attempts
+  // (2026-08-04). Refuse locally and say why — never let the node find out.
+  if (!clusterCallsignOk(settings.myCallsign)) {
+    sendCatLog(`[cluster] Not connecting — "${settings.myCallsign}" is not a valid callsign. ` +
+      'DX cluster nodes require a real callsign to log in. Set yours in Settings > Station.');
+    sendClusterStatus();
+    return;
+  }
 
   // Migrate legacy settings if needed
   if (!settings.clusterNodes) {
@@ -4074,6 +4084,11 @@ function connectCwSpots() {
   disconnectCwSpots();
   const wantCwSpots = settings.enableCwSpots === true || panadapterWantsSource('cwspots');
   if (!wantCwSpots || !settings.myCallsign) return;
+  // Same callsign gate as the DX cluster — these are public telnet nodes too.
+  if (!clusterCallsignOk(settings.myCallsign)) {
+    sendCatLog(`[CW Spots] Not connecting — "${settings.myCallsign}" is not a valid callsign.`);
+    return;
+  }
   const host = settings.cwSpotsHost || 'rbn.telegraphy.de';
   const port = settings.cwSpotsPort || 7000;
   const clubs = settings.cwSpotsClubs || [];
@@ -4135,11 +4150,18 @@ function disconnectCwSpots() {
   cwSpots = [];
 }
 
-// Migrate legacy clusterHost/clusterPort to clusterNodes array
+// Migrate legacy clusterHost/clusterPort to clusterNodes array. No default
+// host: an install that never chose a node gets an EMPTY list and is asked to
+// pick, rather than being pointed at someone else's machine (KD4D 2026-08-04).
 function migrateClusterNodes() {
   if (settings.clusterNodes) return;
-  const host = settings.clusterHost || 'w3lpl.net';
+  const host = settings.clusterHost;
   const port = settings.clusterPort || 7373;
+  if (!host) {
+    settings.clusterNodes = [];
+    saveSettings(settings);
+    return;
+  }
   // Find matching preset
   const preset = CLUSTER_PRESETS.find(p => p.host === host && p.port === port);
   settings.clusterNodes = [{

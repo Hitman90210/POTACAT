@@ -14220,12 +14220,17 @@ async function openSettingsDialog(tab) {
   // Load cluster nodes (migrate legacy if needed)
   if (s.clusterNodes && s.clusterNodes.length > 0) {
     currentClusterNodes = JSON.parse(JSON.stringify(s.clusterNodes));
-  } else {
+  } else if (s.clusterHost) {
     // Legacy migration: convert single host/port to node list
-    const host = s.clusterHost || 'w3lpl.net';
+    const host = s.clusterHost;
     const port = s.clusterPort || 7373;
     const preset = CLUSTER_PRESETS.find(p => p.host === host && p.port === port);
     currentClusterNodes = [{ id: Date.now().toString(36), name: preset ? preset.name : host, host, port, enabled: true, preset: preset ? preset.name : null }];
+  } else {
+    // Nothing configured — leave the list EMPTY so the operator picks a node.
+    // This used to default to w3lpl.net, which pointed every install that
+    // never chose onto one volunteer's machine (KD4D 2026-08-04).
+    currentClusterNodes = [];
   }
   renderClusterNodeList(currentClusterNodes);
   setEnableClusterTerminal.checked = s.enableClusterTerminal === true;
