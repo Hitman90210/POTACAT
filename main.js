@@ -5189,6 +5189,13 @@ function _qsoDedupKey(q) {
     q.qsoDate || '',
     q.timeOn || '',
     (q.sigInfo || '').toUpperCase(),
+    // MY_SIG_INFO must be part of the key: a multi-park activation saves one
+    // record per park ref back-to-back, identical except for mySigInfo. The
+    // original key treated parks 2..N as duplicate saves and silently dropped
+    // them from the log — which is why SP5GB's 3-park activation could only
+    // ever be resumed as park 1 (2026-07-27). The guard still catches true
+    // double-fires (fully identical records).
+    (q.mySigInfo || '').toUpperCase(),
     (q.band || '').toUpperCase(),
     (q.mode || '').toUpperCase(),
   ].join('|');
@@ -6882,8 +6889,10 @@ async function jtcatAutoLog(qso) {
     const parkRefs = (settings.activatorParkRefs || []).filter(p => p && p.ref);
     if ((settings.activationActive || settings.appMode === 'activator') && parkRefs.length > 0) {
       sendCatLog(`[JTCAT] Activation mode — logging to ${parkRefs.map(p => p.ref).join(', ')}`);
+      const allQsoData = [];
       for (let i = 0; i < parkRefs.length; i++) {
         const parkQso = { ...qsoData, mySig: 'POTA', mySigInfo: parkRefs[i].ref, myGridsquare: settings.grid || '' };
+        allQsoData.push(parkQso);
         await saveQsoRecord(parkQso, { origin: 'jtcat-engine' });
       }
       // Cross-program refs (WWFF, LLOTA)
@@ -6893,6 +6902,7 @@ async function jtcatAutoLog(qso) {
         if (xr.program === 'SOTA') xrQso.mySotaRef = xr.ref;
         else if (xr.program === 'WWFF') xrQso.myWwffRef = xr.ref;
         else if (xr.program === 'LLOTA') xrQso.myLlotaRef = xr.ref;
+        allQsoData.push(xrQso);
         await saveQsoRecord(xrQso, { origin: 'jtcat-engine' });
       }
       // Feed the ACTIVATION LOG (user report 2026-07-11: "JTCAT contacts do
@@ -6915,8 +6925,11 @@ async function jtcatAutoLog(qso) {
           name: '',
           myParks: parkRefs.map(p => p.ref),
           theirParks: hunted ? hunted.refs.map(r => r.ref) : [],
-          qsoData,
-          qsoDataList: [qsoData],
+          // The full per-park record set — the base qsoData has no MY_SIG, so
+          // sending [qsoData] made JTCAT contacts export into UNKNOWN.adi in
+          // the per-park flow (SP5GB 2026-07-27 audit).
+          qsoData: allQsoData[0] || qsoData,
+          qsoDataList: allQsoData.length ? allQsoData : [qsoData],
         });
       }
       // Phone session list — the same contact shape the phone log-qso path
@@ -28475,10 +28488,49 @@ app.whenReady().then(() => {
           myGridsquare: q.MY_GRIDSQUARE || '',
         });
       }
+      // Merge sibling groups: a multi-park activation writes one record per
+      // MY_SIG_INFO for the SAME physical QSO, so its park groups share
+      // identical (callsign, timeOn) contacts on the same date. Merge them
+      // into one activation carrying every ref, or resuming a 3-park
+      // activation restores only park 1 (SP5GB 2026-07-27). Two separate
+      // same-day activations at different parks share no exact same-second
+      // QSO, so they never merge.
+      const merged = [];
+      for (const g of groups.values()) {
+        const gKeys = new Set(
+          g.contacts.filter(c => c.callsign && c.timeOn).map(c => c.callsign + '|' + c.timeOn));
+        const sibling = merged.find(m => m.date === g.date &&
+          [...gKeys].some(k => m._qsoKeys.has(k)));
+        if (sibling) {
+          sibling.parkRefs.push({ ref: g.parkRef, sig: g.sig });
+          for (const c of g.contacts) {
+            // Contact rows dedupe on call|time|their-park so each park's copy
+            // of a QSO collapses to one row, while genuine P2P n-fer records
+            // (distinct SIG_INFO) stay separate — matching the live view.
+            const ck = c.callsign + '|' + c.timeOn + '|' + (c.sigInfo || '');
+            if (!sibling._contactKeys.has(ck)) {
+              sibling._contactKeys.add(ck);
+              sibling.contacts.push(c);
+            }
+            if (c.callsign && c.timeOn) sibling._qsoKeys.add(c.callsign + '|' + c.timeOn);
+          }
+        } else {
+          merged.push({
+            ...g,
+            parkRefs: [{ ref: g.parkRef, sig: g.sig }],
+            _qsoKeys: gKeys,
+            _contactKeys: new Set(g.contacts.map(c => c.callsign + '|' + c.timeOn + '|' + (c.sigInfo || ''))),
+          });
+        }
+      }
+      for (const m of merged) {
+        delete m._qsoKeys;
+        delete m._contactKeys;
+        m.contacts.sort((a, b) => (a.timeOn || '').localeCompare(b.timeOn || ''));
+      }
       // Sort newest first
-      const result = [...groups.values()];
-      result.sort((a, b) => (b.date + (b.contacts[0]?.timeOn || '')).localeCompare(a.date + (a.contacts[0]?.timeOn || '')));
-      return result;
+      merged.sort((a, b) => (b.date + (b.contacts[0]?.timeOn || '')).localeCompare(a.date + (a.contacts[0]?.timeOn || '')));
+      return merged;
     } catch {
       return [];
     }
@@ -28487,17 +28539,24 @@ app.whenReady().then(() => {
   ipcMain.handle('get-past-activations', () => getPastActivations());
 
   // --- Delete activation (removes matching QSOs from ADIF log) ---
-  ipcMain.handle('delete-activation', async (_e, parkRef, date) => {
+  // First arg: a single park ref string (legacy), or an array of
+  // {ref, sig} covering every ref of a merged multi-park activation —
+  // deleting only the primary ref would leave parks 2..N's records behind.
+  ipcMain.handle('delete-activation', async (_e, refsOrRef, date) => {
     const logPath = settings.adifLogPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
+    const refs = (Array.isArray(refsOrRef) ? refsOrRef : [{ ref: refsOrRef, sig: 'POTA' }])
+      .filter(r => r && r.ref)
+      .map(r => ({ ref: String(r.ref).toUpperCase(), sig: String(r.sig || 'POTA').toUpperCase() }));
+    if (!refs.length) return { success: false, error: 'No park ref given' };
     try {
       if (!fs.existsSync(logPath)) return { success: false, error: 'Log file not found' };
       const qsos = parseAllRawQsos(logPath);
       const before = qsos.length;
       const filtered = qsos.filter(q => {
-        if ((q.MY_SIG || '').toUpperCase() !== 'POTA') return true;
-        if ((q.MY_SIG_INFO || '').toUpperCase() !== parkRef.toUpperCase()) return true;
         if ((q.QSO_DATE || '') !== date) return true;
-        return false; // matches — remove it
+        const mySig = (q.MY_SIG || '').toUpperCase();
+        const myRef = (q.MY_SIG_INFO || '').toUpperCase();
+        return !refs.some(r => r.sig === mySig && r.ref === myRef); // keep unless a ref matches
       });
       const removed = before - filtered.length;
       if (removed === 0) return { success: true, removed: 0 };

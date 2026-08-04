@@ -3378,6 +3378,8 @@ async function saveBannerQso() {
   blLogBtn.disabled = true;
   blLogBtn.textContent = 'Saving\u2026';
   let lastResult = null;
+  // Per-callsign record lists for the activation contact push below.
+  const bannerLogRecords = new Map();
   try {
     for (let ci = 0; ci < callsigns.length; ci++) {
       const cs = callsigns[ci];
@@ -3438,6 +3440,7 @@ async function saveBannerQso() {
 
       lastResult = await window.api.saveQso(qsoData);
       if (!lastResult || !lastResult.success) break;
+      const savedForCall = [qsoData];
 
       // Save additional park records (two-fer / three-fer)
       for (const addlRef of addlRefs) {
@@ -3452,11 +3455,42 @@ async function saveBannerQso() {
           wwbotaRef: sig === 'WWBOTA' ? addlRef : qsoData.wwbotaRef,
           comment: addlComment,
           respot: false, wwffRespot: false, llotaRespot: false, wwbotaRespot: false, dxcRespot: false, respotComment: '',
+          skipLogbookForward: true,
         };
         const addlResult = await window.api.saveQso(addlData);
         if (!addlResult || !addlResult.success) { lastResult = addlResult; break; }
+        savedForCall.push(addlData);
       }
       if (lastResult && !lastResult.success) break;
+
+      // Cross-product for the remaining activation refs — same fix as the
+      // spot-log form (SP5GB 2026-07-27): the record above carries only
+      // activatorParkRefs[0]; parks 2..N and cross-program refs each need
+      // their own MY_SIG record. Best-effort so a failed extra never unwinds
+      // the saved QSO.
+      if (activationActive && activatorParkRefs.length > 0) {
+        const extraMyRefs = [
+          ...activatorParkRefs.slice(1).map(p => ({ sig: 'POTA', ref: p.ref })),
+          ...activatorCrossRefs.map(xr => ({ sig: (xr.program || 'WWFF').toUpperCase(), ref: xr.ref })),
+        ];
+        const parkOneRecords = savedForCall.slice();
+        for (const mr of extraMyRefs) {
+          for (const base of parkOneRecords) {
+            const rec = {
+              ...base,
+              mySig: mr.sig,
+              mySigInfo: mr.ref,
+              respot: false, wwffRespot: false, llotaRespot: false, wwbotaRespot: false, dxcRespot: false, respotComment: '',
+              skipLogbookForward: true,
+            };
+            try {
+              const r = await window.api.saveQso(rec);
+              if (r && r.success) savedForCall.push(rec);
+            } catch { /* keep going — primary record is already saved */ }
+          }
+        }
+      }
+      bannerLogRecords.set(cs, savedForCall);
     }
 
     const result = lastResult;
@@ -3479,17 +3513,32 @@ async function saveBannerQso() {
       blCallsign.focus();
       // If an activation is running (even from hunter-mode banner), append
       // to the activator contacts list so totals/UI reflect the contact.
+      // Full activatorLogContact shape — the old bare stub (no qsoData/
+      // qsoDataList) rendered blank columns and crashed the per-park export
+      // flatMap (SP5GB 2026-07-27). One contact per logged callsign.
       if (activationActive && activatorParkRefs.length > 0) {
-        const contact = {
-          callsign,
-          frequency: String(freqKhz),
-          mode,
-          rstSent,
-          rstRcvd,
-          timestamp: new Date().toISOString(),
-          source: 'banner-log',
-        };
-        activatorContacts.push(contact);
+        let contact = null;
+        for (const cs of callsigns) {
+          const recs = bannerLogRecords.get(cs) || [];
+          const primary = recs[0] || null;
+          contact = {
+            callsign: cs,
+            timeUtc: timeOn && timeOn.length >= 4 ? `${timeOn.slice(0, 2)}:${timeOn.slice(2, 4)}` : '',
+            freqDisplay: freqKhz ? (freqKhz / 1000).toFixed(3) : '',
+            mode,
+            band,
+            rstSent,
+            rstRcvd,
+            state: primary ? primary.state || '' : '',
+            name: primary ? primary.name || '' : '',
+            myParks: [...activatorParkRefs.map(p => p.ref), ...activatorCrossRefs.map(xr => xr.ref)],
+            theirParks: sigInfo ? [sigInfo, ...addlRefs] : [],
+            qsoData: primary,
+            qsoDataList: recs,
+            source: 'banner-log',
+          };
+          activatorContacts.push(contact);
+        }
         renderActivatorLog();
         updateActivatorCounter();
         // Refresh the VFO popout's op-card so its DUPE chip catches the
@@ -12581,6 +12630,10 @@ logSaveBtn.addEventListener('click', async () => {
     }
 
     let lastResult = null;
+    // Per-callsign record lists (primary + n-fer + activation cross-product) —
+    // the activation contact push below needs the real qsoDataList, not a
+    // stub (SP5GB 2026-07-27: stub contacts broke per-park export).
+    const spotLogRecords = new Map();
     for (let ci = 0; ci < callsigns.length; ci++) {
       const cs = callsigns[ci];
       const logQrzInfo = qrzData.get(cs.split('/')[0]);
@@ -12630,6 +12683,7 @@ logSaveBtn.addEventListener('click', async () => {
 
       lastResult = await window.api.saveQso(qsoData);
       if (!lastResult.success) break;
+      const savedForCall = [qsoData];
 
       // Save additional park records (two-fer / three-fer) from comma-separated refs
       for (const addlRef of addlParks) {
@@ -12653,8 +12707,44 @@ logSaveBtn.addEventListener('click', async () => {
         };
         const addlResult = await window.api.saveQso(addlData);
         if (!addlResult.success) { lastResult = addlResult; break; }
+        savedForCall.push(addlData);
       }
       if (lastResult && !lastResult.success) break;
+
+      // Cross-product for the REMAINING activation refs. The primary record
+      // above carries only activatorParkRefs[0]; parks 2..N and cross-program
+      // refs each need their own MY_SIG record, exactly like the Act-screen
+      // logger builds (SP5GB 2026-07-27: multipark spot-log QSOs landed in
+      // park 1 only). Best-effort: a failed extra record must not unwind the
+      // already-saved QSO.
+      if (activationActive && activatorParkRefs.length > 0) {
+        const extraMyRefs = [
+          ...activatorParkRefs.slice(1).map(p => ({ sig: 'POTA', ref: p.ref })),
+          ...activatorCrossRefs.map(xr => ({ sig: (xr.program || 'WWFF').toUpperCase(), ref: xr.ref })),
+        ];
+        const parkOneRecords = savedForCall.slice();
+        for (const mr of extraMyRefs) {
+          for (const base of parkOneRecords) {
+            const rec = {
+              ...base,
+              mySig: mr.sig,
+              mySigInfo: mr.ref,
+              respot: false,
+              wwffRespot: false,
+              llotaRespot: false,
+              wwbotaRespot: false,
+              dxcRespot: false,
+              respotComment: '',
+              skipLogbookForward: true,
+            };
+            try {
+              const r = await window.api.saveQso(rec);
+              if (r && r.success) savedForCall.push(rec);
+            } catch { /* keep going — primary record is already saved */ }
+          }
+        }
+      }
+      spotLogRecords.set(cs, savedForCall);
     }
 
     const displayCalls = callsigns.join(', ');
@@ -12662,15 +12752,28 @@ logSaveBtn.addEventListener('click', async () => {
       logDialog.close();
       // If an activation is running (regardless of UI mode), append to the
       // activator contacts list so the live activation log stays complete.
+      // Same shape as activatorLogContact's contacts — the old bare stub
+      // (no qsoData/qsoDataList) rendered blank columns AND crashed the
+      // per-park export's flatMap before its folder dialog could open
+      // (SP5GB 2026-07-27).
       if (activationActive && activatorParkRefs.length > 0) {
         for (const cs of callsigns) {
+          const recs = spotLogRecords.get(cs) || [];
+          const primary = recs[0] || null;
           const contact = {
             callsign: cs,
-            frequency: frequency,
+            timeUtc: timeOn && timeOn.length >= 4 ? `${timeOn.slice(0, 2)}:${timeOn.slice(2, 4)}` : '',
+            freqDisplay: frequency ? (parseFloat(frequency) / 1000).toFixed(3) : '',
             mode,
-            rstSent: getRstDigits('rst-sent-digits', '59'),
-            rstRcvd: getRstDigits('rst-rcvd-digits', '59'),
-            timestamp: new Date().toISOString(),
+            band,
+            rstSent,
+            rstRcvd,
+            state: primary ? primary.state || '' : '',
+            name: primary ? primary.name || '' : '',
+            myParks: [...activatorParkRefs.map(p => p.ref), ...activatorCrossRefs.map(xr => xr.ref)],
+            theirParks: sigInfo ? [sigInfo, ...addlParks] : [],
+            qsoData: primary,
+            qsoDataList: recs,
             source: 'spot-log',
           };
           activatorContacts.push(contact);
@@ -22312,30 +22415,61 @@ function continueActivation() {
 
 /** Resume a past activation from the log */
 function resumeActivation(activation) {
-  activatorParkRefs = [{ ref: activation.parkRef, name: '' }];
+  // A merged multi-park activation carries every ref in parkRefs; restoring
+  // only activation.parkRef dropped parks 2..N (SP5GB 2026-07-27). Refs of
+  // the activation's primary program go back into the park-ref list;
+  // cross-program refs (WWFF/LLOTA cross-postings of the same physical park)
+  // go back into activatorCrossRefs, mirroring the original setup.
+  const refs = activationRefList(activation);
+  const primarySig = (activation.sig || 'POTA').toUpperCase();
+  const mainRefs = refs.filter(r => (r.sig || 'POTA').toUpperCase() === primarySig);
+  const crossRefs = refs.filter(r => (r.sig || 'POTA').toUpperCase() !== primarySig);
+  activatorParkRefs = mainRefs.map(r => ({ ref: r.ref, name: '' }));
+  activatorCrossRefs = crossRefs.map(r => ({ program: (r.sig || '').toUpperCase(), ref: r.ref }));
   hunterParkRefs = [];
-  activatorParkRefInput.value = activation.parkRef;
+  activatorParkRefInput.value = mainRefs.map(r => r.ref).join(',');
   activatorParkNameEl.textContent = '';
   updateParkExtraBadge();
-  // Look up park name and grid
+  // Look up park names; grid comes from the primary park
   const gridInput = document.getElementById('activator-grid');
-  window.api.getPark(activation.parkRef).then(park => {
-    if (park) {
-      activatorParkRefs[0].name = park.name || '';
-      activatorParkNameEl.textContent = park.name || '';
-      if (park.latitude && park.longitude) {
-        activatorParkGrid = latLonToGridLocal(parseFloat(park.latitude), parseFloat(park.longitude));
-        if (gridInput) gridInput.value = activatorParkGrid;
+  activatorParkRefs.forEach((p, i) => {
+    window.api.getPark(p.ref).then(park => {
+      if (!park) return;
+      p.name = park.name || '';
+      if (i === 0) {
+        activatorParkNameEl.textContent = park.name || '';
+        if (park.latitude && park.longitude) {
+          activatorParkGrid = latLonToGridLocal(parseFloat(park.latitude), parseFloat(park.longitude));
+          if (gridInput) gridInput.value = activatorParkGrid;
+        }
       }
-    }
+    });
   });
-  window.api.saveSettings({ activatorParkRefs });
-  // Restore contacts from log data
+  window.api.saveSettings({ activatorParkRefs, activatorCrossRefs });
+  // Restore contacts from log data — one qsoDataList record per activation
+  // ref, so re-export (combined or per-park) is complete again.
   activatorContacts = activation.contacts.map(c => {
     const timeOn = c.timeOn || '';
     const hh = timeOn.substring(0, 2);
     const mm = timeOn.substring(2, 4);
     const freqMhz = c.freq ? parseFloat(c.freq).toFixed(3) : '';
+    const base = {
+      callsign: c.callsign,
+      frequency: c.freq ? String(Math.round(parseFloat(c.freq) * 1000)) : '',
+      mode: c.mode || '',
+      band: c.band || '',
+      qsoDate: activation.date,
+      timeOn: c.timeOn || '',
+      rstSent: c.rstSent || '',
+      rstRcvd: c.rstRcvd || '',
+      stationCallsign: myCallsign || '',
+      operator: myCallsign || '',
+      // Preserve the P2P side so re-export keeps SIG/SIG_INFO
+      ...(c.sigInfo ? { sig: c.sig || 'POTA', sigInfo: c.sigInfo } : {}),
+    };
+    // Preserve each ref's real program — resuming a SOTA/WWFF activation
+    // used to re-tag every restored contact MY_SIG=POTA
+    const qsoDataList = refs.map(r => ({ ...base, mySig: r.sig || 'POTA', mySigInfo: r.ref }));
     return {
       callsign: c.callsign,
       timeUtc: (hh && mm) ? `${hh}:${mm}` : '',
@@ -22346,38 +22480,10 @@ function resumeActivation(activation) {
       rstRcvd: c.rstRcvd || '',
       state: c.state || '',
       name: c.name || '',
-      myParks: [activation.parkRef],
+      myParks: refs.map(r => r.ref),
       theirParks: c.sigInfo ? [c.sigInfo] : [],
-      qsoData: {
-        callsign: c.callsign,
-        frequency: c.freq ? String(Math.round(parseFloat(c.freq) * 1000)) : '',
-        mode: c.mode || '',
-        band: c.band || '',
-        qsoDate: activation.date,
-        timeOn: c.timeOn || '',
-        rstSent: c.rstSent || '',
-        rstRcvd: c.rstRcvd || '',
-        // Preserve the activation's real program — resuming a SOTA/WWFF
-        // activation used to re-tag every restored contact MY_SIG=POTA
-        mySig: activation.sig || 'POTA',
-        mySigInfo: activation.parkRef,
-        stationCallsign: myCallsign || '',
-        operator: myCallsign || '',
-      },
-      qsoDataList: [{
-        callsign: c.callsign,
-        frequency: c.freq ? String(Math.round(parseFloat(c.freq) * 1000)) : '',
-        mode: c.mode || '',
-        band: c.band || '',
-        qsoDate: activation.date,
-        timeOn: c.timeOn || '',
-        rstSent: c.rstSent || '',
-        rstRcvd: c.rstRcvd || '',
-        mySig: activation.sig || 'POTA',
-        mySigInfo: activation.parkRef,
-        stationCallsign: myCallsign || '',
-        operator: myCallsign || '',
-      }],
+      qsoData: qsoDataList[0],
+      qsoDataList,
     };
   });
   // Hide history panel
@@ -22831,7 +22937,11 @@ async function showPastActivations() {
       return;
     }
     for (const act of activations) {
-      const count = act.contacts.length;
+      // Physical QSO count — a merged multi-park activation's contact rows
+      // still hold one row per their-park n-fer record; count unique
+      // call+time pairs so "10 QSOs to validate" reads true.
+      const count = new Set(act.contacts.map(c => c.callsign + '|' + c.timeOn)).size;
+      const refListLabel = activationRefList(act).map(r => r.ref).join(' + ');
       const dateStr = act.date ? `${act.date.substring(0, 4)}-${act.date.substring(4, 6)}-${act.date.substring(6, 8)}` : '?';
       const validClass = count >= 10 ? 'valid' : '';
       const wrapper = document.createElement('div');
@@ -22841,7 +22951,7 @@ async function showPastActivations() {
       item.className = 'activator-history-item';
       item.innerHTML = `
         <span class="activator-history-item-expand">&#x25B6;</span>
-        <span class="activator-history-item-ref">${act.parkRef}</span>
+        <span class="activator-history-item-ref">${refListLabel}</span>
         <span class="activator-history-item-date">${dateStr}</span>
         <span class="activator-history-item-count"><span class="${validClass}">${count} QSO${count !== 1 ? 's' : ''}</span></span>
         <button class="activator-history-item-resume">Resume</button>
@@ -22926,10 +23036,21 @@ async function showPastActivations() {
   }
 }
 
+/** All park refs of a `getPastActivations()` entry — `parkRefs` when main
+ *  merged a multi-park activation, else the single legacy `parkRef`. */
+function activationRefList(act) {
+  return (act.parkRefs && act.parkRefs.length)
+    ? act.parkRefs
+    : [{ ref: act.parkRef, sig: act.sig || 'POTA' }];
+}
+
 /** Build the ADIF-shaped QSO list for one of `getPastActivations()`'s entries.
- *  Shared between the "Export ADIF" and "Upload to POTA.app" paths. */
+ *  Shared between the "Export ADIF" and "Upload to POTA.app" paths.
+ *  Cross-products every contact across the activation's refs so a merged
+ *  multi-park activation exports complete (SP5GB 2026-07-27). */
 function buildActivationAdifQsos(act) {
-  return act.contacts.map(c => ({
+  const refs = activationRefList(act);
+  return act.contacts.flatMap(c => refs.map(r => ({
     callsign: c.callsign,
     frequency: c.freq ? String(Math.round(parseFloat(c.freq) * 1000)) : '',
     mode: c.mode || '',
@@ -22938,15 +23059,15 @@ function buildActivationAdifQsos(act) {
     timeOn: c.timeOn || '',
     rstSent: c.rstSent || '',
     rstRcvd: c.rstRcvd || '',
-    mySig: 'POTA',
-    mySigInfo: act.parkRef,
+    mySig: r.sig || 'POTA',
+    mySigInfo: r.ref,
     stationCallsign: myCallsign || '',
     operator: myCallsign || '',
     name: c.name || '',
     sig: c.sig || '',
     sigInfo: c.sigInfo || '',
     myGridsquare: c.myGridsquare || '',
-  }));
+  })));
 }
 
 /** Export a past activation's QSOs as ADIF */
@@ -22998,7 +23119,9 @@ async function uploadPastActivationToPota(act) {
 /** Delete a past activation and its QSOs from the log */
 async function deletePastActivation(act, wrapperEl) {
   try {
-    const result = await window.api.deleteActivation(act.parkRef, act.date);
+    // Pass every ref of a merged multi-park activation — deleting only the
+    // primary would leave parks 2..N's records in the log.
+    const result = await window.api.deleteActivation(activationRefList(act), act.date);
     if (result && result.success) {
       wrapperEl.remove();
       showLogToast(`Deleted ${result.removed} QSO${result.removed !== 1 ? 's' : ''} from ${act.parkRef} (${act.date})`);
@@ -23703,8 +23826,11 @@ if (activatorMapBtn) {
 if (activatorExportBtn) {
   activatorExportBtn.addEventListener('click', async () => {
     if (!activatorContacts.length) return;
-    // Flatten all cross-product records for export
-    const qsos = activatorContacts.flatMap(c => c.qsoDataList || [c.qsoData]);
+    // Flatten all cross-product records for export. Skip record-less contacts
+    // (older stub shapes) instead of letting an undefined entry throw in the
+    // grouping below and kill the export before its dialog opens.
+    const qsos = activatorContacts.flatMap(c => c.qsoDataList || (c.qsoData ? [c.qsoData] : []));
+    if (!qsos.length) return;
 
     // Multi-park or cross-program: offer per-park or combined export
     if (activatorParkRefs.length > 1 || activatorCrossRefs.length > 0) {
