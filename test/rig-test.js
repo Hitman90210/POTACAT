@@ -730,6 +730,42 @@ test('Yaesu attenuator off -> RA00;', () => {
   assert.strictEqual(writes[0], 'RA00;');
 });
 
+// Preamp/ATT LADDERS (KB2UXB, FT-710, 2026-08-04). A model that declares
+// steps drives the multi-step form; one that doesn't keeps the on/off pair
+// above, which is why the FT891_EXT tests are untouched.
+const { YAESU_PREAMP_IPO_AMP1_AMP2, YAESU_ATT_6_12_18 } = require('../lib/rig-gain-steps');
+const FT710_STEPS = {
+  ...FT891_EXT,
+  preampSteps: YAESU_PREAMP_IPO_AMP1_AMP2,
+  attSteps: YAESU_ATT_6_12_18,
+};
+
+test('laddered Yaesu preamp reaches AMP2 -> PA02;', () => {
+  const { codec, writes } = captureWrites(KenwoodCodec, FT710_STEPS);
+  codec.setPreamp(2);
+  assert.strictEqual(writes[0], 'PA02;');
+});
+
+test('laddered Yaesu attenuator reaches 12 and 18 dB -> RA02; RA03;', () => {
+  const { codec, writes } = captureWrites(KenwoodCodec, FT710_STEPS);
+  codec.setAttenuator(2);
+  codec.setAttenuator(3);
+  assert.deepStrictEqual(writes, ['RA02;', 'RA03;']);
+});
+
+test('laddered rig still honors the legacy boolean (old clients)', () => {
+  const { codec, writes } = captureWrites(KenwoodCodec, FT710_STEPS);
+  codec.setPreamp(true);   // first ON step
+  codec.setAttenuator(false);
+  assert.deepStrictEqual(writes, ['PA01;', 'RA00;']);
+});
+
+test('an out-of-range step is snapped, never sent raw to the radio', () => {
+  const { codec, writes } = captureWrites(KenwoodCodec, FT710_STEPS);
+  codec.setAttenuator(9);
+  assert.strictEqual(writes[0], 'RA03;');
+});
+
 test('Yaesu VFO copy A->B -> AB;', () => {
   const { codec, writes } = captureWrites(KenwoodCodec, FT891_EXT);
   codec.vfoCopyAB();
@@ -1277,6 +1313,30 @@ test('dump_caps probe adopts the rig\'s real preamp/ATT dB steps', () => {
   codec.setAttenuator(true);
   assert.strictEqual(writes[1], 'L PREAMP 20\n');
   assert.strictEqual(writes[2], 'L ATT 6\n'); // lowest step = safe "on"
+});
+
+test('probed dB list becomes a reachable ladder, not just its lowest step', () => {
+  // The probe kept only dbs[0], so a hamlib rig was pinned to its lowest
+  // preamp/ATT position exactly like KB2UXB's serial FT-710 (2026-08-04).
+  const { codec, writes } = captureWrites(RigctldCodec, RIGCTLD_MODEL);
+  codec.probeCaps();
+  codec.onData('Preamp: 10dB 20dB\nAttenuator: 6dB 12dB 18dB\nRPRT 0\n');
+  const steps = codec.getGainSteps();
+  assert.deepStrictEqual(steps.preampSteps.map((s) => s.v), [0, 10, 20]);
+  assert.deepStrictEqual(steps.attSteps.map((s) => s.v), [0, 6, 12, 18]);
+  codec.setPreamp(20);
+  codec.setAttenuator(18);
+  assert.strictEqual(writes[1], 'L PREAMP 20\n');
+  assert.strictEqual(writes[2], 'L ATT 18\n');
+});
+
+test('un-probed rigctld keeps the legacy single-step fallback', () => {
+  const { codec, writes } = captureWrites(RigctldCodec, RIGCTLD_MODEL);
+  assert.deepStrictEqual(codec.getGainSteps(), { preampSteps: [], attSteps: [] });
+  codec.setPreamp(true);
+  codec.setAttenuator(true);
+  assert.strictEqual(writes[0], 'L PREAMP 10\n');
+  assert.strictEqual(writes[1], 'L ATT 12\n');
 });
 
 test('dump_caps swallow mode: dump lines cannot misparse as frequency', () => {

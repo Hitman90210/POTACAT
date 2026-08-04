@@ -20326,6 +20326,11 @@ function rigApplyCapabilities(caps) {
   if (rigSplitBtn) rigSplitBtn.style.display = caps.split ? '' : 'none';
   if (rigPreampBtn) rigPreampBtn.style.display = caps.preamp ? '' : 'none';
   if (rigAttBtn)    rigAttBtn.style.display    = caps.att    ? '' : 'none';
+  // Preamp/ATT ladders (IPO/AMP1/AMP2, 6/12/18 dB, or hamlib's probed dB
+  // list). Present = the button cycles; absent = plain on/off.
+  const _GS = window.RigGainSteps;
+  rigPreampSteps = _GS ? _GS.normalizeSteps(caps.preampSteps) : [];
+  rigAttSteps    = _GS ? _GS.normalizeSteps(caps.attSteps)    : [];
   if (rigCompBtn)   rigCompBtn.style.display   = caps.comp   ? '' : 'none';
   if (rigNrBtn)     rigNrBtn.style.display     = caps.nr     ? '' : 'none';
   if (rigAnfBtn)    rigAnfBtn.style.display    = caps.anf    ? '' : 'none';
@@ -20497,8 +20502,29 @@ if (rigVfoBBtn) rigVfoBBtn.addEventListener('click', () => window.api.rigControl
 if (rigSplitBtn) rigSplitBtn.addEventListener('click', () => {
   window.api.rigControl({ action: 'set-split', value: !rigSplitBtn.classList.contains('active') });
 });
-_bindModifierBtn(rigPreampBtn, 'set-preamp');
-_bindModifierBtn(rigAttBtn,    'set-att');
+// Preamp / Att are CYCLING controls on radios with a ladder (IPO/AMP1/AMP2,
+// 6/12/18 dB, or hamlib's probed dB list): each tap advances a step and wraps
+// back to off, so every position is reachable from one button. Radios without
+// a declared ladder fall through to the plain on/off toggle — nextStep()
+// handles both (KB2UXB's FT-710 could only ever reach step 1, 2026-08-04).
+let rigPreampSteps = [];   // from capabilities.preampSteps
+let rigAttSteps = [];      // from capabilities.attSteps
+let rigPreampStep = 0;     // current position, from rig state
+let rigAttStep = 0;
+function _bindGainStepBtn(btn, action, getSteps, getCurrent) {
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    const steps = getSteps();
+    const next = (window.RigGainSteps
+      ? window.RigGainSteps.nextStep(getCurrent(), steps)
+      : (getCurrent() ? 0 : 1));
+    // Ladder rigs get the numeric step; plain rigs keep sending a boolean so
+    // nothing changes for them on the wire.
+    window.api.rigControl({ action, value: steps.length ? next : !!next });
+  });
+}
+_bindGainStepBtn(rigPreampBtn, 'set-preamp', () => rigPreampSteps, () => rigPreampStep);
+_bindGainStepBtn(rigAttBtn,    'set-att',    () => rigAttSteps,    () => rigAttStep);
 _bindModifierBtn(rigCompBtn,   'set-comp');
 _bindModifierBtn(rigNrBtn,     'set-nr');
 _bindModifierBtn(rigAnfBtn,    'set-anf');
@@ -20667,8 +20693,27 @@ window.api.onRigState((state) => {
     if (rigVfoBBtn) rigVfoBBtn.classList.toggle('active', state.vfo === 'B');
   }
   _syncModBtn(rigSplitBtn,  state.split);
-  _syncModBtn(rigPreampBtn, state.preamp);
-  _syncModBtn(rigAttBtn,    state.att);
+  // Preamp / Att — ladder-aware. The button text carries the active step
+  // ("Pre 2", "Att 12") so the operator can see WHICH position is engaged,
+  // and the tooltip spells it out. Falls back to the plain label on rigs
+  // with no ladder. state.preampStep may be absent from an older main —
+  // the boolean then drives it, exactly as before.
+  function _syncGainBtn(btn, base, name, on, step, steps, setCur) {
+    if (!btn) return;
+    if (on == null && step == null) return; // no opinion in this state payload
+    const G = window.RigGainSteps;
+    const cur = (step != null) ? Number(step) : (on ? (steps.length ? steps[1].v : 1) : 0);
+    setCur(cur);
+    btn.classList.toggle('active', cur > 0);
+    btn.textContent = (G && steps.length) ? G.buttonLabel(base, cur, steps) : base;
+    if (G && steps.length) {
+      btn.title = `${name}: ${G.stepLabel(cur, steps) || 'Off'} — click to cycle`;
+    } else {
+      btn.title = name;
+    }
+  }
+  _syncGainBtn(rigPreampBtn, 'Pre', 'Preamp', state.preamp, state.preampStep, rigPreampSteps, (v) => { rigPreampStep = v; });
+  _syncGainBtn(rigAttBtn,    'Att', 'Attenuator', state.att, state.attStep,   rigAttSteps,    (v) => { rigAttStep = v; });
   _syncModBtn(rigCompBtn,   state.comp);
   _syncModBtn(rigNrBtn,     state.nr);
   _syncModBtn(rigAnfBtn,    state.anf);

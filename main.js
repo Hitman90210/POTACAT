@@ -240,6 +240,7 @@ const { CatClient, RigctldClient, CivClient, listSerialPorts } = require('./lib/
 // New rig abstraction layer
 const { RigController } = require('./lib/rig-controller');
 const { RIG_CONTROLS } = require('./lib/rig-controls');
+const _rigGainSteps = require('./lib/rig-gain-steps'); // preamp/ATT ladders (KB2UXB)
 const { normalizeMuteRules } = require('./lib/spot-mute-rules'); // per-band region mutes (N7BBQ)
 const { TcpTransport, SerialTransport } = require('./lib/transport');
 const { RsBa1Transport } = require('./lib/rsba1-transport');
@@ -1325,6 +1326,12 @@ let _txPowerSuppressBroadcast = 0;
 // otherwise; AGC stays unset so the dropdown shows "—" rather than guessing.
 let _currentPreampState = false;
 let _currentAttState = false;
+// Ladder positions behind those booleans (0 = off). Radios with IPO/AMP1/AMP2
+// and 6/12/18 dB attenuators need the STEP, not just on/off — the boolean is
+// kept in lockstep so older clients and the existing status echo still work
+// (KB2UXB's FT-710 could only ever reach step 1, 2026-08-04).
+let _currentPreampStep = 0;
+let _currentAttStep = 0;
 let _currentCompState = false;
 let _currentNrState = false;
 let _currentAnfState = false;
@@ -1525,6 +1532,18 @@ function getRigCapabilities(rigType) {
     if (model.maxDnrLevel != null) caps.maxDnrLevel = model.maxDnrLevel;
     if (Array.isArray(model.agcModes)) caps.agcModes = model.agcModes.slice();
     if (Array.isArray(model.preampTargets)) caps.preampTargets = model.preampTargets.slice();
+    // Preamp/ATT ladders. Model-declared first; a live rigctld connection can
+    // override with the ladder it probed from the radio itself (dump_caps),
+    // which is authoritative for hamlib. Clients that see a ladder render a
+    // cycling control; clients that don't keep the plain on/off toggle, so
+    // an old ECHOCAT build is unaffected. (KB2UXB 2026-08-04.)
+    if (Array.isArray(model.preampSteps)) caps.preampSteps = model.preampSteps.slice();
+    if (Array.isArray(model.attSteps)) caps.attSteps = model.attSteps.slice();
+    const probed = (cat && typeof cat.getGainSteps === 'function') ? cat.getGainSteps() : null;
+    if (probed) {
+      if (probed.preampSteps && probed.preampSteps.length) caps.preampSteps = probed.preampSteps;
+      if (probed.attSteps && probed.attSteps.length) caps.attSteps = probed.attSteps;
+    }
     // FM squelch — offered on every CAT rig (standard Yaesu/Kenwood SQ, Icom
     // CI-V 0x14 03, Hamlib L SQL, Flex slice squelch). Clients gate it to FM
     // mode. See lib/rig-controls.js 'set-squelch'. An unsupported SQ just
@@ -2100,6 +2119,10 @@ function broadcastRigState() {
     // last user click.
     preamp: _currentPreampState,
     att: _currentAttState,
+    // Ladder positions — the boolean above stays for clients that only know
+    // on/off; these carry which STEP (IPO/AMP1/AMP2, 6/12/18 dB) is active.
+    preampStep: _currentPreampStep,
+    attStep: _currentAttStep,
     comp: _currentCompState,
     nr: _currentNrState,
     anf: _currentAnfState,
@@ -14693,6 +14716,12 @@ function broadcastRemoteRadioStatus() {
     nr: _currentNrState,
     anf: _currentAnfState,
     apf: _currentApfState,
+    // Ladder positions for rigs with IPO/AMP1/AMP2 + 6/12/18 dB. The phone
+    // reads capabilities.preampSteps/attSteps to know the ladder and sends a
+    // step back through the same set-preamp/set-att actions; a build that
+    // only knows the boolean keeps working unchanged (KB2UXB 2026-08-04).
+    preampStep: _currentPreampStep,
+    attStep: _currentAttStep,
     // Extended firmware DSP (Flex 8000/Aurora) — cap-gated on the phone via
     // capabilities.nrl/nrs/rnn/nrf; state keys match the caps names.
     nrl: _currentNrlState,
@@ -24193,26 +24222,34 @@ app.whenReady().then(() => {
       }
       case 'set-preamp': {
         if (flexNeedsApi) { _flexWarnOnce('Preamp requires SmartSDR API — not connected'); break; }
-        const on = !!data.value;
+        // value is a ladder STEP on rigs that have one (IPO/AMP1/AMP2), or a
+        // boolean on single-stage rigs and from older clients — resolveStep
+        // accepts both, so an ECHOCAT build that only knows the toggle keeps
+        // working and lands on the first ON step (KB2UXB 2026-08-04).
+        const preSteps = getRigCapabilities(rigType).preampSteps;
+        const step = _rigGainSteps.resolveStep(data.value, preSteps);
         // Flex 6000/8000 have no discrete preamp toggle — RF gain handles
         // it. Accept the call so the UI logic stays uniform; no-op on Flex.
         // A rig layer that REFUSES (returns false — codec has no such
         // control) must not flip the state: the toggle showing "applied"
         // while nothing was sent is the silent lie K6RBJ burned weeks on.
         if (cat && cat.connected && typeof cat.setPreamp === 'function') {
-          if (cat.setPreamp(on) === false) break;
+          if (cat.setPreamp(step) === false) break;
         }
-        _currentPreampState = on;
+        _currentPreampStep = step;
+        _currentPreampState = step > 0;
         broadcastRigState();
         break;
       }
       case 'set-att': {
         if (flexNeedsApi) { _flexWarnOnce('Attenuator requires SmartSDR API — not connected'); break; }
-        const on = !!data.value;
+        const attSteps = getRigCapabilities(rigType).attSteps;
+        const step = _rigGainSteps.resolveStep(data.value, attSteps);
         if (cat && cat.connected && typeof cat.setAttenuator === 'function') {
-          if (cat.setAttenuator(on) === false) break;
+          if (cat.setAttenuator(step) === false) break;
         }
-        _currentAttState = on;
+        _currentAttStep = step;
+        _currentAttState = step > 0;
         broadcastRigState();
         break;
       }
