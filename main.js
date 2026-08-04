@@ -7756,6 +7756,13 @@ function startJtcat(mode) {
     else if (data.state === 'stopped') stopJtcatClockMonitor();
   });
 
+  ft8Engine.on('encode-failed', (data) => {
+    // Encode refusals used to be console-only: the QSO loop kept "calling"
+    // while the rig never keyed and the bug report showed nothing (KF0U's
+    // FT4 reply to W1AW/4, 2026-07-22). One line, deduped in the engine.
+    sendCatLog(`[JTCAT] TX ENCODE FAILED (${data.mode}): "${data.message}" — ${data.reason}. The rig will NOT key until the TX message changes.`);
+  });
+
   ft8Engine.on('tx-start', (data) => {
     // Radio-owner arbiter: Mercury (HF data) and JTCAT must never both key. If
     // Mercury holds the radio, refuse this transmission and unwind the engine
@@ -28059,6 +28066,10 @@ app.whenReady().then(() => {
         if (txWinner) {
           console.log(`[JTCAT] TX scheduler: ${txWinner} wins TX slot`);
         }
+      });
+
+      engine.on('encode-failed', (data) => {
+        sendCatLog(`[JTCAT] TX ENCODE FAILED (${s.band} ${data.mode}): "${data.message}" — ${data.reason}. This slice will NOT key until the TX message changes.`);
       });
 
       // Wire TX events — critical for multi-slice PTT and audio playback
