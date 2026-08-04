@@ -17453,6 +17453,11 @@ function createWindow() {
   const defaultH = Math.min(700, primary.height);
   const isMac = process.platform === 'darwin';
   win = new BrowserWindow({
+    // Explicit x/y centered on the PRIMARY display. Without them the window
+    // manager picks the placement, and on Linux that's often monitor 1 even
+    // when the user's primary is monitor 2 (KM4CFT 2026-07-21).
+    x: primary.x + Math.max(0, Math.round((primary.width - defaultW) / 2)),
+    y: primary.y + Math.max(0, Math.round((primary.height - defaultH) / 2)),
     width: defaultW,
     height: defaultH,
     title: `POTACAT - v${getAppDisplayVersion()}`,
@@ -17470,7 +17475,8 @@ function createWindow() {
 
   // Restore saved window bounds after creation (DPI-aware), clamped to fit screen
   const saved = settings.windowBounds;
-  if (saved && saved.width > 200 && saved.height > 150 && isOnScreen(saved)) {
+  const savedValid = !!(saved && saved.width > 200 && saved.height > 150 && isOnScreen(saved));
+  if (savedValid) {
     win.setBounds(clampToWorkArea(saved));
   }
 
@@ -17483,6 +17489,29 @@ function createWindow() {
 
   if (!HEADLESS) win.show();
   logStartupStage('win.show() (window visible)');
+
+  // Linux WMs (X11 especially) may re-place a window when it is mapped,
+  // overriding the pre-show setBounds — the visible symptom is POTACAT
+  // always opening on monitor 1 no matter where it was closed (KM4CFT
+  // 2026-07-21). Once mapped, re-assert the intended display; a maximized
+  // window must be cycled unmaximize -> move -> maximize because setBounds
+  // is ignored while maximized.
+  if (process.platform === 'linux' && !HEADLESS && savedValid) {
+    const target = clampToWorkArea(saved);
+    setTimeout(() => {
+      if (!win || win.isDestroyed()) return;
+      const wantDisplay = screen.getDisplayMatching(target);
+      const curDisplay = screen.getDisplayMatching(win.getBounds());
+      if (wantDisplay.id === curDisplay.id) return;
+      if (win.isMaximized()) {
+        win.unmaximize();
+        win.setBounds(target);
+        win.maximize();
+      } else {
+        win.setBounds(target);
+      }
+    }, 300);
+  }
 
   // Theme + dark-variant in the query string so the renderer's
   // popout-theme-bootstrap.js can stamp data-theme + data-dark-variant
@@ -17500,10 +17529,15 @@ function createWindow() {
 
   // Close pop-out map when main window closes
   win.on('close', () => {
-    // Save window bounds before destruction
+    // Save window bounds before destruction. getNormalBounds(), not
+    // getBounds(): it returns the un-maximized rect even while maximized,
+    // so a user who always runs maximized still gets their monitor
+    // remembered — the old isMaximized() skip meant windowBounds froze at
+    // whatever monitor the window was last closed UN-maximized on, and the
+    // next launch maximized onto the wrong display (KM4CFT 2026-07-21).
     settings.windowMaximized = win.isMaximized();
-    if (!win.isMaximized() && !win.isMinimized()) {
-      settings.windowBounds = win.getBounds();
+    if (!win.isMinimized()) {
+      settings.windowBounds = win.getNormalBounds();
     }
     // Remember whether pop-out windows were open
     settings.mapPopoutOpen = !!(popoutWin && !popoutWin.isDestroyed());
