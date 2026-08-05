@@ -20366,6 +20366,15 @@ let kiwiActive = false;
 
 app.whenReady().then(() => {
   logStartupStage('app.whenReady fired');
+  // Windows app identity. Without it every toast POTACAT raises (watchlist
+  // spot alerts, pair requests) is attributed to the launching executable —
+  // "electron.app.Electron" with the Electron icon in dev, and on some
+  // Windows builds the toast is dropped entirely. It also decides which
+  // taskbar button the windows group under. Must match build.appId so a
+  // packaged install and a dev run agree. Windows-only; a no-op elsewhere.
+  if (process.platform === 'win32') {
+    try { app.setAppUserModelId('com.waffleslop.potacat'); } catch {}
+  }
   startPskrReporter(); // 5-min PSKReporter flush loop (no-ops unless enabled)
   // Add Referer header for OpenStreetMap tile requests (required by OSM usage policy)
   const { session } = require('electron');
@@ -23772,8 +23781,27 @@ app.whenReady().then(() => {
     // the leaking process. workingSetSize is in KB. See
     // docs/desktop-handoffs/oom-flex-audio.md.
     try {
+      // Map OS pid -> which window, so a climbing renderer is NAMED instead
+      // of an anonymous "Tab=372". K3SBP 2026-08-05 logged a renderer growing
+      // 181→369 MB over 10 h and the line couldn't say which window it was,
+      // which is most of the diagnosis. Titles are stable per window type.
+      const pidNames = new Map();
+      try {
+        for (const w of BrowserWindow.getAllWindows()) {
+          if (!w || w.isDestroyed()) continue;
+          const wc = w.webContents;
+          if (!wc || wc.isDestroyed()) continue;
+          let label = '';
+          try { label = wc.getTitle() || ''; } catch {}
+          if (!label) { try { label = (wc.getURL() || '').split('/').pop().split('?')[0]; } catch {} }
+          pidNames.set(wc.getOSProcessId(), label || 'window');
+        }
+      } catch {}
       const procs = app.getAppMetrics()
-        .map((p) => `${p.type}${p.name ? '(' + p.name + ')' : ''}=${(p.memory.workingSetSize / 1024).toFixed(0)}`)
+        .map((p) => {
+          const named = p.name || pidNames.get(p.pid) || '';
+          return `${p.type}${named ? '(' + named + ')' : ''}=${(p.memory.workingSetSize / 1024).toFixed(0)}`;
+        })
         .join(' ');
       sendCatLog(`[Mem] procs(MB) ${procs}`);
     } catch (e) { /* getAppMetrics unavailable — ignore */ }
