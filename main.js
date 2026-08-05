@@ -18918,9 +18918,19 @@ const TELEMETRY_URL = 'https://telemetry.potacat.com/ping';
 let sessionStartTime = Date.now();
 let lastActivityTime = Date.now(); // tracks meaningful user actions for active/idle detection
 
-function markUserActive() {
+function markUserActive(opts) {
   lastActivityTime = Date.now();
-  if (autoSstvActive) cancelAutoSstv();
+  // An idle-RX session DRIVES THE RADIO ITSELF: the JTCAT popout it opens
+  // tunes to the WSPR/PSK dial and saves settings while starting, and both of
+  // those arrive here as ordinary IPC — indistinguishable from the operator
+  // coming back. So the session cancelled itself ~250 ms after starting and
+  // closed the popout it had just opened, while the already-issued tune and
+  // engine start survived: the rig sat on the WSPR dial decoding with no
+  // window and no way to see it, and the 30 s idle tick then logged
+  // "[Auto-RX] Deferred" forever. K3SBP 2026-08-05: "the radio is QSYd to a
+  // WSPR frequency but I don't see proof of it decoding." Actions that ARE
+  // the session must not read as the operator returning.
+  if (autoSstvActive && !(opts && opts.selfDriven)) cancelAutoSstv();
   // If CAT polling was paused for inactivity, resume it now — user is back
   if (idlePolePaused && cat && cat.resumePolling) {
     cat.resumePolling();
@@ -18928,6 +18938,16 @@ function markUserActive() {
   }
 }
 function isUserActive() { return (Date.now() - lastActivityTime) < 1800000; } // active within 30 min
+
+/**
+ * True when this IPC came from the JTCAT popout that an idle-RX session
+ * opened — i.e. the session driving itself, not the operator. Used to keep
+ * markUserActive() from cancelling the session that caused the event.
+ */
+function isIdleRxSelfAction(sender) {
+  return !!(autoIdleJtcatActive && sender && jtcatPopoutWin &&
+    !jtcatPopoutWin.isDestroyed() && sender === jtcatPopoutWin.webContents);
+}
 
 // --- Idle CAT-polling pause ---
 // Polling keeps some radios from entering their screensaver / sleep mode
@@ -18970,6 +18990,7 @@ let autoSstvCurrentFreq = 0;
 let autoIdleJtcatActive = false;
 let autoIdlePrevJtcatMode = null;
 let autoIdleJtcatOpenedPopout = false;
+let _autoRxDeferLogged = false; // one "Deferred" line per deferral, not per tick
 let autoIdleRxLabel = null; // 'WSPR' | 'PSK31' — names the stop log line
 // PSK31 watering-hole USB dials (kHz), mirrored from the popout's
 // PSK_BAND_FREQS. PSK31-on-idle parks on one band (no hopping).
@@ -19039,9 +19060,18 @@ function autoSstvBlockedByJtcat() {
 
 function triggerAutoSstv() {
   if (autoSstvBlockedByJtcat()) {
-    sendCatLog('[Auto-RX] Deferred — JTCAT is already decoding');
+    // Log the state ONCE per deferral, not on every 30 s tick. Left
+    // unthrottled this emitted ~120 lines/hour of pure noise, which is
+    // enough to evict everything real from the 600-line main ring and the
+    // 500-line renderer panel — the operator's WSPR decode lines scrolled
+    // away and the session looked dead (K3SBP 2026-08-05).
+    if (!_autoRxDeferLogged) {
+      _autoRxDeferLogged = true;
+      sendCatLog('[Auto-RX] Deferred — JTCAT is already decoding (silenced until it stops)');
+    }
     return;
   }
+  _autoRxDeferLogged = false;
   // WSPR/PSK31-on-idle variant: open the JTCAT popout in that mode (it owns
   // audio capture + the spot list/map) instead of SSTV. The popout auto-starts
   // from settings.jtcatLastMode and tunes to settings.jtcatLastBandFreq, so
@@ -24064,7 +24094,9 @@ app.whenReady().then(() => {
   // race-protection design before re-introducing.)
 
   ipcMain.on('tune', (_e, { frequency, mode, bearing, slicePort, origin }) => {
-    markUserActive();
+    // The idle-RX session's own QSY (including WSPR band hops) must not read
+    // as the operator returning — see markUserActive().
+    markUserActive({ selfDriven: isIdleRxSelfAction(_e.sender) });
     if (_vfoLocked) {
       _e.sender.send('tune-blocked', 'VFO Locked — Unlock VFO to change frequency');
       return;
@@ -26318,7 +26350,9 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle('save-settings', (_e, newSettings) => {
-    markUserActive();
+    // Same self-drive exemption as the tune handler: the idle-RX popout
+    // persists its own state (band, mode, gain) as it starts up.
+    markUserActive({ selfDriven: isIdleRxSelfAction(_e.sender) });
     // Per-band region mutes: sanitize on every write (never store a payload
     // verbatim) and ship the updated set to connected ECHOCAT clients so a
     // rule added on the desktop hides the spots on the mobile device too.
