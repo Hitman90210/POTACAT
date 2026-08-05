@@ -3151,6 +3151,9 @@ function _applyPopoutTheme(payload) {
     }
     if (popoutVita49Ctx) { popoutVita49Ctx.close().catch(function() {}); popoutVita49Ctx = null; }
     popoutVita49Dest = null;
+    // Tell main we are no longer an IP-audio sink so it can fall back to the
+    // main window (see setJtcatIpAudioReady(true) in startPopoutAudio).
+    if (window.api.setJtcatIpAudioReady) window.api.setJtcatIpAudioReady(false);
   }
 
   // Stall watchdog + retry state (K3SBP 2026-07-18 blank-waterfall hunt):
@@ -3215,6 +3218,15 @@ function _applyPopoutTheme(payload) {
         popoutVita49Dest = popoutVita49Ctx.createMediaStreamDestination();
         popoutVita49Node.connect(popoutVita49Dest);
         popoutAudioStream = popoutVita49Dest.stream;
+        // Declare this window an IP-audio sink. The Icom-network path in main
+        // (sendIcomNetworkJtcatUiAudio) routes VITA frames to popout-or-main
+        // by readiness, and the popout preload never exposed this call — so
+        // the popout was ALWAYS "not ready" and RS-BA1/Icom-network users got
+        // no popout waterfall at all, the frames going to the main window
+        // which suppresses its own capture while the popout is open. The
+        // SmartSDR path sends to both windows and was unaffected, which is
+        // why this hid for so long. (K3SBP 2026-08-05.)
+        if (window.api.setJtcatIpAudioReady) window.api.setJtcatIpAudioReady(true);
         console.log('[JTCAT popout] Audio source: SmartSDR Direct (VITA-49 dax_rx via AudioWorklet)');
       } else {
         var constraints = {

@@ -95,6 +95,11 @@ contextBridge.exposeInMainWorld('api', {
       }
     });
   },
+  // Declares this window a live IP-audio sink. Main's Icom-network path picks
+  // popout-vs-main by this flag; it was missing here, so the popout was always
+  // "not ready" and Icom-network users had no popout waterfall (K3SBP
+  // 2026-08-05). Same channel and payload shape as preload.js.
+  setJtcatIpAudioReady: (ready) => ipcRenderer.send('jtcat-ip-audio-ready', { ready: !!ready }),
   onJtcatQsoState: (cb) => ipcRenderer.on('jtcat-qso-state', (_e, data) => cb(data)),
   onJtcatQsoLogged: (cb) => ipcRenderer.on('jtcat-qso-logged', (_e, data) => cb(data)),
   onCatStatus: (cb) => ipcRenderer.on('cat-status', (_e, s) => cb(s)),
