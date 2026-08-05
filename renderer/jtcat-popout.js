@@ -2071,6 +2071,21 @@ function _applyPopoutTheme(payload) {
     window.api.openQsoLog();
   });
 
+  // ATU — momentary antenna-tuner match cycle through the one rig-control
+  // dispatcher in main. Not a toggle: every press starts a tune (a button that
+  // bypassed the tuner on the second tap would be surprising, and the desktop,
+  // VFO popout and phone all share this behavior).
+  var atuBtn = document.getElementById('jp-atu');
+  if (atuBtn && window.api.rigControl) {
+    var atuTimer = null;
+    atuBtn.addEventListener('click', function() {
+      window.api.rigControl({ action: 'atu-tune' });
+      atuBtn.classList.add('tuning');
+      if (atuTimer) clearTimeout(atuTimer);
+      atuTimer = setTimeout(function() { atuBtn.classList.remove('tuning'); atuTimer = null; }, 5000);
+    });
+  }
+
   // Hunt (auto-answer other stations' CQs; renamed from "Auto:" 2026-07-16)
   var autoCqSelect = document.getElementById('jp-auto-cq');
   autoCqSelect.addEventListener('change', function() {

@@ -198,6 +198,9 @@
     .jp-btn:hover { background: var(--bg-hover); }
     .jp-btn.active { background: var(--accent-green, #4ecca3); color: #fff; border-color: var(--accent-green, #4ecca3); }
     .jp-btn.jp-halt { background: #e94560; color: #fff; border-color: #e94560; }
+    /* ATU — momentary. The pulse is a 5 s "I sent it" acknowledgement, not a
+       readback: the radio doesn't report tune-in-progress over CAT. */
+    .jp-btn.jp-atu.tuning { background: #f0a500; color: #000; border-color: #f0a500; animation: jp-tune-pulse 1s ease-in-out infinite; }
     .jp-btn.jp-tune { color: #f0a500; border-color: #f0a500; }
     .jp-btn.jp-tune:hover { background: #f0a500; color: #000; }
     .jp-btn.jp-tune.active { background: #e94560; color: #fff; border-color: #e94560; animation: jp-tune-pulse 1s ease-in-out infinite; font-variant-numeric: tabular-nums; }
@@ -578,6 +581,10 @@
          English helper text (popover markup after the bar) -->
     <button id="jp-options-btn" class="jp-btn" title="QSO options — answer callers, skip grid, hold TX frequency, retry limit, Field Day, Hound">&#9881;</button>
     <button id="jp-open-log" class="jp-btn" title="Open QSO log" style="margin-left:auto;">Log</button>
+    <!-- Antenna tuner. Distinct from the Tune button on the left: that one
+         transmits a steady tone, this runs the RADIO's ATU match cycle. Also
+         the way to clear a tripped SWR guard without leaving the popout. -->
+    <button id="jp-atu" class="jp-btn jp-atu" title="Run the radio's antenna tuner match cycle. (The Tune button on the left is a steady-tone TX carrier — different thing.)">ATU</button>
     <span id="jp-tx-msg" class="jp-tx-msg">&mdash;</span>
   </div>
 

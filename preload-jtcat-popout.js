@@ -8,6 +8,9 @@ contextBridge.exposeInMainWorld('api', {
   jtcatSetMode: (mode) => ipcRenderer.send('jtcat-set-mode', mode),
   jtcatSetWsprDial: (bandOrMHz) => ipcRenderer.send('jtcat-set-wspr-dial', bandOrMHz),
   openExternal: (url) => ipcRenderer.send('open-external', url),
+  // Rig control through the ONE dispatcher in main (applyRigControl). Same
+  // bridge the VFO pop-out uses; registered with ipcMain.handle, so invoke.
+  rigControl: (data) => ipcRenderer.invoke('rig-control', data),
   jtcatWsprBeacon: (opts) => ipcRenderer.send('jtcat-wspr-beacon', opts),
   jtcatWsprHop: (opts) => ipcRenderer.send('jtcat-wspr-hop', opts),
   // `operator` true = a deliberate move (TX box / waterfall) — honored even
