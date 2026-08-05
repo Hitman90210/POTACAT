@@ -164,6 +164,41 @@ test('the pending queue stays bounded when replies never come', () => {
   assert.ok(codec._pending.length <= 12, `queue grew to ${codec._pending.length}`);
 });
 
+// LZ3AW IC-7300 on v1.9.23: an RPRT disarmed the VFO/split expectations and the
+// orphaned `VFOA` landed in the catch-all mode branch as a phantom mode every
+// poll cycle. Both clients gate PTT and HALT on a voice-mode whitelist, so the
+// operator's symptom was "the PTT and HALT buttons disappear a few seconds
+// after connecting" while FT8 kept working. Attribution is the real fix; these
+// pin the second line of defence, which holds even if _pending ever desyncs.
+test('the exact v1.9.23 phantom-mode trace produces no phantom mode', () => {
+  const { codec, events } = makeCodec();
+  poll(codec);
+  codec.onData('7182000\nLSB\n2400\n0\nRPRT -11\n0\nVFOA\n-30\n');
+  const modes = events.filter((e) => e[0] === 'mode').map((e) => e[1]);
+  assert.deepStrictEqual(modes, ['LSB'], 'VFOA must never be emitted as a mode');
+  assert.strictEqual(valueOf(events, 'smeter'), 54, 'and the S-meter survives');
+});
+
+test('a VFO/memory name is refused as a mode even with nothing expecting it', () => {
+  for (const tok of ['VFOA', 'VFOB', 'VFO', 'MEM', 'MAIN', 'SUB', 'CURRVFO']) {
+    const { codec, events } = makeCodec();
+    codec.onData(tok + '\n');   // fully desynced — no expectations armed
+    assert.deepStrictEqual(events.filter((e) => e[0] === 'mode'), [],
+      `${tok} must not reach the mode branch`);
+  }
+});
+
+test('real modes still pass the never-modes filter', () => {
+  const { codec, events } = makeCodec();
+  for (const m of ['USB', 'LSB', 'CW', 'FM', 'AM', 'RTTY', 'PKTUSB', 'PKTLSB', 'FREEDV']) {
+    codec._expectPassband = false;
+    codec.onData(m + '\n');
+  }
+  const modes = events.filter((e) => e[0] === 'mode').map((e) => e[1]);
+  assert.deepStrictEqual(modes,
+    ['USB', 'LSB', 'CW', 'FM', 'AM', 'RTTY', 'PKTUSB', 'PKTLSB', 'FREEDV']);
+});
+
 test('a frequency reply arriving while the S-meter is pending is not stolen', () => {
   // AB9AI 2026-05-04 — the range guard that made this work must survive.
   const { codec, events } = makeCodec();

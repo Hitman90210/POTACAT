@@ -2050,7 +2050,25 @@ function sendCatFrequency(hz) {
   sendN1mmRadioInfo();
 }
 
+// Tokens that are never a mode, whatever codec produced them. See the same
+// list in lib/codecs/rigctld-codec.js — this is the cross-codec net so no
+// backend can seat a VFO name in _currentMode and take PTT/HALT away from the
+// clients (both gate those buttons on a voice-mode whitelist, so an unknown
+// mode reads to the operator as "the buttons disappeared").
+const NEVER_MODES = /^(VFO[AB]?|MEM|MAIN|SUB|CURRVFO)$/i;
+let _lastRejectedMode = '';
+
 function sendCatMode(mode) {
+  if (mode && NEVER_MODES.test(String(mode).trim())) {
+    // Always-on, deduped: this is a codec contract violation and the operator's
+    // symptom (missing PTT) points nowhere near the cause. Worth a line.
+    if (mode !== _lastRejectedMode) {
+      _lastRejectedMode = mode;
+      sendCatLog(`[CAT] Ignoring "${mode}" as a mode — that is a VFO/memory name, not a mode. Keeping ${_currentMode || 'the previous mode'}.`);
+    }
+    return;
+  }
+  _lastRejectedMode = '';
   // While FreeDV engine is active, display the codec name (FREEDV-RADEV1
   // / FREEDV-700E / etc.) instead of the radio's actual carrier mode.
   // The rig HAS to be in a digital sideband for FreeDV to work, but the
