@@ -327,6 +327,7 @@ contextBridge.exposeInMainWorld('api', {
   // Pop-out QSO log
   qsoPopoutOpen: () => ipcRenderer.send('qso-popout-open'),
   openLogPopout: (prefill) => ipcRenderer.send('log-popout-open', prefill),
+  onLogPopoutStatus: (cb) => ipcRenderer.on('log-popout-status', (_e, open) => cb(open)),
   logPopoutTheme: (theme) => ipcRenderer.send('log-popout-theme', theme),
   pairPopoutTheme: (theme) => ipcRenderer.send('pair-popout-theme', theme),
   qsoPopoutClose: () => ipcRenderer.send('qso-popout-close'),

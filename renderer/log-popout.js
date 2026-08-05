@@ -37,6 +37,7 @@ function _applyPopoutTheme(payload) {
   const chipsEl = document.querySelectorAll('.lp-chip');
   const refSection = document.getElementById('lp-ref-section');
   const refInput = document.getElementById('lp-ref');
+  const refNameEl = document.getElementById('lp-ref-name');
   const freqInput = document.getElementById('lp-frequency');
   const modeSelect = document.getElementById('lp-mode');
   const dateInput = document.getElementById('lp-date');
@@ -317,6 +318,9 @@ function _applyPopoutTheme(payload) {
     chipsEl.forEach((c) => c.classList.toggle('active', c.dataset.type === type));
     refSection.classList.toggle('hidden', type === 'dx');
     if (type === 'dx') refInput.value = '';
+    // A park name only ever belongs to the reference it arrived with, so any
+    // chip change drops it rather than leaving it captioning a different ref.
+    if (refNameEl) refNameEl.textContent = '';
     // Show the spot/respot toggle when the chip can spot at all. DX is
     // gated on a live cluster connection (see spotEligible); POTA/WWFF/LLOTA
     // always show. Default-checked state honors the user's persisted
@@ -363,6 +367,7 @@ function _applyPopoutTheme(payload) {
     callInput.value = '';
     nameInput.value = '';
     refInput.value = '';
+    if (refNameEl) refNameEl.textContent = '';
     notesInput.value = '';
     rstSentInput.value = '59';
     rstRcvdInput.value = '59';
@@ -545,6 +550,12 @@ function _applyPopoutTheme(payload) {
   // Type chips
   chipsEl.forEach((c) => c.addEventListener('click', () => selectChip(c.dataset.type)));
 
+  // Editing the reference by hand invalidates a park name that came in with a
+  // spot — drop it rather than caption the wrong park.
+  refInput.addEventListener('input', () => {
+    if (refNameEl) refNameEl.textContent = '';
+  });
+
   // Callsign input
   callInput.addEventListener('input', () => {
     callInput.value = callInput.value.toUpperCase();
@@ -627,9 +638,41 @@ function _applyPopoutTheme(payload) {
 
   // ── Prefill on open ─────────────────────────────────────────────────────
 
+  // Modes whose RST is three digits. Mirrors CW_DIGI_MODES_SET in app.js so a
+  // spot routed here gets the same 599 the in-window overlay would have given.
+  const CW_DIGI_MODES = new Set(['CW', 'FT8', 'FT4', 'FT2', 'RTTY', 'DIGI', 'JS8', 'PSK31', 'PSK']);
+
+  /** Spot-driven prefill (`force`): the operator clicked Log on a specific
+   *  spot, so this window becomes that QSO outright rather than merging into
+   *  whatever was half-typed — the same reset the in-window overlay does. Only
+   *  this path may overwrite fields; the plain Ctrl+L prefill below still
+   *  defers to anything already entered. */
+  function applySpotPrefill(p) {
+    clearForm({ skipFocus: true });
+    callInput.value = String(p.callsign || '').toUpperCase();
+    if (p.freqKhz) freqInput.value = String(Math.round(p.freqKhz));
+    if (p.mode) {
+      const m = modeFamily(p.mode);
+      if ([...modeSelect.options].some((o) => o.value === m)) modeSelect.value = m;
+    }
+    if (p.power) powerInput.value = String(p.power);
+    // selectChip reveals the reference row and re-seeds the re-spot checkbox
+    // and comment template for this program — do it before filling the ref.
+    selectChip(p.type || 'dx');
+    if (p.type && p.type !== 'dx') refInput.value = String(p.reference || '').toUpperCase();
+    if (refNameEl) refNameEl.textContent = p.parkName || '';
+    const rst = CW_DIGI_MODES.has(modeSelect.value) ? '599' : '59';
+    rstSentInput.value = rst;
+    rstRcvdInput.value = rst;
+    if (callInput.value) scheduleLookup();
+    rstSentInput.focus();
+    rstSentInput.select();
+  }
+
   if (window.api.onPrefill) {
     window.api.onPrefill((p) => {
       if (!p) return;
+      if (p.force) { activationCtx = p.activationCtx || null; applySpotPrefill(p); return; }
       if (p.freqKhz && !freqUserEdited) freqInput.value = String(Math.round(p.freqKhz));
       if (p.mode && !modeUserEdited) {
         const m = modeFamily(p.mode);

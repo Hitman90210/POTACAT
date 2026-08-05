@@ -17673,6 +17673,14 @@ function createWindow() {
     // at did-finish-load. One array send, not per-line, so the renderer can
     // rebuild its textarea once.
     if (_catLogRing.length) win.webContents.send('cat-log-history', _catLogRing.slice());
+    // The log pop-out re-opens itself at startup (settings.logPopoutOpen), so
+    // it can already exist before this renderer loads. Without this replay the
+    // fresh renderer believes it's closed and sends spot Log clicks to the
+    // in-window overlay instead of the window sitting open on the user's
+    // second screen.
+    if (logPopoutWin && !logPopoutWin.isDestroyed()) {
+      win.webContents.send('log-popout-status', true);
+    }
     if (cat) {
       sendCatStatus({ connected: cat.connected, target: cat._target });
     }
@@ -21651,10 +21659,18 @@ app.whenReady().then(() => {
         }
       }
     });
-    logPopoutWin.on('closed', () => { logPopoutWin = null; });
+    logPopoutWin.on('closed', () => {
+      logPopoutWin = null;
+      if (win && !win.isDestroyed()) win.webContents.send('log-popout-status', false);
+    });
 
     logPopoutWin.webContents.on('did-finish-load', () => {
       if (!logPopoutWin || logPopoutWin.isDestroyed()) return;
+      // Tell the main window this surface exists: a spot's Log button routes
+      // here instead of opening the in-window overlay when it does (W9TEF —
+      // he keeps this window on a second screen and clicking Log gave him a
+      // second, redundant form).
+      if (win && !win.isDestroyed()) win.webContents.send('log-popout-status', true);
       // Send theme + prefill once the renderer is ready.
       logPopoutWin.webContents.send('log-popout-theme', { theme: settings.lightMode ? 'light' : 'dark', variant: settings.darkVariant || 'navy' });
       if (prefill) logPopoutWin.webContents.send('log-popout-prefill', prefill);

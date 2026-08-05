@@ -164,6 +164,10 @@
       <label style="font-size:11px;color:var(--text-secondary);">Reference
         <input type="text" id="lp-ref" placeholder="e.g. US-1234" autocomplete="off" spellcheck="false" style="text-transform:uppercase;width:100%;padding:4px 6px;font-size:13px;background:var(--bg-input,#0f1419);border:1px solid var(--border-primary,#333);color:var(--text-primary);border-radius:3px;box-sizing:border-box;margin-top:3px;">
       </label>
+      <!-- Park/summit name for a reference routed in from a spot's Log
+           button. Display only — confirms the operator is logging the park
+           they meant; the saved record carries the reference, not the name. -->
+      <div id="lp-ref-name" style="font-size:11px;color:var(--text-secondary);margin-top:3px;min-height:13px;"></div>
     </div>
 
     <!-- Re-spot section — visible only for types with a respot endpoint

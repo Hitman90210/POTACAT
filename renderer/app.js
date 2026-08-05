@@ -418,6 +418,7 @@ let qsoPopoutOpen = false; // pop-out QSO log window is open
 let spotsPopoutOpen = false; // pop-out spots window is open
 let actmapPopoutOpen = false; // pop-out activation map window is open
 let clusterPopoutOpen = false; // pop-out cluster terminal is open
+let logPopoutOpen = false; // standalone Log QSO window (Ctrl+L) is open
 let jtcatPopoutOpen = false; // pop-out JTCAT window is open
 let dxccData = null;  // { entities: [...] } from main process
 let enableWsjtx = false;
@@ -9812,7 +9813,7 @@ function bindPopupClickHandlers(mapInstance) {
           wwffReference: btn.dataset.wwffRef || '',
           wwffParkName: btn.dataset.wwffName || '',
         };
-        openLogPopup(spot);
+        routeLogForSpot(spot);
       });
     });
   });
@@ -10692,6 +10693,14 @@ window.api.onQsoPopoutStatus((open) => {
   qsoPopoutOpen = open;
 });
 
+// --- Log QSO Pop-out (Ctrl+L) ---
+// Tracked so routeLogForSpot() can send a spot to the standalone window when
+// the operator already has it open, instead of stacking the in-window overlay
+// on top of it.
+window.api.onLogPopoutStatus((open) => {
+  logPopoutOpen = open;
+});
+
 // --- Cluster Terminal Pop-out ---
 window.api.onClusterPopoutStatus((open) => {
   clusterPopoutOpen = open;
@@ -11480,7 +11489,7 @@ window.api.onPopoutMapStatus((open) => {
 
 // Open log dialog when requested from pop-out map
 window.api.onPopoutOpenLog((spot) => {
-  if (enableLogging) openLogPopup(spot);
+  if (enableLogging) routeLogForSpot(spot);
 });
 
 function enrichSpotsForPopout(filtered) {
@@ -11845,8 +11854,10 @@ function render() {
           e.stopPropagation();
           // With a multi-op selection active, log all selected operators at once
           // (this row included); otherwise log just this spot.
+          // Multi-op stays on the overlay: the pop-out has no comma-splitter
+          // for a joined callsign list.
           if (selectedSpotCalls.size > 0) logSelectedOperators(s);
-          else openLogPopup(s);
+          else routeLogForSpot(s);
         });
         logTd.appendChild(logButton);
       }
@@ -12316,6 +12327,88 @@ function logSelectedOperators(baseSpot) {
   if (tbody) tbody.querySelectorAll('.spot-selected').forEach((r) => r.classList.remove('spot-selected'));
 }
 
+/** Which OTA programs is this spot tagged with?
+ *  The primary comes from spot.source (+ spot.reference / spot.parkName);
+ *  every secondary the cross-source dedup in main.js merged in lives on
+ *  spot.<type>Reference / spot.<type>ParkName. Shared by the in-window log
+ *  overlay and routeLogForSpot() so the two can never disagree about what a
+ *  spot actually contains.
+ *  @returns {{types: string[], refs: object, names: object, dx: boolean}}
+ */
+function detectSpotPrograms(spot) {
+  const sourceToType = { pota: 'pota', sota: 'sota', wwff: 'wwff', llota: 'llota', dxc: 'dx' };
+  const mappedPrimary = sourceToType[spot.source] || '';
+  const out = { types: [], refs: {}, names: {}, dx: mappedPrimary === 'dx' };
+
+  if (mappedPrimary && LOG_OTA_TYPES.includes(mappedPrimary)) {
+    out.types.push(mappedPrimary);
+    out.refs[mappedPrimary] = spot.reference || '';
+    out.names[mappedPrimary] = spot.parkName || '';
+  }
+  for (const t of LOG_OTA_TYPES) {
+    if (t === mappedPrimary) continue;
+    if (spot[t + 'Reference']) {
+      out.types.push(t);
+      out.refs[t] = spot[t + 'Reference'];
+      out.names[t] = spot[t + 'ParkName'] || '';
+    }
+  }
+  return out;
+}
+
+// The chips the standalone Log QSO pop-out has (renderer/log-popout.html).
+// WWBOTA is deliberately absent — the pop-out has no chip for it, so a bunker
+// spot falls back to the overlay rather than losing its reference.
+const LOG_POPOUT_TYPES = ['pota', 'sota', 'wwff', 'llota'];
+
+/** Can the standalone pop-out hold everything this spot carries?
+ *  Its form is one program chip and one reference; the overlay additionally
+ *  does n-fers and comma-separated multi-park refs. Anything richer than a
+ *  single single-ref program has to stay on the overlay or we'd silently drop
+ *  log data.
+ */
+function spotFitsPopout(spot) {
+  const p = detectSpotPrograms(spot);
+  if (p.types.length === 0) return true;            // plain DX / no program
+  if (p.types.length > 1) return false;             // n-fer
+  const t = p.types[0];
+  if (!LOG_POPOUT_TYPES.includes(t)) return false;  // e.g. WWBOTA
+  return !String(p.refs[t] || '').includes(',');    // multi-park two-fer
+}
+
+/** Send a spot's Log click to the standalone window when it's open.
+ *  W9TEF keeps that window on a second screen while operating; clicking Log
+ *  used to ignore it and stack the in-window overlay on top, leaving two log
+ *  forms on screen. When the window is closed, or the spot needs the richer
+ *  overlay, nothing changes.
+ */
+function routeLogForSpot(spot) {
+  if (!logPopoutOpen || !spotFitsPopout(spot)) {
+    openLogPopup(spot);
+    return;
+  }
+  const p = detectSpotPrograms(spot);
+  const type = p.types[0] || 'dx';
+  const activationCtx = (activationActive && activatorParkRefs.length > 0)
+    ? { mySig: 'POTA', mySigInfo: activatorParkRefs[0].ref }
+    : null;
+  window.api.openLogPopout({
+    callsign: spot.callsign || '',
+    freqKhz: parseFloat(spot.frequency) || null,
+    mode: spot.mode || null,
+    // Same precedence as the overlay: live CAT reading, then last entered,
+    // then the settings default.
+    power: radioPower > 0 ? radioPower : (lastLogPower > 0 ? lastLogPower : (defaultPower || null)),
+    activationCtx,
+    type,
+    reference: p.refs[type] || '',
+    parkName: p.names[type] || '',
+    // Clicking Log on a spot is deliberate — the pop-out resets to this QSO
+    // rather than merging into whatever was half-typed, matching the overlay.
+    force: true,
+  });
+}
+
 function openLogPopup(spot) {
   currentLogSpot = spot;
   logCallsign.value = spot.callsign || '';
@@ -12366,39 +12459,21 @@ function openLogPopup(spot) {
   if (n1mmSentEl) n1mmSentEl.maxLength = rstMaxLen;
   if (n1mmRcvdEl) n1mmRcvdEl.maxLength = rstMaxLen;
 
-  // Type picker: detect EVERY OTA program the spot is tagged with and
-  // activate them all simultaneously. Multi-type spots (POTA + SOTA on
-  // the same activator) show all relevant program rows visible by
-  // default — Casey decision #3, no expand-click required.
-  const sourceToType = { pota: 'pota', sota: 'sota', wwff: 'wwff', llota: 'llota', dxc: 'dx' };
-  const mappedPrimary = sourceToType[spot.source] || '';
+  // Type picker: activate EVERY OTA program the spot is tagged with,
+  // simultaneously. Multi-type spots (POTA + SOTA on the same activator)
+  // show all relevant program rows visible by default — Casey decision #3,
+  // no expand-click required.
+  const programs = detectSpotPrograms(spot);
 
-  // Reset state, then activate each detected type. The chip-state logic
-  // pulls refs from spot.<type>Reference + spot.parkName.
+  // Reset state, then activate each detected type.
   logActiveTypes.clear();
-  logDxActive = false;
+  logDxActive = programs.dx;
   LOG_OTA_TYPES.forEach(t => { logRefInputs[t].value = ''; logRefNames[t].textContent = ''; });
 
-  if (mappedPrimary === 'dx') {
-    logDxActive = true;
-  } else if (mappedPrimary && LOG_OTA_TYPES.includes(mappedPrimary)) {
-    // Activate primary type and seed it with the spot's primary reference.
-    logActiveTypes.add(mappedPrimary);
-    logRefInputs[mappedPrimary].value = spot.reference || '';
-    logRefNames[mappedPrimary].textContent = spot.parkName || '';
-  }
-  // Activate every secondary program the dedup tagged. Each secondary
-  // ref/name lives on spot.<type>Reference / spot.<type>ParkName and was
-  // populated by the cross-source merge in main.js.
-  for (const t of LOG_OTA_TYPES) {
-    if (t === mappedPrimary) continue;
-    const refField = t + 'Reference';
-    const nameField = t + 'ParkName';
-    if (spot[refField]) {
-      logActiveTypes.add(t);
-      logRefInputs[t].value = spot[refField];
-      logRefNames[t].textContent = spot[nameField] || '';
-    }
+  for (const t of programs.types) {
+    logActiveTypes.add(t);
+    logRefInputs[t].value = programs.refs[t] || '';
+    logRefNames[t].textContent = programs.names[t] || '';
   }
 
   refreshLogTypeChips();
@@ -21172,7 +21247,7 @@ window.api.onFreedvStatus(() => {});
 // callsign / reference / source so the form is usefully pre-filled.
 window.api.onOpenLogForm(() => {
   if (lastTunedSpot) {
-    openLogPopup({
+    routeLogForSpot({
       ...lastTunedSpot,
       frequency: radioFreqKhz ? String(radioFreqKhz) : lastTunedSpot.frequency,
       mode: radioMode || lastTunedSpot.mode,
