@@ -268,7 +268,8 @@
     .jp-qso-skip:hover { background: #4fc3f7; color: #000; }
     .jp-qso-cancel { margin-left: auto; background: none; border: 1px solid #e94560; color: #e94560; border-radius: 4px; padding: 2px 8px; font-size: 14px; cursor: pointer; line-height: 1; }
     .jp-qso-cancel:hover { background: #e94560; color: #fff; }
-    .jp-qso-steps { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; font-family: monospace; font-size: 11px; }
+    .jp-qso-steprow { display: flex; align-items: center; gap: 8px; }
+    .jp-qso-steps { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; font-family: monospace; font-size: 11px; flex: 1 1 auto; min-width: 0; }
     .jp-qso-step { display: flex; align-items: center; gap: 2px; padding: 3px 6px; border-radius: 3px; white-space: nowrap; background: var(--bg-secondary); color: var(--text-dim); border: 1px solid transparent; }
     .jp-qso-step.step-done { color: var(--text-tertiary, #666); text-decoration: line-through; opacity: 0.6; }
     .jp-qso-step.step-current { font-weight: bold; }
@@ -556,10 +557,16 @@
            TX message editor — but now sits with the QSO it belongs to and
            disappears with the tracker when there's no QSO. -->
       <span id="jp-tx-msg" class="jp-tx-msg" title="The message that will be transmitted. Click to type your own.">&mdash;</span>
-      <button id="jp-qso-skip" class="jp-qso-skip" title="Skip to next message">Skip &raquo;</button>
       <button id="jp-qso-cancel" class="jp-qso-cancel" title="Cancel QSO">&times;</button>
     </div>
-    <div id="jp-qso-steps" class="jp-qso-steps"></div>
+    <!-- Skip rides the phase ladder, not the header: the ladder is what shows
+         which message is current, so the button that advances past it belongs
+         on the same line (K3SBP 2026-08-05). It sits OUTSIDE #jp-qso-steps
+         because renderQsoTracker rebuilds that element's innerHTML. -->
+    <div class="jp-qso-steprow">
+      <div id="jp-qso-steps" class="jp-qso-steps"></div>
+      <button id="jp-qso-skip" class="jp-qso-skip" title="Skip to next message">Skip &raquo;</button>
+    </div>
   </div>
 
   <!-- Controls — reworked 2026-07-16 (Casey): TX actions first, then call/
