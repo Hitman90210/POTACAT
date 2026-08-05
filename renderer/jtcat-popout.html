@@ -213,7 +213,16 @@
        filled/pulsing treatment that means "transmitting". */
     .jp-btn.jp-ultracat.active.paused { background: transparent; color: #00ff41; box-shadow: none; animation: none; opacity: 0.75; }
     @keyframes jp-tune-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
-    .jp-tx-msg { flex: 1; font-family: monospace; color: var(--accent-blue); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* S / SWR meters in the audio bar. Narrow on purpose — the bar already
+       carries two sliders and has to survive a 600 px window. */
+    .jp-meter-group { display: flex; align-items: center; gap: 4px; flex-shrink: 0; margin-left: 8px; border-left: 1px solid var(--border-primary); padding-left: 8px; }
+    .jp-meter { width: 46px; height: 6px; background: var(--bg-tertiary, #0f1419); border: 1px solid var(--border-primary); border-radius: 3px; overflow: hidden; flex-shrink: 0; }
+    .jp-meter-bar { display: block; height: 100%; width: 0; background: #4ecca3; transition: width 0.1s linear; }
+    .jp-meter-val { min-width: 30px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-dim, #888); }
+    /* Now lives in the QSO tracker header. flex 0 1 auto (not 1) so it
+       shrinks to an ellipsis on a narrow window without eating the free
+       space that pushes the × button to the far right. */
+    .jp-tx-msg { flex: 0 1 auto; min-width: 0; font-size: 11px; font-family: monospace; color: var(--accent-blue); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: text; }
     .jp-status { font-family: monospace; color: var(--text-dim); font-size: 11px; }
     /* PTT method chip — theme-token driven (no hardcoded hex). CAT = neutral
        informational state; VOX = caution (no CAT connected). */
@@ -508,6 +517,20 @@
     <span style="flex-shrink:0;margin-left:8px;border-left:1px solid var(--border-primary);padding-left:8px;">TX Pwr</span>
     <input type="range" id="jp-tx-gain" min="0" max="100" value="100" style="width:80px;accent-color:#e94560;" title="TX Power % (logarithmic — fine control at low end for FT8)">
     <span id="jp-tx-gain-val" style="min-width:32px;text-align:right;">100%</span>
+    <!-- Radio meters. S is live on RX; SWR is only measurable DURING TX, so it
+         reads em-dash until the radio reports a match and blanks again ~10 s
+         after the frames stop rather than freezing on a stale ratio. Same
+         wire scale and same colour thresholds as the VFO pop-out. -->
+    <span class="jp-meter-group" title="Signal strength from the radio">
+      <span style="flex-shrink:0;">S</span>
+      <span class="jp-meter"><span id="jp-smeter-bar" class="jp-meter-bar"></span></span>
+      <span id="jp-smeter-val" class="jp-meter-val">&mdash;</span>
+    </span>
+    <span class="jp-meter-group" title="SWR — only measurable while transmitting">
+      <span style="flex-shrink:0;">SWR</span>
+      <span class="jp-meter"><span id="jp-swr-bar" class="jp-meter-bar"></span></span>
+      <span id="jp-swr-val" class="jp-meter-val">&mdash;</span>
+    </span>
   </div>
 
   <!-- Waterfall slice selector (multi-slice mode) -->
@@ -528,6 +551,12 @@
   <div id="jp-qso-tracker" class="jp-qso-tracker hidden">
     <div class="jp-qso-header">
       <span id="jp-qso-label" class="jp-qso-label"></span>
+      <!-- The exact string we'll transmit. Lived on the bottom bar until
+           2026-08-05, where it just repeated the callsign already in the
+           label beside it (K3SBP). It stays clickable — this is the manual
+           TX message editor — but now sits with the QSO it belongs to and
+           disappears with the tracker when there's no QSO. -->
+      <span id="jp-tx-msg" class="jp-tx-msg" title="The message that will be transmitted. Click to type your own.">&mdash;</span>
       <button id="jp-qso-skip" class="jp-qso-skip" title="Skip to next message">Skip &raquo;</button>
       <button id="jp-qso-cancel" class="jp-qso-cancel" title="Cancel QSO">&times;</button>
     </div>
@@ -585,7 +614,6 @@
          transmits a steady tone, this runs the RADIO's ATU match cycle. Also
          the way to clear a tripped SWR guard without leaving the popout. -->
     <button id="jp-atu" class="jp-btn jp-atu" title="Run the radio's antenna tuner match cycle. (The Tune button on the left is a steady-tone TX carrier — different thing.)">ATU</button>
-    <span id="jp-tx-msg" class="jp-tx-msg">&mdash;</span>
   </div>
 
   <!-- ⚙ Options popover — closed by outside click / Esc / the ⚙ button.

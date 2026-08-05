@@ -2161,6 +2161,10 @@ function sendCatSplit(on) {
 function sendCatSmeter(val) {
   if (win && !win.isDestroyed()) win.webContents.send('cat-smeter', val);
   if (vfoPopoutWin && !vfoPopoutWin.isDestroyed()) vfoPopoutWin.webContents.send('cat-smeter', val);
+  // JTCAT popout carries S/SWR beside its RX and TX Pwr sliders — a digital
+  // op watching the waterfall shouldn't have to open the VFO window to see
+  // what the radio is hearing, or what it's looking into on TX.
+  if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) jtcatPopoutWin.webContents.send('cat-smeter', val);
   _currentSmeter = val;
   if (remoteServer && remoteServer.running) remoteServer.sendToClient({ type: 'smeter', value: val });
 }
@@ -2168,6 +2172,7 @@ function sendCatSmeter(val) {
 function sendCatSwr(val) {
   if (win && !win.isDestroyed()) win.webContents.send('cat-swr', val);
   if (vfoPopoutWin && !vfoPopoutWin.isDestroyed()) vfoPopoutWin.webContents.send('cat-swr', val);
+  if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) jtcatPopoutWin.webContents.send('cat-swr', val);
   _currentSwr = val;
   if (remoteServer && remoteServer.running) remoteServer.sendToClient({ type: 'swr', value: val });
 }
@@ -8780,6 +8785,7 @@ function connectSmartSdr() {
   smartSdr.on('swr-ratio', (swr) => {
     if (win && !win.isDestroyed()) win.webContents.send('cat-swr-ratio', swr);
     if (vfoPopoutWin && !vfoPopoutWin.isDestroyed()) vfoPopoutWin.webContents.send('cat-swr-ratio', swr);
+    if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) jtcatPopoutWin.webContents.send('cat-swr-ratio', swr);
     if (remoteServer && remoteServer.running) remoteServer.sendToClient({ type: 'swr-ratio', value: swr });
     // SWR guard: these frames only flow during TX (src=TX- bridge meter), so
     // a sustained over-limit value here means we are RIGHT NOW transmitting

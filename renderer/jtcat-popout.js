@@ -3151,6 +3151,70 @@ function _applyPopoutTheme(payload) {
     });
   }
 
+  // --- S / SWR meters -------------------------------------------------------
+  // Scale math and colour thresholds are copied from the VFO pop-out
+  // deliberately: the wire values are the Flex-style 0-255 scale every backend
+  // rescales to (lib/codecs), so a second interpretation here would show a
+  // different S-reading than the VFO window for the same radio.
+  var jpSmeterBar = document.getElementById('jp-smeter-bar');
+  var jpSmeterVal = document.getElementById('jp-smeter-val');
+  var jpSwrBar = document.getElementById('jp-swr-bar');
+  var jpSwrVal = document.getElementById('jp-swr-val');
+  var jpSwrIdleTimer = null;
+
+  function jpBlankSwr() {
+    if (!jpSwrBar) return;
+    jpSwrBar.style.width = '0%';
+    jpSwrVal.textContent = '—';
+    jpSwrVal.style.color = '';
+  }
+  /** SWR only exists during TX. Frames stop when the carrier does, so blank
+   *  after a quiet spell instead of freezing on the last match forever. */
+  function jpSwrSeen() {
+    if (jpSwrIdleTimer) clearTimeout(jpSwrIdleTimer);
+    jpSwrIdleTimer = setTimeout(function() { jpSwrIdleTimer = null; jpBlankSwr(); }, 10000);
+  }
+  function jpDrawSwr(swr) {
+    if (!jpSwrBar) return;
+    var pct = Math.min(100, ((swr - 1) / 4) * 100);
+    var color = swr <= 1.5 ? '#4ecca3' : swr <= 2.0 ? '#ffd740' : swr <= 3.0 ? '#f0a500' : '#e94560';
+    jpSwrBar.style.width = pct + '%';
+    jpSwrBar.style.background = color;
+    jpSwrVal.textContent = swr < 10 ? swr.toFixed(1) : '>10';
+    jpSwrVal.style.color = color;
+    jpSwrSeen();
+  }
+
+  if (window.api.onCatSmeter && jpSmeterBar) {
+    window.api.onCatSmeter(function(val) {
+      var v = Number(val) || 0;
+      var pct = Math.min(100, (v / 255) * 100);
+      var color = v < 80 ? '#4ecca3' : v < 160 ? '#ffd740' : '#e94560';
+      jpSmeterBar.style.width = pct + '%';
+      jpSmeterBar.style.background = color;
+      jpSmeterVal.textContent = v <= 120
+        ? 'S' + Math.round(v * 9 / 120)
+        : 'S9+' + Math.round((v - 120) * 60 / 135);
+      jpSmeterVal.style.color = color;
+    });
+  }
+  if (window.api.onCatSwr) {
+    window.api.onCatSwr(function(val) {
+      var v = Number(val) || 0;
+      if (v <= 0) { jpBlankSwr(); return; }
+      jpDrawSwr(1.0 + (v / 60));
+    });
+  }
+  // Flex reports a true ratio on its own channel; it arrives alongside the
+  // raw value and is the more accurate of the two, so it simply overwrites.
+  if (window.api.onCatSwrRatio) {
+    window.api.onCatSwrRatio(function(swr) {
+      var v = Number(swr) || 0;
+      if (v <= 0) { jpBlankSwr(); return; }
+      jpDrawSwr(v);
+    });
+  }
+
   // TX Power slider — persisted in localStorage
   var jpTxGain = document.getElementById('jp-tx-gain');
   var jpTxGainVal = document.getElementById('jp-tx-gain-val');

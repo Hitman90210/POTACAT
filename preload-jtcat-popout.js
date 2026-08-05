@@ -11,6 +11,13 @@ contextBridge.exposeInMainWorld('api', {
   // Rig control through the ONE dispatcher in main (applyRigControl). Same
   // bridge the VFO pop-out uses; registered with ipcMain.handle, so invoke.
   rigControl: (data) => ipcRenderer.invoke('rig-control', data),
+  // Radio meters for the S / SWR readouts in the audio bar. Same three
+  // channels the VFO pop-out consumes, so the scales can't diverge:
+  // cat-smeter and cat-swr are the wire (Flex-style 0-255) values,
+  // cat-swr-ratio is the Flex TRUE ratio and wins when it arrives.
+  onCatSmeter: (cb) => ipcRenderer.on('cat-smeter', (_e, val) => cb(val)),
+  onCatSwr: (cb) => ipcRenderer.on('cat-swr', (_e, val) => cb(val)),
+  onCatSwrRatio: (cb) => ipcRenderer.on('cat-swr-ratio', (_e, val) => cb(val)),
   jtcatWsprBeacon: (opts) => ipcRenderer.send('jtcat-wspr-beacon', opts),
   jtcatWsprHop: (opts) => ipcRenderer.send('jtcat-wspr-hop', opts),
   // `operator` true = a deliberate move (TX box / waterfall) — honored even
