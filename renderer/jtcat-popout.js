@@ -738,8 +738,11 @@ function _applyPopoutTheme(payload) {
       '<span class="jp-db">' + (d.db >= 0 ? '+' : '') + d.db + '</span>' +
       '<span class="jp-dt">' + dtStr + '</span>' +
       '<span class="jp-df">' + d.df + '</span>' +
-      '<span class="jp-msg">' + esc(text) + '</span>' +
-      (d.ap ? '<span class="jp-badges"><span class="jp-badge jp-badge-ap" title="AP: A-priori decode — recovered a weak or late reply by hypothesizing your callsign in the decoder">AP</span></span>' : '');
+      '<span class="jp-msg">' + esc(text) + '</span>';
+    // No AP badge, deliberately (K3SBP 2026-08-05). How the decoder recovered
+    // a call — plain pass or a-priori — is decoder internals; the operator
+    // wants the spot. d.ap still rides along on the decode for the engine and
+    // the logs, it just isn't decoration.
     row.addEventListener('dblclick', (function(decode) { return function() { onDecodeRowClick(decode); }; })(d));
     myActivity.appendChild(row);
     myActivity.scrollTop = myActivity.scrollHeight;
@@ -788,7 +791,8 @@ function _applyPopoutTheme(payload) {
     // Every decoration explains itself on hover in plain language (Casey
     // 2026-07-17: "G, C, O" read as mystery letters — the ◎ chase bullseye
     // was being read as the letter O). State WHAT it means, then the value.
-    if (d.ap) badges += '<span class="jp-badge jp-badge-ap" title="AP: A-priori decode — recovered a weak or late reply by hypothesizing your callsign in the decoder">AP</span>';
+    // (No AP badge — see appendMyActivityRow. Decoder internals, not operator
+    // information.)
     if (d.chaseMatch) badges += '<span class="jp-badge jp-badge-chase" title="Chase match — this station matches your chase target (' + esc(chaseTarget) + ')">◎</span>';
     if (d.newDxcc) badges += '<span class="jp-badge jp-badge-dxcc" title="D: New DXCC on this band — you have not worked ' + esc(d.entity || 'this entity') + ' on this band yet">D</span>';
     if (d.newGrid) badges += '<span class="jp-badge jp-badge-grid" title="G: New grid — you have not worked grid ' + esc(d.grid || '?') + ' before">G</span>';
