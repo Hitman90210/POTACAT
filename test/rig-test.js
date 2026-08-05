@@ -1455,10 +1455,41 @@ test('watchdog: TX never counts toward staleness (TS-480 mutes CAT in TX)', () =
 console.log('\n=== VFO/split readback (LZ3AW) ===');
 
 const KENWOOD_VFO_MODEL = { brand: 'Kenwood', protocol: 'kenwood', caps: {}, cw: {} };
-// Kenwood 38-char IF; layout: P10 (idx 31) = RX VFO, P12 (idx 33) = split.
+// Kenwood IF; frame, built field by field from the published layout so the
+// fixture is pinned to the SPEC and not to whatever the parser happens to do.
+// The first version of this helper padded P2 to five characters, which made
+// the frame 39 chars and moved every field after it one to the right — and
+// because the parser was written from the same mistake, the tests passed while
+// a real TS-480 reported "VFO A, no split" forever (LZ3AW 2026-08-05). The
+// length assertion below is the guard: the response is 38 chars WITH the ';'.
+//   P1 freq(11) P2 step(4) P3 rit(6) P4 P5 P6 P7(2) P8 P9 P10 P11 P12 P13 P14(2) P15
 function kenwoodIf({ freq = '00014074000', vfo = '0', split = '0' } = {}) {
-  return 'IF' + freq + '     ' + '+00000' + '0' + '0' + '0' + '00' + '0' + '2' + vfo + '0' + split + '0' + '00' + '0' + ';';
+  const frame = 'IF'
+    + freq          // P1  11 — operating frequency
+    + '0000'        // P2   4 — step size
+    + '+00000'      // P3   6 — RIT/XIT offset
+    + '0'           // P4   1 — RIT on
+    + '0'           // P5   1 — XIT on
+    + '0'           // P6   1 — memory bank
+    + '00'          // P7   2 — memory channel
+    + '0'           // P8   1 — RX/TX
+    + '2'           // P9   1 — mode
+    + vfo           // P10  1 — RX VFO  (idx 30)
+    + '0'           // P11  1 — scan
+    + split         // P12  1 — split   (idx 32)
+    + '0'           // P13  1 — tone
+    + '00'          // P14  2 — tone number
+    + '0'           // P15  1 — always 0
+    + ';';
+  return frame;
 }
+
+test('kenwood IF; fixture matches the published 38-char frame', () => {
+  const f = kenwoodIf();
+  assert.strictEqual(f.length, 38, `IF; frame must be 38 chars incl. ';', got ${f.length}: ${f}`);
+  assert.strictEqual(f.charAt(30), '0', 'P10 (RX VFO) sits at index 30');
+  assert.strictEqual(f.charAt(32), '0', 'P12 (split) sits at index 32');
+});
 
 test('kenwood IF; parse -> vfo B + split on', () => {
   const { codec } = captureWrites(KenwoodCodec, KENWOOD_VFO_MODEL);
@@ -1468,6 +1499,24 @@ test('kenwood IF; parse -> vfo B + split on', () => {
   codec.onData(Buffer.from(kenwoodIf({ vfo: '1', split: '1' })));
   assert.strictEqual(vfo, 'B');
   assert.strictEqual(split, true);
+});
+
+// Off-by-one detector. P11 (scan) and P13 (tone) sit immediately after the two
+// fields we read; light THEM up and leave P10/P12 idle. Reading one character
+// too far — the original bug — reports "VFO B, split on" from a radio that is
+// on A and simplex.
+test('kenwood IF; reads P10/P12, not their neighbours P11/P13', () => {
+  const { codec } = captureWrites(KenwoodCodec, KENWOOD_VFO_MODEL);
+  let vfo = null, split = null;
+  codec.on('vfo', (v) => { vfo = v; });
+  codec.on('split', (s) => { split = s; });
+  const frame = kenwoodIf().replace(/^(.{31})0(.)0/, '$11$21'); // P11=1, P13=1
+  assert.strictEqual(frame.length, 38, 'neighbour frame still 38 chars');
+  assert.strictEqual(frame.charAt(31), '1', 'P11 lit');
+  assert.strictEqual(frame.charAt(33), '1', 'P13 lit');
+  codec.onData(Buffer.from(frame));
+  assert.strictEqual(vfo, 'A', 'scan status must not be read as the VFO digit');
+  assert.strictEqual(split, false, 'tone must not be read as the split flag');
 });
 
 test('kenwood IF; memory mode (P10=2) leaves vfo untouched, split still parsed', () => {
