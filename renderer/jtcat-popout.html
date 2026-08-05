@@ -644,6 +644,10 @@
       <span class="jp-opt-label">Give up after <input id="jp-max-attempts" type="number" min="1" max="60" value="12"> tries</span>
       <span class="jp-opt-help">Stop repeating an unanswered message after this many transmissions. If signal reports were exchanged both ways, the QSO is logged and a final 73 is sent first.</span>
     </label>
+    <button id="jp-hunt-cq-fallback" class="jp-opt-row ultracat-gated hidden">
+      <span class="jp-opt-label">Call CQ when there's nothing to hunt</span>
+      <span class="jp-opt-help">While hunting, if nobody workable has called CQ for about a minute, start calling CQ yourself — and hand straight back to hunting the moment someone worth working shows up. Turns itself off if you change the Hunt setting.</span>
+    </button>
     <label class="jp-opt-row jp-opt-num-row ultracat-gated hidden">
       <span class="jp-opt-label">Run pauses after <input id="jp-run-pause-after" type="number" min="0" max="60" value="8"> unanswered CQs</span>
       <span class="jp-opt-help">When Run has worked everyone it can, it stops transmitting and just listens, then picks CQ back up as soon as an unworked station calls CQ. Only pauses if nobody new is calling — on a busy band where you're simply not being heard it keeps going. Set 0 to never pause.</span>

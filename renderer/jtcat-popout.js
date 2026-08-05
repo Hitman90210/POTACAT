@@ -89,6 +89,8 @@ function _applyPopoutTheme(payload) {
     reflectFd();
     skipTx1 = !!s.jtcatSkipTx1;
     reflectSkipTx1();
+    huntCqFallback = !!s.jtcatHuntCqFallback;
+    reflectHuntCqFallback();
     answerCallers = s.jtcatAnswerCallers !== false; // default on
     reflectAnswerCallers();
     holdTxFreq = !!s.jtcatHoldTxFreq;
@@ -207,11 +209,16 @@ function _applyPopoutTheme(payload) {
   }
   // Skip grid (WSJT-X "disable Tx1"): reply to CQs with a report, not a grid
   var skipTx1Toggle = document.getElementById('jp-skip-tx1');
+  var huntCqFallbackToggle = document.getElementById('jp-hunt-cq-fallback');
+  var huntCqFallback = false;
   var skipTx1 = false;
   var holdTxToggle = document.getElementById('jp-hold-tx');
   var holdTxFreq = false;
   function reflectHoldTx() {
     if (holdTxToggle) holdTxToggle.classList.toggle('active', holdTxFreq);
+  }
+  function reflectHuntCqFallback() {
+    if (huntCqFallbackToggle) huntCqFallbackToggle.classList.toggle('active', huntCqFallback);
   }
   function reflectSkipTx1() {
     if (skipTx1Toggle) skipTx1Toggle.classList.toggle('active', skipTx1);
@@ -2303,6 +2310,16 @@ function _applyPopoutTheme(payload) {
       skipTx1 = !skipTx1;
       reflectSkipTx1();
       window.api.saveSettings({ jtcatSkipTx1: skipTx1 });
+    });
+  }
+
+  // Hunt → Run fallback (KQ4MHD): call CQ into a quiet band, hand back to
+  // hunting when it wakes up. main.js owns the switching; this is the switch.
+  if (huntCqFallbackToggle) {
+    huntCqFallbackToggle.addEventListener('click', function() {
+      huntCqFallback = !huntCqFallback;
+      reflectHuntCqFallback();
+      window.api.saveSettings({ jtcatHuntCqFallback: huntCqFallback });
     });
   }
 

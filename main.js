@@ -6294,6 +6294,17 @@ let jtcatFullAutoCqUnanswered = 0;     // consecutive CQ transmissions with no a
 let jtcatFullAutoCqPaused = false;     // listening, TX off, still in run mode
 const JTCAT_RUN_PAUSE_AFTER_DEFAULT = 8; // ~4 min of FT8; 0 disables pausing
 
+// ─── Hunt → Run fallback (KQ4MHD 2026-08-05) ────────────────────────────────
+// "I was looking for Hunt All CQ to switch over to CQ (Run) if no decodes to
+// work on Hunt. Then as new decodes come in to switch back over to hunt."
+// Hunt sits idle whenever nobody workable is calling CQ; this fills that dead
+// air by calling CQ ourselves, and hands back the moment someone worth
+// hunting appears. Hunt stays the preferred mode — Run is only the filler.
+let jtcatHuntFallbackMode = '';        // Hunt mode we suspended ('' = Run isn't fallback-owned)
+let jtcatHuntQuietPeriods = 0;         // consecutive decode periods with nothing to hunt
+let _jtcatHuntQuietPeriod = '';        // period already counted (N slices, one count)
+const JTCAT_HUNT_FALLBACK_PERIODS = 4; // ~1 min of FT8 before we start calling
+
 function jtcatRunPauseAfter() {
   const n = Number(settings.jtcatRunPauseAfter);
   if (!isFinite(n) || n < 0) return JTCAT_RUN_PAUSE_AFTER_DEFAULT;
@@ -6379,7 +6390,15 @@ function jtcatPeriodUtc(mode) {
 }
 
 function broadcastAutoCqState() {
-  const state = { mode: jtcatAutoCqMode, workedCount: jtcatAutoCqWorkedSession.size };
+  // While the fallback has Run filling dead air, jtcatAutoCqMode is 'off' —
+  // but the operator still chose Hunt and the select must keep saying so, or
+  // it snaps to "Hunt: Off" the moment the band goes quiet. Report their
+  // choice; `fallback` tells clients Run is covering for it right now.
+  const state = {
+    mode: jtcatHuntFallbackMode || jtcatAutoCqMode,
+    fallback: !!jtcatHuntFallbackMode,
+    workedCount: jtcatAutoCqWorkedSession.size,
+  };
   if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
     jtcatPopoutWin.webContents.send('jtcat-auto-cq-state', state);
   }
@@ -6567,17 +6586,26 @@ async function rearmCq(owner) {
 // Start run mode for an owner: 'popout' (desktop window) or 'remote' (the
 // ECHOCAT phone via jtcat-full-auto-cq). Guarded by the ULTRACAT unlock so a
 // locked client can't drive it.
-async function startFullAutoCq(owner, modifier) {
+async function startFullAutoCq(owner, modifier, opts) {
   if (!settings.ultracat) { sendCatLog('[JTCAT] Full Auto CQ blocked — ULTRACAT locked'); return false; }
   if (!ft8Engine) { sendCatLog('[JTCAT] Full Auto CQ blocked — engine not running'); return false; }
+  // opts.auto = started by the Hunt fallback rather than by the operator.
+  // Two things must NOT happen on an automatic start:
+  //  - the 30-minute attended watchdog must keep running from when the
+  //    OPERATOR last did something. Restamping it on every Hunt→Run bounce
+  //    would let the fallback loop transmit indefinitely unattended, which is
+  //    exactly the Part 97 line the watchdog exists to hold.
+  //  - the worked-this-session set must survive, or the stations we just
+  //    hunted become fair game again the moment we start calling CQ.
+  const auto = !!(opts && opts.auto);
   jtcatFullAutoCq = true;
   jtcatFullAutoCqOwner = owner;
   jtcatFullAutoCqModifier = modifier || '';
-  jtcatFullAutoCqLastActivity = Date.now();
+  if (!auto) jtcatFullAutoCqLastActivity = Date.now();
   jtcatFullAutoCqUnanswered = 0;
   jtcatFullAutoCqPaused = false;
   jtcatAutoCqMode = 'off';        // run and hunt are mutually exclusive
-  jtcatAutoCqWorkedSession.clear();
+  if (!auto) jtcatAutoCqWorkedSession.clear();
   broadcastAutoCqState();
   // Run supersedes any armed Spot Target (K3SBP 2026-07-17): calling CQ and
   // waiting on a specific activator are mutually exclusive intents — without
@@ -6598,13 +6626,21 @@ async function startFullAutoCq(owner, modifier) {
   return true;
 }
 
-// Stop run mode and silence TX. `reason` (if set) surfaces a popout notice.
-function stopFullAutoCq(reason) {
+// Stop run mode and silence TX. `reason` (if set) surfaces a popout notice —
+// pass opts.quiet for a normal, expected stop (the Hunt fallback handing back)
+// so the reason still reaches the log without being dressed as an error.
+function stopFullAutoCq(reason, opts) {
   const wasActive = jtcatFullAutoCq;
   jtcatFullAutoCq = false;
   jtcatFullAutoCqOwner = null;
   jtcatFullAutoCqUnanswered = 0;
   jtcatFullAutoCqPaused = false;
+  // Any stop ends the Hunt fallback's claim. jtcatHuntFallbackResume clears
+  // this itself before calling us, so what lands here is a stop from the
+  // operator, the SWR guard, or the attended watchdog — none of which should
+  // hand back to Hunt and resume automatic transmission behind their back.
+  jtcatHuntFallbackMode = '';
+  jtcatHuntQuietPeriods = 0;
   if (ft8Engine) {
     ft8Engine._txEnabled = false;
     try { ft8Engine.setTxMessage(''); } catch {}
@@ -6612,7 +6648,7 @@ function stopFullAutoCq(reason) {
     if (ft8Engine._txActive && typeof ft8Engine.txComplete === 'function') ft8Engine.txComplete();
   }
   broadcastFullAutoCqState(wasActive ? reason : undefined);
-  if (wasActive && reason && jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
+  if (wasActive && reason && !(opts && opts.quiet) && jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
     jtcatPopoutWin.webContents.send('jtcat-qso-state', { phase: 'error', error: 'Full Auto CQ stopped — ' + reason });
   }
   if (wasActive) sendCatLog('[JTCAT] Full Auto CQ STOPPED (' + (reason || 'user') + ')');
@@ -6650,6 +6686,95 @@ async function jtcatResumeRunCq(count) {
   if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
     jtcatPopoutWin.webContents.send('jtcat-qso-notice', { message: 'Run resumed — new callers on the band.' });
   }
+}
+
+// ── Hunt ⇄ Run auto-switch (settings.jtcatHuntCqFallback) ──────────────────
+// Called once per decode cycle from every decode path. Hunt is preferred; Run
+// only fills the gaps. Never switches mid-QSO in either direction — a QSO in
+// progress resets the quiet counter and returns.
+function jtcatHuntCqFallbackTick(results, mode) {
+  if (!settings.jtcatHuntCqFallback || !settings.ultracat || !ft8Engine) return;
+  const myCall = (settings.myCallsign || '').toUpperCase();
+  if (!myCall) return;
+  const busy = (popoutJtcatQso && popoutJtcatQso.phase !== 'done')
+            || (remoteJtcatQso && remoteJtcatQso.phase !== 'done');
+  if (busy) { jtcatHuntQuietPeriods = 0; return; }
+
+  if (jtcatHuntFallbackMode) {
+    // We're filling dead air. Someone worth hunting under the SUSPENDED Hunt
+    // filter (not 'all' — a POTA hunter doesn't want a generic CQ pulling them
+    // off Run) means hand back to Hunt. Deliberately NOT period-gated: in
+    // multi-slice every slice gets a look, so whichever band hears someone
+    // first hands back that period.
+    const back = jtcatWorkableCallers(results, myCall, { filterMode: jtcatHuntFallbackMode });
+    if (back.length > 0) jtcatHuntFallbackResume(back.length);
+    return;
+  }
+  // Not currently filling: only a plain Hunt session can fall back. An
+  // operator-started Run is theirs and is left alone.
+  if (jtcatAutoCqMode === 'off' || jtcatFullAutoCq) { jtcatHuntQuietPeriods = 0; return; }
+  const workable = jtcatWorkableCallers(results, myCall, { filterMode: jtcatAutoCqMode });
+  if (workable.length > 0) { jtcatHuntQuietPeriods = 0; return; }
+  // The quiet counter measures PERIODS, so it must advance once per period no
+  // matter how many slices report one (N slices would otherwise reach the
+  // threshold N times too fast).
+  const pk = jtcatPeriodUtc(mode);
+  if (pk === _jtcatHuntQuietPeriod) return;
+  _jtcatHuntQuietPeriod = pk;
+  if (++jtcatHuntQuietPeriods < JTCAT_HUNT_FALLBACK_PERIODS) return;
+  jtcatHuntFallbackStart();
+}
+
+async function jtcatHuntFallbackStart() {
+  const mode = jtcatAutoCqMode;
+  const owner = jtcatAutoCqOwner === 'remote' ? 'remote' : 'popout';
+  jtcatHuntQuietPeriods = 0;
+  jtcatHuntFallbackMode = mode;   // set BEFORE start — startFullAutoCq clears jtcatAutoCqMode
+  sendCatLog(`[JTCAT] Nothing to hunt for ${JTCAT_HUNT_FALLBACK_PERIODS} periods — calling CQ until someone shows up`);
+  const ok = await startFullAutoCq(owner, settings.jtcatChaseTarget || '', { auto: true });
+  if (!ok) { jtcatHuntFallbackMode = ''; jtcatAutoCqMode = mode; broadcastAutoCqState(); }
+}
+
+/**
+ * The one place the Hunt mode is set from an operator action (popout select,
+ * in-window select, phone). Beyond the assignment it has to end any fallback
+ * Run: leaving Run transmitting while the Hunt select reads "All CQs" would
+ * be the UI telling the operator something untrue.
+ */
+function setJtcatHuntMode(mode, owner) {
+  const m = mode || 'off';
+  if (jtcatHuntFallbackMode) {
+    jtcatHuntFallbackMode = '';
+    stopFullAutoCq('Hunt changed by operator', { quiet: true });
+  }
+  jtcatAutoCqMode = m;
+  jtcatAutoCqOwner = owner;
+  jtcatHuntQuietPeriods = 0;
+  // Choosing a Hunt mode IS the operator engaging automatic operation, so it
+  // starts the attended clock. The Hunt→Run fallback deliberately does not
+  // restamp it (that would let the loop transmit forever), which means without
+  // this the clock would still read 0 and the watchdog would kill the very
+  // first fallback CQ as a 30-minute timeout.
+  if (m !== 'off') jtcatFullAutoCqLastActivity = Date.now();
+  if (m === 'off') jtcatAutoCqWorkedSession.clear();
+  broadcastAutoCqState();
+}
+
+function jtcatHuntFallbackResume(count) {
+  const mode = jtcatHuntFallbackMode;
+  const owner = jtcatFullAutoCqOwner === 'remote' ? 'remote' : 'popout';
+  jtcatHuntFallbackMode = '';
+  jtcatHuntQuietPeriods = 0;
+  sendCatLog(`[JTCAT] ${count} station${count === 1 ? '' : 's'} calling CQ — back to hunting`);
+  stopFullAutoCq('handing back to Hunt', { quiet: true });
+  // Drop the CQ shell. stopFullAutoCq silences TX but leaves the QSO object,
+  // and the Hunt selector below refuses to engage while one exists — without
+  // this the handback would restore the Hunt mode and then never hunt.
+  // The tick already guaranteed no QSO is in progress.
+  if (owner === 'remote') { remoteJtcatQso = null; remoteJtcatBroadcastQso(); }
+  else { popoutJtcatQso = null; popoutBroadcastQso(); }
+  jtcatAutoCqMode = mode;         // restore the Hunt the operator actually chose
+  broadcastAutoCqState();
 }
 
 // Attended-operator watchdog — Part 97 keeps unattended automatic control off
@@ -7550,6 +7675,8 @@ function startJtcat(mode) {
   jtcatAutoCqMode = 'off';
   jtcatAutoCqWorkedSession.clear();
   jtcatAutoCqOwner = null;
+  jtcatHuntFallbackMode = '';
+  jtcatHuntQuietPeriods = 0;
   jtcatFullAutoCq = false;
   jtcatFullAutoCqOwner = null;
   if (!jtcatManager) jtcatManager = new JtcatManager();
@@ -7794,6 +7921,11 @@ function startJtcat(mode) {
     // drained-band pause below, and re-arms a paused run the moment the band
     // comes back. Computed once per cycle for both owners.
     const runWorkable = jtcatFullAutoCq ? jtcatRunWorkableCount(data.results || []) : 0;
+    // Hunt ⇄ Run auto-switch runs FIRST: when the band comes back, an operator
+    // who chose Hunt wants to hunt, not to keep calling CQ. Only if the
+    // fallback declines (Run is theirs, or the new callers don't match their
+    // Hunt filter) does a paused Run resume.
+    jtcatHuntCqFallbackTick(data.results || [], data.mode);
     if (jtcatFullAutoCqPaused && runWorkable > 0) jtcatResumeRunCq(runWorkable);
 
     if (remoteJtcatQso && remoteJtcatQso.phase !== 'done') {
@@ -14007,10 +14139,7 @@ function connectRemote() {
   });
 
   remoteServer.on('jtcat-auto-cq-mode', ({ mode }) => {
-    jtcatAutoCqMode = mode || 'off';
-    jtcatAutoCqOwner = 'remote';
-    if (mode === 'off') jtcatAutoCqWorkedSession.clear();
-    broadcastAutoCqState();
+    setJtcatHuntMode(mode, 'remote');
     console.log('[JTCAT Remote] Auto-CQ mode:', mode);
   });
 
@@ -23833,10 +23962,7 @@ app.whenReady().then(() => {
   });
 
   ipcMain.on('jtcat-popout-auto-cq-mode', (_e, mode) => {
-    jtcatAutoCqMode = mode || 'off';
-    jtcatAutoCqOwner = 'popout';
-    if (mode === 'off') jtcatAutoCqWorkedSession.clear();
-    broadcastAutoCqState();
+    setJtcatHuntMode(mode, 'popout');
     console.log('[JTCAT Popout] Auto-CQ mode:', mode);
   });
 
@@ -28191,10 +28317,7 @@ app.whenReady().then(() => {
     applyJtcatRxGain(level, fromPopout ? 'popout' : 'main');
   });
   ipcMain.on('jtcat-auto-cq-mode', (_e, mode) => {
-    jtcatAutoCqMode = mode || 'off';
-    jtcatAutoCqOwner = 'popout';
-    if (mode === 'off') jtcatAutoCqWorkedSession.clear();
-    broadcastAutoCqState();
+    setJtcatHuntMode(mode, 'popout');
     console.log('[JTCAT] Auto-CQ mode:', mode);
   });
   ipcMain.on('jtcat-tx-complete', () => { if (ft8Engine) ft8Engine.txComplete(); });
@@ -28391,6 +28514,8 @@ app.whenReady().then(() => {
     jtcatAutoCqMode = 'off';
     jtcatAutoCqWorkedSession.clear();
     jtcatAutoCqOwner = null;
+    jtcatHuntFallbackMode = '';
+    jtcatHuntQuietPeriods = 0;
     if (!jtcatManager) jtcatManager = new JtcatManager();
 
     for (const s of slices) {
@@ -28470,7 +28595,12 @@ app.whenReady().then(() => {
         // path. The TX-period dedup inside jtcatHandleRetryStall keeps N slices
         // from counting N unanswered CQs per cycle.
         const runWorkable = jtcatFullAutoCq ? jtcatRunWorkableCount(data.results || []) : 0;
-        if (jtcatFullAutoCqPaused && runWorkable > 0) jtcatResumeRunCq(runWorkable);
+        // Hunt ⇄ Run auto-switch runs FIRST: when the band comes back, an operator
+    // who chose Hunt wants to hunt, not to keep calling CQ. Only if the
+    // fallback declines (Run is theirs, or the new callers don't match their
+    // Hunt filter) does a paused Run resume.
+    jtcatHuntCqFallbackTick(data.results || [], data.mode);
+    if (jtcatFullAutoCqPaused && runWorkable > 0) jtcatResumeRunCq(runWorkable);
 
         if (popoutJtcatQso && popoutJtcatQso.phase !== 'done') {
           const phaseBefore = popoutJtcatQso.phase;
