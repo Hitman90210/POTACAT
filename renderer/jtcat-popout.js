@@ -1524,15 +1524,48 @@ function _applyPopoutTheme(payload) {
   });
 
   // --- Controls ---
+  // Band-activity filters persist across close/reopen (K3SBP 2026-08-05 —
+  // "I tend to keep CQ/73 and Wanted selected"). Per-window localStorage, the
+  // same idiom as the RX/TX sliders and the splitter position, since this is a
+  // property of this screen rather than of the operator or the radio.
+  // The SEARCH box is deliberately NOT persisted: a stale search term silently
+  // hides everything on reopen and reads as a broken decoder, whereas a stuck
+  // toggle is visible on the button.
+  var FILTER_LS_KEY = 'jtcat-filters';
+  function saveFilters() {
+    try {
+      localStorage.setItem(FILTER_LS_KEY, JSON.stringify({
+        cq: cqFilter, wanted: wantedFilter, chase: chaseFilter,
+        event: eventFilter, sort: sortBySignal,
+      }));
+    } catch (e) {}
+  }
+  function restoreFilters() {
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(FILTER_LS_KEY) || 'null'); } catch (e) { saved = null; }
+    if (!saved) return;
+    cqFilter = !!saved.cq;
+    wantedFilter = !!saved.wanted;
+    chaseFilter = !!saved.chase;
+    eventFilter = !!saved.event;
+    sortBySignal = !!saved.sort;
+    cqFilterBtn.classList.toggle('active', cqFilter);
+    wantedFilterBtn.classList.toggle('active', wantedFilter);
+    if (chaseFilterBtn) chaseFilterBtn.classList.toggle('active', chaseFilter);
+    if (eventFilterBtn) eventFilterBtn.classList.toggle('active', eventFilter);
+  }
+
   cqFilterBtn.addEventListener('click', function() {
     cqFilter = !cqFilter;
     cqFilterBtn.classList.toggle('active', cqFilter);
+    saveFilters();
     rebuildBandActivity();
   });
 
   wantedFilterBtn.addEventListener('click', function() {
     wantedFilter = !wantedFilter;
     wantedFilterBtn.classList.toggle('active', wantedFilter);
+    saveFilters();
     rebuildBandActivity();
   });
 
@@ -1540,6 +1573,7 @@ function _applyPopoutTheme(payload) {
     eventFilterBtn.addEventListener('click', function() {
       eventFilter = !eventFilter;
       eventFilterBtn.classList.toggle('active', eventFilter);
+      saveFilters();
       rebuildBandActivity();
     });
   }
@@ -1610,6 +1644,7 @@ function _applyPopoutTheme(payload) {
     chaseFilterBtn.addEventListener('click', function() {
       chaseFilter = !chaseFilter;
       chaseFilterBtn.classList.toggle('active', chaseFilter);
+      saveFilters();
       rebuildBandActivity();
     });
   }
@@ -1625,8 +1660,14 @@ function _applyPopoutTheme(payload) {
   sortSignalBtn.addEventListener('click', function() {
     sortBySignal = !sortBySignal;
     sortSignalBtn.classList.toggle('active', sortBySignal);
+    saveFilters();
     rebuildBandActivity();
   });
+  // Restore now that every button handle exists (sortSignalBtn is declared
+  // last of the five), then paint the list through the restored filters.
+  restoreFilters();
+  sortSignalBtn.classList.toggle('active', sortBySignal);
+  rebuildBandActivity();
 
   var searchInput = document.getElementById('jp-search');
   searchInput.addEventListener('input', function() {
