@@ -77,12 +77,21 @@ contextBridge.exposeInMainWorld('api', {
     // actual consumption; no-op acks eagerly so this window doesn't
     // build a backlog and starve the live consumer. K3SBP 2026-05-30.
     let _ackCount = 0;
+    let _lastAckMs = 0;
     ipcRenderer.on('jtcat-vita49-audio', (_e, frame) => {
-      const consumed = cb(frame);
+      let consumed = false;
+      // Never let a throwing callback swallow the ack — an un-acked frame
+      // is indistinguishable from a dead renderer and starves this window.
+      try { consumed = cb(frame); } catch (err) { consumed = false; }
       _ackCount++;
-      if (!consumed || _ackCount >= 20) {
+      // Flush on idle as well as on batch size: while main is rationing
+      // frames (backpressure recovery) a partial batch would otherwise sit
+      // here un-acked and main would keep us starved. K3SBP 2026-08-05.
+      const now = Date.now();
+      if (!consumed || _ackCount >= 20 || now - _lastAckMs >= 200) {
         ipcRenderer.send('audio-ack', { channel: 'jtcat-vita49-audio', count: _ackCount });
         _ackCount = 0;
+        _lastAckMs = now;
       }
     });
   },

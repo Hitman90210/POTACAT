@@ -934,6 +934,24 @@ let _lastSstvIcomFeedMs = 0;
 // consumer is acceptable; OOM is not.
 // =====================================================================
 const _audioBus = new Map(); // wcId+':'+channel -> { sent, acked, dropped, lastDropLogMs }
+// Stall forgiveness. The cap alone DEADLOCKS: main stops sending once the
+// backlog is full, but a renderer can only ack frames it RECEIVES, so a
+// consumer that saturated while it had no listener yet can never drain and
+// is starved for the life of the window. K3SBP 2026-08-05: opening the JTCAT
+// popout while the engine was ALREADY running (WSPR-on-idle overnight) meant
+// ~190 fps hit the new window during the second it took to load — 120 frames
+// with nobody listening — and the waterfall stayed blank forever after
+// ("1875 frames dropped" every 10 s = every single frame), while decode ran
+// fine off main's own copy of the feed.
+//
+// So: when saturated with no ack for a while, forgive the un-ackable deficit
+// and let flow resume. A renderer that had simply not finished loading
+// recovers on the first forgiveness and acks normally from then on. A
+// genuinely blocked renderer (minimized/throttled — the case the cap exists
+// for) re-saturates immediately, so the interval backs off exponentially and
+// its cost decays to one short burst per minute. Any real ack resets it.
+const AUDIO_STALL_RESYNC_MS = 2000;
+const AUDIO_STALL_RESYNC_MAX_MS = 60_000;
 const AUDIO_MAX_BACKLOG = 120; // frames; ~640 ms at 190 fps. Bumped from 40
                               // (2026-06-14): under the added JTCAT-FT8 load
                               // the old ~210 ms window pinned at the cap and
@@ -942,34 +960,45 @@ const AUDIO_MAX_BACKLOG = 120; // frames; ~640 ms at 190 fps. Bumped from 40
                               // 640 ms gives load spikes room while staying
                               // well below the multi-second backlog that leaks.
 const _jtcatIpAudioReady = new Set();
+// Policy lives in lib/audio-backpressure.js (pure + unit-tested); this file
+// owns only the transport and the logging.
+const _audioBp = require('./lib/audio-backpressure');
+const AUDIO_BP_OPTS = {
+  maxBacklog: AUDIO_MAX_BACKLOG,
+  stallResyncMs: AUDIO_STALL_RESYNC_MS,
+  stallResyncMaxMs: AUDIO_STALL_RESYNC_MAX_MS,
+};
 
 function audioSafeSend(wc, channel, payload) {
   if (!wc || wc.isDestroyed()) return;
   const key = wc.id + ':' + channel;
+  const now = Date.now();
   let info = _audioBus.get(key);
   if (!info) {
-    info = { sent: 0, acked: 0, dropped: 0, lastDropLogMs: 0 };
+    info = _audioBp.createConsumer(now, AUDIO_BP_OPTS);
     _audioBus.set(key, info);
   }
-  if (info.sent - info.acked >= AUDIO_MAX_BACKLOG) {
-    info.dropped++;
-    const now = Date.now();
-    if (now - info.lastDropLogMs >= 10_000) {
+  const verdict = _audioBp.offerFrame(info, now, AUDIO_BP_OPTS);
+  if (verdict.resynced && (info.resyncs === 1 || info.resyncs % 20 === 0)) {
+    try {
+      sendCatLog(`[Audio] Resyncing ${channel} (wc#${wc.id}) after ${Math.round((now - info.lastAckMs) / 1000)}s with no ack — resuming flow (resync #${info.resyncs}).`);
+    } catch {}
+  }
+  if (!verdict.send) {
+    if (verdict.logDrop) {
       try {
         // Single CAT log line every 10 s when a consumer is sustaining
         // a backlog — enough signal to diagnose, no flood. Name the
         // renderer (wcId) so we can tell WHICH consumer is behind.
-        sendCatLog(`[Audio] Backpressure on ${channel} (wc#${wc.id}): ${info.dropped} frames dropped, backlog=${info.sent - info.acked} (renderer not keeping up)`);
+        sendCatLog(`[Audio] Backpressure on ${channel} (wc#${wc.id}): ${info.dropped} frames dropped, backlog=${_audioBp.backlog(info)} (renderer not keeping up)`);
         if (channel === 'jtcat-vita49-audio' || channel === 'sstv-vita49-audio' || channel === 'smartsdr-audio-frame') {
-          appendDiagnosticLog('rsba1-rx-diagnostics.log', `BACKPRESSURE channel=${channel} wc=${wc.id} dropped=${info.dropped} backlog=${info.sent - info.acked}`);
+          appendDiagnosticLog('rsba1-rx-diagnostics.log', `BACKPRESSURE channel=${channel} wc=${wc.id} dropped=${info.dropped} backlog=${_audioBp.backlog(info)}`);
         }
       } catch {}
       info.dropped = 0;
-      info.lastDropLogMs = now;
     }
     return;
   }
-  info.sent++;
   wc.send(channel, payload);
 }
 
@@ -979,7 +1008,8 @@ ipcMain.on('audio-ack', (e, msg) => {
   if (!channel || count <= 0) return;
   const key = e.sender.id + ':' + channel;
   const info = _audioBus.get(key);
-  if (info) info.acked += count;
+  if (!info) return;
+  _audioBp.noteAck(info, count, Date.now(), AUDIO_BP_OPTS);
 });
 
 ipcMain.on('jtcat-ip-audio-ready', (e, msg) => {
@@ -8881,7 +8911,10 @@ function startSmartSdrAudio() {
       if (win && !win.isDestroyed() && !win.isMinimized()) {
         audioSafeSend(win.webContents, 'jtcat-vita49-audio', vita49Frame);
       }
-      if (jtcatPopoutWin) {
+      // isDestroyed() matters: reading .webContents off a destroyed window
+      // THROWS, and this handler runs per audio frame — one throw here kills
+      // the RX audio pipeline for the whole session.
+      if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
         audioSafeSend(jtcatPopoutWin.webContents, 'jtcat-vita49-audio', vita49Frame);
       }
     }

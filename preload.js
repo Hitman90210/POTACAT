@@ -521,12 +521,19 @@ contextBridge.exposeInMainWorld('api', {
     // Backpressure: 200+ frames dropped" every 10 s while JTCAT view was
     // active.
     let _ackCount = 0;
+    let _lastAckMs = 0;
     ipcRenderer.on('jtcat-vita49-audio', (_e, frame) => {
-      const consumed = cb(frame);
+      let consumed = false;
+      // A throwing callback must not swallow the ack (see the popout preload).
+      try { consumed = cb(frame); } catch (err) { consumed = false; }
       _ackCount++;
-      if (!consumed || _ackCount >= 20) {
+      // Flush on idle too, so a partial batch can't sit un-acked while main
+      // is rationing frames during backpressure recovery.
+      const now = Date.now();
+      if (!consumed || _ackCount >= 20 || now - _lastAckMs >= 200) {
         ipcRenderer.send('audio-ack', { channel: 'jtcat-vita49-audio', count: _ackCount });
         _ackCount = 0;
+        _lastAckMs = now;
       }
     });
   },
