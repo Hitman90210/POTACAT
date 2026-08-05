@@ -470,6 +470,8 @@ const GLOBAL_KEYS = new Set([
   'n1mmUdpPort',       // N1MM broadcast port
   'audioInputDeviceId', 'audioOutputDeviceId',  // OS audio device picks
   'jtcatRxGain',       // JTCAT RX gain 0–1 — synced slider, machine audio property
+  'jtcatWaterfallSpeed', // waterfall lines/sec — display property of this screen
+                       // (same reasoning as lightMode/darkVariant above)
   'mainMicDeviceId', 'mainPlaybackDeviceId',
   'echocatPort',       // ECHOCAT server port
   'echocatToken',      // ECHOCAT legacy single shared token (machine)

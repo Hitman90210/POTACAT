@@ -79,6 +79,8 @@ function _applyPopoutTheme(payload) {
     if (maxAttemptsInput && typeof s.jtcatMaxQsoAttempts === 'number') {
       maxAttemptsInput.value = s.jtcatMaxQsoAttempts;
     }
+    if (typeof s.jtcatWaterfallSpeed === 'number') setWfSpeed(s.jtcatWaterfallSpeed, false);
+    else updateWfSpeedHelp();
     fdMode = !!s.jtcatFdMode;
     if (fdExchInput) fdExchInput.value = s.jtcatFdExch || '';
     reflectFd();
@@ -163,6 +165,8 @@ function _applyPopoutTheme(payload) {
   var cqBtn = document.getElementById('jp-cq');
   var fullAutoCqBtn = document.getElementById('jp-full-auto-cq');
   var maxAttemptsInput = document.getElementById('jp-max-attempts');
+  var wfSpeedInput = document.getElementById('jp-wf-speed');
+  var wfSpeedHelp = document.getElementById('jp-wf-speed-help');
   var fdToggle = document.getElementById('jp-fd-toggle');
   var fdExchInput = document.getElementById('jp-fd-exch');
   // Active-mode chips (bottom-bar rework 2026-07-16): the FD/Hound switches
@@ -2139,6 +2143,42 @@ function _applyPopoutTheme(payload) {
     });
   }
 
+  // --- Waterfall speed -----------------------------------------------------
+  // Lines drawn per second. The canvas is only 80 px tall, so at the legacy
+  // 60 lines/sec (one line per animation frame) it holds about 1.3 SECONDS of
+  // history — a single 15 s FT8 transmission paints ~900 lines, far more than
+  // fits, which is why signals read as endless vertical worms instead of the
+  // compact per-transmission blocks WSJT-X shows. Slowing it down is what
+  // makes the display answer "how busy is this band right now?" (Casey
+  // 2026-08-04). Frames between drawn lines are AVERAGED, not dropped, so a
+  // weak or brief signal can't fall through the gaps.
+  var wfLinesPerSec = 60;   // 60 = legacy behavior (one line per frame)
+  function updateWfSpeedHelp() {
+    if (!wfSpeedHelp) return;
+    var h = (jpWaterfall && jpWaterfall.height) || 80;
+    var span = h / wfLinesPerSec;
+    var periods = span / 15;
+    var fits = periods < 0.95 ? 'less than one FT8 period fits'
+      : periods < 1.5 ? 'about one FT8 period fits'
+      : 'about ' + Math.round(periods) + ' FT8 periods fit';
+    wfSpeedHelp.textContent = 'Lines drawn per second. At ' + wfLinesPerSec + ' the waterfall holds roughly ' +
+      (span >= 10 ? Math.round(span) : span.toFixed(1)) + ' seconds of history — ' + fits +
+      '. Lower is slower: each transmission becomes a short block (as in WSJT-X) and whole periods fit on screen, which is what shows how busy the band is. Higher is faster and finer-grained, but only a moment of history fits.';
+  }
+  function setWfSpeed(n, persist) {
+    n = parseInt(n, 10);
+    if (!isFinite(n) || n < 1) n = 1;
+    if (n > 60) n = 60;
+    wfLinesPerSec = n;
+    if (wfSpeedInput) wfSpeedInput.value = n;
+    wfResetAccum();
+    updateWfSpeedHelp();
+    if (persist) window.api.saveSettings({ jtcatWaterfallSpeed: n });
+  }
+  if (wfSpeedInput) {
+    wfSpeedInput.addEventListener('change', function() { setWfSpeed(wfSpeedInput.value, true); });
+  }
+
   // ARRL Field Day mode toggle + exchange entry. Shared by the ⚙ row and the
   // bar chip (the chip delegates here). Turning FD OFF while Hunt: Field Day
   // is selected also drops the hunt to Off — otherwise we'd keep answering
@@ -3449,6 +3489,18 @@ function _applyPopoutTheme(payload) {
       if (_lastAudioArgs) startPopoutAudio(_lastAudioArgs.deviceId, _lastAudioArgs.audioSource);
     });
   }
+  // Waterfall line pacing (see the "Waterfall speed" block above). Frames
+  // between drawn lines are summed here and averaged into the line, so
+  // slowing the scroll loses no signal — it integrates it, the way WSJT-X's
+  // N-average does.
+  var wfAccum = null;          // Float32Array sum of frames since the last line
+  var wfAccumCount = 0;
+  var wfLastLineTs = 0;
+  function wfResetAccum() {
+    if (wfAccum) wfAccum.fill(0);
+    wfAccumCount = 0;
+    wfLastLineTs = 0;          // draw the next frame immediately after a change
+  }
   var WF_SILENCE_MS = 8000;    // flatline this long before the overlay shows
   var WF_SILENCE_FLOOR = 2;    // max byte magnitude still treated as silence
   var wfLastSignalTs = 0;      // last frame with passband energy above floor
@@ -3510,26 +3562,46 @@ function _applyPopoutTheme(payload) {
       var w = jpWaterfall.width;
       var h = jpWaterfall.height;
 
-      // Scroll existing image down by 1 pixel
-      var imgData = jpWfCtx.getImageData(0, 0, w, h - 1);
-      jpWfCtx.putImageData(imgData, 0, 1);
-
-      // Draw new line at top row
-      var lineData = jpWfCtx.createImageData(w, 1);
-      for (var x = 0; x < w; x++) {
-        var binIdx = Math.floor(x * passbandBins / w);
-        var val = freqData[binIdx];
-        var norm = val / 255;
-        var r, g, b;
-        if (norm < 0.2) { r = 0; g = 0; b = Math.floor(norm * 5 * 140); }
-        else if (norm < 0.4) { var t = (norm - 0.2) * 5; r = 0; g = Math.floor(t * 255); b = 140 + Math.floor(t * 115); }
-        else if (norm < 0.6) { var t = (norm - 0.4) * 5; r = Math.floor(t * 255); g = 255; b = Math.floor((1 - t) * 255); }
-        else if (norm < 0.8) { var t = (norm - 0.6) * 5; r = 255; g = Math.floor((1 - t) * 255); b = 0; }
-        else { var t = (norm - 0.8) * 5; r = 255; g = Math.floor(t * 255); b = Math.floor(t * 255); }
-        var i = x * 4;
-        lineData.data[i] = r; lineData.data[i + 1] = g; lineData.data[i + 2] = b; lineData.data[i + 3] = 255;
+      // Integrate this frame. At the default 60 lines/sec a line is drawn
+      // every frame and the average is over a single frame, so the display is
+      // bit-for-bit what it always was.
+      if (!wfAccum || wfAccum.length !== freqData.length) {
+        wfAccum = new Float32Array(freqData.length);
+        wfAccumCount = 0;
       }
-      jpWfCtx.putImageData(lineData, 0, 0);
+      for (var ai = 0; ai < freqData.length; ai++) wfAccum[ai] += freqData[ai];
+      wfAccumCount++;
+
+      var wfNowMs = Date.now();
+      // >=60 means "every animation frame" — don't let timer jitter drop lines.
+      var dueForLine = wfLinesPerSec >= 60 || (wfNowMs - wfLastLineTs) >= (1000 / wfLinesPerSec);
+      if (dueForLine) {
+        wfLastLineTs = wfNowMs;
+
+        // Scroll existing image down by 1 pixel
+        var imgData = jpWfCtx.getImageData(0, 0, w, h - 1);
+        jpWfCtx.putImageData(imgData, 0, 1);
+
+        // Draw new line at top row, from the integrated frames
+        var lineData = jpWfCtx.createImageData(w, 1);
+        var invCount = wfAccumCount > 0 ? 1 / wfAccumCount : 1;
+        for (var x = 0; x < w; x++) {
+          var binIdx = Math.floor(x * passbandBins / w);
+          var val = wfAccum[binIdx] * invCount;
+          var norm = val / 255;
+          var r, g, b;
+          if (norm < 0.2) { r = 0; g = 0; b = Math.floor(norm * 5 * 140); }
+          else if (norm < 0.4) { var t = (norm - 0.2) * 5; r = 0; g = Math.floor(t * 255); b = 140 + Math.floor(t * 115); }
+          else if (norm < 0.6) { var t = (norm - 0.4) * 5; r = Math.floor(t * 255); g = 255; b = Math.floor((1 - t) * 255); }
+          else if (norm < 0.8) { var t = (norm - 0.6) * 5; r = 255; g = Math.floor((1 - t) * 255); b = 0; }
+          else { var t = (norm - 0.8) * 5; r = 255; g = Math.floor(t * 255); b = Math.floor(t * 255); }
+          var i = x * 4;
+          lineData.data[i] = r; lineData.data[i + 1] = g; lineData.data[i + 2] = b; lineData.data[i + 3] = 255;
+        }
+        jpWfCtx.putImageData(lineData, 0, 0);
+        wfAccum.fill(0);
+        wfAccumCount = 0;
+      }
 
       // RX marker (green) — pulses when receiving
       var rxX = Math.round(jpRxFreqHz / 3000 * w);
