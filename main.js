@@ -20292,6 +20292,22 @@ function tuneRadio(freqKhz, mode, brng, { clearXit, origin } = {}) {
   const xitTag = wantXit ? ` xit=${settings.cwXit}${useVfoShift ? ' (VFO shift)' : ''}` : '';
   sendCatLog(`tune: freq=${freqKhz}kHz -> ${tuneFreqHz}Hz mode=${mode}${mode !== resolvedMode ? '->' + resolvedMode : ''} split=${!!settings.enableSplit} filter=${filterWidth}${xitTag}`);
   cat.tune(tuneFreqHz, mode, { split: settings.enableSplit, filterWidth, xit: nativeXit });
+  // Echo the commanded frequency/mode straight into the UI instead of waiting
+  // for the frequency poll to bring it back. The SmartSDR path has done this
+  // since Flex Direct (see sendCatFrequency(tuneHz) in the SmartSDR branch) —
+  // the CAT path was left depending entirely on the poll, so the VFO window
+  // showed the OLD frequency for as long as the poll took, and indefinitely
+  // whenever the poll wasn't running: idle-pause (settings.idlePauseMin,
+  // default 20 min) stops it outright, and a stale link or a busy serial
+  // sandwich delays it. N2FSM IC-7300 2026-08-05: QSYing through spots moved
+  // the radio and updated the callsign/park text while the VFO window sat on
+  // the first frequency of the session.
+  // The poll still wins whenever it disagrees — this only removes the gap. An
+  // unconfirmed tune therefore shows the target briefly and then reverts,
+  // which is the same optimistic behavior the VFO pop-out already uses for
+  // its own dial (_freqSuppressTarget).
+  sendCatFrequency(tuneFreqHz);
+  if (resolvedMode) sendCatMode(resolvedMode);
 
   // Set or clear XIT via SmartSDR API (works even when tuning via CAT).
   // When legacy VFO-shift is active, force slice XIT off so the offset isn't double-applied.
