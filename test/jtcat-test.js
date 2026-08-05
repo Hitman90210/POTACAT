@@ -70,7 +70,7 @@ function decode(text, opts) {
 }
 
 // Drive the state machine and capture what setTxMsg saw + whether onDone fired.
-function drive(qIn, results, engine) {
+function drive(qIn, results, engine, deps) {
   let lastTx = null;
   let doneCount = 0;
   sm.advanceJtcatQso(
@@ -78,7 +78,7 @@ function drive(qIn, results, engine) {
     results,
     (m) => { lastTx = m; },
     () => { doneCount++; },
-    { engine, log: () => {} },
+    Object.assign({ engine, log: () => {} }, deps || {}),
   );
   return { q: qIn, lastTx, doneCount };
 }
@@ -552,6 +552,40 @@ section('CQ mode — no advance paths');
   {
     const r = drive(baseQ(), [decode('CQ N4XYZ EM12')], makeEngine());
     assertEq(r.q.phase, 'cq', 'no advance on unrelated decode');
+  }
+
+  // deps.skipCall — Run mode's dupe filter. Without it Run re-works the same
+  // stations forever, so the band never "drains" and the pause it depends on
+  // could never trigger. Only run mode passes it: a human who pressed CQ still
+  // answers whoever calls (WSJT-X parity).
+  {
+    const worked = new Set(['A1BCD']);
+    const skipCall = (c) => worked.has(c);
+    const r = drive(baseQ(), [decode('K3SBP A1BCD FN31', { db: -5 })], makeEngine(), { skipCall });
+    assertEq(r.q.phase, 'cq', 'an already-worked answerer is skipped, not worked again');
+    assertEq(r.q.call, null, 'skipped answerer never becomes the QSO partner');
+  }
+  {
+    const worked = new Set(['A1BCD']);
+    const skipCall = (c) => worked.has(c);
+    const r = drive(baseQ(), [
+      decode('K3SBP A1BCD FN31', { db: -5 }),
+      decode('K3SBP N4XYZ EM12', { db: -15 }),
+    ], makeEngine(), { skipCall });
+    assertEq(r.q.call, 'N4XYZ', 'the next unworked answerer is taken instead');
+    assertEq(r.lastTx, 'N4XYZ K3SBP -15', 'and gets a normal report reply');
+  }
+  {
+    // Same decode, no skipCall (manual CQ / hunt) — unchanged behavior.
+    const r = drive(baseQ(), [decode('K3SBP A1BCD FN31', { db: -5 })], makeEngine());
+    assertEq(r.q.call, 'A1BCD', 'without skipCall the first answerer is worked as before');
+  }
+  {
+    // A compressed report reply from a worked station is skipped too — the
+    // filter reads the second token, not the message shape.
+    const skipCall = (c) => c === 'A1BCD';
+    const r = drive(baseQ(), [decode('K3SBP A1BCD -12', { db: -5 })], makeEngine(), { skipCall });
+    assertEq(r.q.phase, 'cq', 'worked station\'s compressed reply is skipped as well');
   }
 }
 
@@ -1368,6 +1402,30 @@ section('Pre-encode race — concurrent setTxFreq + setTxMessage');
         { retries: 3, action: 'abort' }, 'configurable max attempts (X=3) aborts at 3');
       assertEq(D({ phase: 'reply', txRetries: 2, maxCq: 15, maxQso: 3, runMode: true, closeoutEligible: false }),
         { retries: 3, action: 'rearm' }, 'configurable X re-arms CQ in run mode');
+
+      // -- Run-mode drained-band pause (decideRunCqPause) --
+      // Run used to call CQ into an empty band until the 30-minute attended
+      // watchdog killed it. It now stops transmitting once nobody has answered
+      // for N CQs AND no unworked station is calling CQ. BOTH conditions are
+      // load-bearing: unanswered CQs alone would pause on a busy band where
+      // the operator simply isn't being heard (stations are there — keep
+      // calling), and an empty caller list alone would pause during a lull
+      // mid-pileup.
+      section('decideRunCqPause — pause only when the band is genuinely drained');
+      const P = sm.decideRunCqPause;
+      assertEq(P({ unansweredCqs: 8, maxUnanswered: 8, workableCallers: 0 }),
+        { action: 'pause' }, 'cap reached with nobody new calling → pause');
+      assertEq(P({ unansweredCqs: 20, maxUnanswered: 8, workableCallers: 0 }),
+        { action: 'pause' }, 'well past the cap still pauses');
+      assertEq(P({ unansweredCqs: 7, maxUnanswered: 8, workableCallers: 0 }),
+        { action: 'continue' }, 'under the cap keeps calling even on a dead band');
+      assertEq(P({ unansweredCqs: 30, maxUnanswered: 8, workableCallers: 1 }),
+        { action: 'continue' }, 'one workable caller is enough to keep calling (weak-signal case)');
+      assertEq(P({ unansweredCqs: 99, maxUnanswered: 0, workableCallers: 0 }),
+        { action: 'continue' }, 'maxUnanswered 0 disables the pause entirely (legacy behavior)');
+      assertEq(P({ unansweredCqs: 8, maxUnanswered: 8 }),
+        { action: 'pause' }, 'missing workableCallers counts as none');
+      assertEq(P({}), { action: 'continue' }, 'empty input never pauses');
 
       // -- Try-counter gate (shouldCountRetry) --
       // A try = a TRANSMISSION. Decode events land every period (including

@@ -205,6 +205,10 @@
     .jp-btn.jp-ultracat { color: #00ff41; border-color: #00ff41; }
     .jp-btn.jp-ultracat:hover { background: #00ff41; color: #000; }
     .jp-btn.jp-ultracat.active { background: #00ff41; color: #000; border-color: #00ff41; text-shadow: none; box-shadow: 0 0 8px #00ff4188; animation: jp-tune-pulse 1.2s ease-in-out infinite; }
+    /* Paused: still running, not transmitting because the band is worked out.
+       Reads as "armed but idle" — holds the ULTRACAT green outline, drops the
+       filled/pulsing treatment that means "transmitting". */
+    .jp-btn.jp-ultracat.active.paused { background: transparent; color: #00ff41; box-shadow: none; animation: none; opacity: 0.75; }
     @keyframes jp-tune-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
     .jp-tx-msg { flex: 1; font-family: monospace; color: var(--accent-blue); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .jp-status { font-family: monospace; color: var(--text-dim); font-size: 11px; }
@@ -598,6 +602,10 @@
     <label class="jp-opt-row jp-opt-num-row">
       <span class="jp-opt-label">Give up after <input id="jp-max-attempts" type="number" min="1" max="60" value="12"> tries</span>
       <span class="jp-opt-help">Stop repeating an unanswered message after this many transmissions. If signal reports were exchanged both ways, the QSO is logged and a final 73 is sent first.</span>
+    </label>
+    <label class="jp-opt-row jp-opt-num-row ultracat-gated hidden">
+      <span class="jp-opt-label">Run pauses after <input id="jp-run-pause-after" type="number" min="0" max="60" value="8"> unanswered CQs</span>
+      <span class="jp-opt-help">When Run has worked everyone it can, it stops transmitting and just listens, then picks CQ back up as soon as an unworked station calls CQ. Only pauses if nobody new is calling — on a busy band where you're simply not being heard it keeps going. Set 0 to never pause.</span>
     </label>
     <div class="jp-opt-section">Display</div>
     <label class="jp-opt-row jp-opt-num-row">

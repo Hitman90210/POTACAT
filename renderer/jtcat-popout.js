@@ -79,6 +79,9 @@ function _applyPopoutTheme(payload) {
     if (maxAttemptsInput && typeof s.jtcatMaxQsoAttempts === 'number') {
       maxAttemptsInput.value = s.jtcatMaxQsoAttempts;
     }
+    if (runPauseInput && typeof s.jtcatRunPauseAfter === 'number') {
+      runPauseInput.value = s.jtcatRunPauseAfter;
+    }
     if (typeof s.jtcatWaterfallSpeed === 'number') setWfSpeed(s.jtcatWaterfallSpeed, false);
     else updateWfSpeedHelp();
     fdMode = !!s.jtcatFdMode;
@@ -165,6 +168,7 @@ function _applyPopoutTheme(payload) {
   var cqBtn = document.getElementById('jp-cq');
   var fullAutoCqBtn = document.getElementById('jp-full-auto-cq');
   var maxAttemptsInput = document.getElementById('jp-max-attempts');
+  var runPauseInput = document.getElementById('jp-run-pause-after');
   var wfSpeedInput = document.getElementById('jp-wf-speed');
   var wfSpeedHelp = document.getElementById('jp-wf-speed-help');
   var fdToggle = document.getElementById('jp-fd-toggle');
@@ -2125,12 +2129,22 @@ function _applyPopoutTheme(payload) {
   }
   window.api.onJtcatFullAutoCqState(function(state) {
     fullAutoCqActive = !!(state && state.active);
+    var paused = !!(state && state.paused);
     if (fullAutoCqBtn) {
       fullAutoCqBtn.classList.toggle('active', fullAutoCqActive);
+      // Paused = still running, deliberately not transmitting because the band
+      // is worked out. Shown on the button so a silent TX always has a visible
+      // reason; it clears itself when a new station calls CQ.
+      fullAutoCqBtn.classList.toggle('paused', fullAutoCqActive && paused);
       // "Run" (contest slang: call CQ and work the pileup) — renamed from
       // "Auto CQ" to end the CQ / Hunt / Auto CQ name collision.
-      fullAutoCqBtn.textContent = fullAutoCqActive ? 'Run ●' : 'Run';
+      fullAutoCqBtn.textContent = !fullAutoCqActive ? 'Run' : (paused ? 'Run ‖' : 'Run ●');
+      fullAutoCqBtn.title = (fullAutoCqActive && paused)
+        ? 'Paused — everyone workable has been worked. Listening; CQ resumes when a new station calls.'
+        : '';
     }
+    // A paused run still owns TX and will resume on its own, so the TX-armed
+    // indicator stays on — only a real stop clears it.
     if (!fullAutoCqActive) setTxOnState(false);
   });
   if (maxAttemptsInput) {
@@ -2140,6 +2154,15 @@ function _applyPopoutTheme(payload) {
       if (n > 60) n = 60;
       maxAttemptsInput.value = n;
       window.api.saveSettings({ jtcatMaxQsoAttempts: n });
+    });
+  }
+  if (runPauseInput) {
+    runPauseInput.addEventListener('change', function() {
+      var n = parseInt(runPauseInput.value, 10);
+      if (!isFinite(n) || n < 0) n = 0;   // 0 = never pause (legacy behavior)
+      if (n > 60) n = 60;
+      runPauseInput.value = n;
+      window.api.saveSettings({ jtcatRunPauseAfter: n });
     });
   }
 

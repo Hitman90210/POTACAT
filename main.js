@@ -6127,6 +6127,43 @@ const JTCAT_MAX_QSO_RETRIES = 12; // ~3 minutes of retries at 15s/cycle
 let jtcatAutoCqMode = 'off';          // 'off' | 'pota' | 'sota' | 'all'
 let jtcatAutoCqWorkedSession = new Set(); // callsigns attempted/worked this session
 
+/**
+ * Worked-before lookup against the ADIF log. The ONE definition of "already
+ * worked" for JTCAT — the manual double-click dupe warning and Run mode's
+ * answerer filter both read it, so a call the warning would flag is exactly a
+ * call Run skips. Band/mode aware on purpose: the same station on a different
+ * band or mode is a legitimate new QSO, and a plain Set of callsigns would
+ * refuse it.
+ * @returns {{worked:boolean, sameBandMode:boolean, entries:Array, last:object|null}}
+ */
+function jtcatWorkedInfo(call, band, mode) {
+  const entries = (workedQsos && workedQsos.get((call || '').toUpperCase())) || null;
+  if (!entries || !entries.length) return { worked: false, sameBandMode: false, entries: [], last: null };
+  const b = (band || '').toUpperCase();
+  const m = (mode || '').toUpperCase();
+  const sameBandMode = entries.some((w) =>
+    (w.band || '').toUpperCase() === b && (w.mode || '').toUpperCase() === m);
+  return { worked: true, sameBandMode, entries, last: entries[entries.length - 1] };
+}
+
+/** Should an automatic path refuse to work this call right now? Session
+ *  attempts always count (they may not have reached the ADIF log yet); logged
+ *  QSOs only count on the same band+mode. */
+function jtcatIsWorkedCall(call, band, mode) {
+  const c = (call || '').toUpperCase();
+  if (!c) return false;
+  if (jtcatAutoCqWorkedSession.has(c)) return true;
+  return jtcatWorkedInfo(c, band, mode).sameBandMode;
+}
+
+/** The band+mode a JTCAT engine is currently operating, for the dupe test. */
+function jtcatCurrentBandMode(engine) {
+  return {
+    band: (freqToBand((_currentFreqHz || 0) / 1e6) || '').toUpperCase(),
+    mode: ((engine && engine._mode) || 'FT8').toUpperCase(),
+  };
+}
+
 // ─── Spot Target (2026-07-17) ────────────────────────────────────────────────
 // Clicking an FT8/FT4/FT2 spot in the desktop table arms this; the watcher in
 // the decode handler auto-calls the activator at a polite opening — their CQ,
@@ -6197,6 +6234,21 @@ let jtcatFullAutoCqOwner = null;       // 'popout' | 'remote'
 let jtcatFullAutoCqModifier = '';      // CQ modifier carried across re-arms (POTA/DX/…)
 let jtcatFullAutoCqLastActivity = 0;   // ms epoch of last QSO/decode progress (watchdog)
 const JTCAT_FULL_AUTO_CQ_WATCHDOG_MS = 30 * 60 * 1000; // 30 min unattended cap
+// Drained-band pause: Run works everyone it can, then used to keep calling CQ
+// into an empty band until the 30-minute watchdog killed it. It now stops
+// transmitting once nobody has answered for N CQs AND no unworked station is
+// calling CQ in the decodes, and resumes the moment one appears. The watchdog
+// is deliberately NOT petted while paused, so a band that stays dead still
+// ends the run rather than leaving it armed indefinitely.
+let jtcatFullAutoCqUnanswered = 0;     // consecutive CQ transmissions with no answer
+let jtcatFullAutoCqPaused = false;     // listening, TX off, still in run mode
+const JTCAT_RUN_PAUSE_AFTER_DEFAULT = 8; // ~4 min of FT8; 0 disables pausing
+
+function jtcatRunPauseAfter() {
+  const n = Number(settings.jtcatRunPauseAfter);
+  if (!isFinite(n) || n < 0) return JTCAT_RUN_PAUSE_AFTER_DEFAULT;
+  return Math.min(60, Math.round(n));
+}
 
 // PSK31 continuous RX text — engine emits per-feedAudio character batches;
 // these coalesce them to a ~250ms cadence before hitting the popout's IPC.
@@ -6221,6 +6273,46 @@ function matchesAutoCqFilter(text, filterMode) {
 // CALL [GRID]" — including grid-less directed/contest CQs and numeric serials.
 function parseCqMessage(text) {
   return JtcatParser.parseCq(text);
+}
+
+/**
+ * Stations calling CQ in this decode cycle that we could still work. ONE
+ * definition, two consumers: Hunt picks its next QSO from the list, and Run
+ * asks only whether it's empty — an empty list plus a run of unanswered CQs is
+ * what "the band is drained" means.
+ *
+ * @param {Array}  results     decodes for this cycle
+ * @param {string} myCall      our callsign (excluded)
+ * @param {object} [opts]
+ * @param {string} [opts.filterMode] CQ filter ('all'|'pota'|'sota'|'fd')
+ * @param {function} [opts.isWorked] override the worked-before test. Hunt keeps
+ *   its historical "worked anywhere, ever" rule; Run passes the band/mode-aware
+ *   jtcatIsWorkedCall so it doesn't count a station it WOULD happily work on
+ *   this band as a reason to stay paused.
+ */
+function jtcatWorkableCallers(results, myCall, opts) {
+  const filterMode = (opts && opts.filterMode) || 'all';
+  const isWorked = (opts && opts.isWorked) || ((call) => !!(workedQsos && workedQsos.has(call)));
+  return (results || [])
+    .filter((d) => matchesAutoCqFilter(d.text, filterMode))
+    .map((d) => ({ ...d, ...parseCqMessage(d.text) }))
+    .filter((d) => {
+      if (!d.call || d.call === myCall) return false;
+      if (jtcatAutoCqWorkedSession.has(d.call)) return false;
+      if (isWorked(d.call)) return false;
+      return true;
+    });
+}
+
+/** The workable-caller count Run's pause/resume decisions run on. */
+function jtcatRunWorkableCount(results) {
+  const myCall = (settings.myCallsign || '').toUpperCase();
+  if (!myCall) return 0;
+  const { band, mode } = jtcatCurrentBandMode(ft8Engine);
+  return jtcatWorkableCallers(results, myCall, {
+    filterMode: 'all',
+    isWorked: (call) => jtcatIsWorkedCall(call, band, mode),
+  }).length;
 }
 
 // HH:MM:SS UTC of the current FT8/FT4 PERIOD START (:00/:15/:30/:45 for FT8's
@@ -6309,7 +6401,15 @@ function jtcatMaxQsoRetries() {
 }
 
 function broadcastFullAutoCqState(reason) {
-  const state = { active: jtcatFullAutoCq, owner: jtcatFullAutoCqOwner, workedCount: jtcatAutoCqWorkedSession.size };
+  const state = {
+    active: jtcatFullAutoCq,
+    owner: jtcatFullAutoCqOwner,
+    workedCount: jtcatAutoCqWorkedSession.size,
+    // Still running, just not transmitting — the band is worked out. The
+    // popout shows this on the Run button so a silent TX has a visible reason.
+    paused: jtcatFullAutoCqPaused,
+    unanswered: jtcatFullAutoCqUnanswered,
+  };
   if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
     jtcatPopoutWin.webContents.send('jtcat-full-auto-cq-state', state);
   }
@@ -6403,6 +6503,10 @@ async function rearmCq(owner) {
   if (!jtcatFullAutoCq || jtcatFullAutoCqOwner !== owner) return false;
   const qso = await jtcatBuildCqQso(jtcatFullAutoCqModifier);
   if (!qso) { stopFullAutoCq('callsign/grid not set'); return false; }
+  // A re-arm follows real activity (a QSO finished, stalled, or the band came
+  // back), so the drained-band counters start over.
+  jtcatFullAutoCqUnanswered = 0;
+  jtcatFullAutoCqPaused = false;
   jtcatFullAutoCqLastActivity = Date.now();
   if (owner === 'remote') { remoteJtcatQso = qso; remoteJtcatBroadcastQso(); }
   else { popoutJtcatQso = qso; popoutBroadcastQso(); }
@@ -6420,6 +6524,8 @@ async function startFullAutoCq(owner, modifier) {
   jtcatFullAutoCqOwner = owner;
   jtcatFullAutoCqModifier = modifier || '';
   jtcatFullAutoCqLastActivity = Date.now();
+  jtcatFullAutoCqUnanswered = 0;
+  jtcatFullAutoCqPaused = false;
   jtcatAutoCqMode = 'off';        // run and hunt are mutually exclusive
   jtcatAutoCqWorkedSession.clear();
   broadcastAutoCqState();
@@ -6447,6 +6553,8 @@ function stopFullAutoCq(reason) {
   const wasActive = jtcatFullAutoCq;
   jtcatFullAutoCq = false;
   jtcatFullAutoCqOwner = null;
+  jtcatFullAutoCqUnanswered = 0;
+  jtcatFullAutoCqPaused = false;
   if (ft8Engine) {
     ft8Engine._txEnabled = false;
     try { ft8Engine.setTxMessage(''); } catch {}
@@ -6460,9 +6568,45 @@ function stopFullAutoCq(reason) {
   if (wasActive) sendCatLog('[JTCAT] Full Auto CQ STOPPED (' + (reason || 'user') + ')');
 }
 
+// Stop transmitting but stay in run mode: the band is drained. TX is silenced
+// exactly the way the retry-stall abort path does it. The CQ QSO object is
+// kept in phase 'cq' — we haven't given up, we're listening for the band to
+// come back, and the decode handlers re-arm us when it does.
+function jtcatPauseRunCq(engine) {
+  if (!jtcatFullAutoCq || jtcatFullAutoCqPaused) return;
+  jtcatFullAutoCqPaused = true;
+  const eng = engine || ft8Engine;
+  if (eng) {
+    eng._txEnabled = false;
+    try { eng.setTxMessage(''); } catch {}
+    if (typeof eng.setTxSlot === 'function') { try { eng.setTxSlot('auto'); } catch {} }
+    if (eng._txActive && typeof eng.txComplete === 'function') eng.txComplete();
+  }
+  sendCatLog(`[JTCAT] Full Auto CQ PAUSED — ${jtcatFullAutoCqUnanswered} unanswered CQs and nobody new calling. Listening; will resume when a workable station appears.`);
+  broadcastFullAutoCqState();
+  if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
+    jtcatPopoutWin.webContents.send('jtcat-qso-notice', { message: 'Run paused — band is worked out. Listening for new callers.' });
+  }
+}
+
+// A workable station turned up while paused — start calling again.
+async function jtcatResumeRunCq(count) {
+  if (!jtcatFullAutoCq || !jtcatFullAutoCqPaused) return;
+  sendCatLog(`[JTCAT] Full Auto CQ RESUMING — ${count} workable station${count === 1 ? '' : 's'} calling CQ`);
+  // rearmCq clears the paused flag and the unanswered counter, rebuilds the CQ
+  // and re-enables TX.
+  const ok = await rearmCq(jtcatFullAutoCqOwner);
+  if (!ok) return;
+  if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
+    jtcatPopoutWin.webContents.send('jtcat-qso-notice', { message: 'Run resumed — new callers on the band.' });
+  }
+}
+
 // Attended-operator watchdog — Part 97 keeps unattended automatic control off
 // the FT8 calling frequencies, so a forgotten run session must not transmit
-// indefinitely. Called each decode cycle while run mode is active.
+// indefinitely. Called each decode cycle while run mode is active. Deliberately
+// still armed while paused: a band that never comes back ends the run rather
+// than leaving it sitting there indefinitely.
 function jtcatFullAutoCqWatchdog() {
   if (!jtcatFullAutoCq) return;
   if (Date.now() - jtcatFullAutoCqLastActivity > JTCAT_FULL_AUTO_CQ_WATCHDOG_MS) {
@@ -7084,10 +7228,18 @@ function advanceJtcatQso(q, results, setTxMsg, onDone) {
   // Thin wrapper around the extracted state machine — keeps the
   // engine + log dependencies injected so the unit tests in
   // test/jtcat-test.js can drive it without spinning the full app.
-  return _jtcatStateMachine.advanceJtcatQso(q, results, setTxMsg, onDone, {
-    engine: ft8Engine,
-    log: sendCatLog,
-  });
+  const deps = { engine: ft8Engine, log: sendCatLog };
+  // Run mode only: don't re-work a station we've already logged on this band
+  // and mode. Left off every other path deliberately — a human who pressed CQ
+  // answers whoever calls (WSJT-X parity), and the double-click reply gets the
+  // orange dupe toast instead of a refusal. Run has no operator in the loop to
+  // make that judgement, and without the skip it re-works the same callers
+  // forever, so it can never reach the "drained" state the pause depends on.
+  if (jtcatFullAutoCq && q && q.mode === 'cq') {
+    const { band, mode } = jtcatCurrentBandMode(ft8Engine);
+    deps.skipCall = (call) => jtcatIsWorkedCall(call, band, mode);
+  }
+  return _jtcatStateMachine.advanceJtcatQso(q, results, setTxMsg, onDone, deps);
 }
 
 // Server-side QSO state machine wrappers
@@ -7249,6 +7401,22 @@ function jtcatHandleRetryStall(o) {
     periodKey: pk, txPeriodKey: txPk, lastCountedTxPeriod: qso._retryTxCounted || '',
   })) return;
   qso._retryTxCounted = txPk;
+
+  // Run mode, still calling CQ: this gate has already established that a real
+  // transmission went out and its reply window has been listened to, so it is
+  // exactly one unanswered CQ. decideRetryOutcome deliberately never aborts a
+  // run-mode CQ (it returns 'continue' forever), so the drained-band pause
+  // lives here instead of in its return value.
+  if (o.runMode && qso.phase === 'cq' && !jtcatFullAutoCqPaused) {
+    jtcatFullAutoCqUnanswered++;
+    const pause = _jtcatStateMachine.decideRunCqPause({
+      unansweredCqs: jtcatFullAutoCqUnanswered,
+      maxUnanswered: jtcatRunPauseAfter(),
+      workableCallers: o.workableCount || 0,
+    });
+    if (pause.action === 'pause') { jtcatPauseRunCq(o.engine); return; }
+  }
+
   const maxQso = jtcatMaxQsoRetries();
   const outcome = _jtcatStateMachine.decideRetryOutcome({
     phase: qso.phase, txRetries: qso.txRetries,
@@ -7572,6 +7740,12 @@ function startJtcat(mode) {
         popoutBroadcastQso();
       }
     }
+    // Run mode: how many unworked stations are calling CQ right now? Feeds the
+    // drained-band pause below, and re-arms a paused run the moment the band
+    // comes back. Computed once per cycle for both owners.
+    const runWorkable = jtcatFullAutoCq ? jtcatRunWorkableCount(data.results || []) : 0;
+    if (jtcatFullAutoCqPaused && runWorkable > 0) jtcatResumeRunCq(runWorkable);
+
     if (remoteJtcatQso && remoteJtcatQso.phase !== 'done') {
       const phaseBefore = remoteJtcatQso.phase;
       remoteJtcatQso._heardThisCycle = false;
@@ -7580,7 +7754,12 @@ function startJtcat(mode) {
         const qso = remoteJtcatQso;
         jtcatHandleRetryStall({
           qso, mode: data.mode, engine: ft8Engine,
-          runMode: false, // Full Auto CQ is popout-owner-only today
+          // The phone can own a run since the jtcat-full-auto-cq control path
+          // went live (2026-07-17). This was still hardcoded false from when
+          // run mode was popout-only, so a remote-owned run aborted on its
+          // first stalled QSO instead of re-arming CQ.
+          runMode: jtcatFullAutoCq && jtcatFullAutoCqOwner === 'remote',
+          workableCount: runWorkable,
           setTxMsg: remoteJtcatSetTxMsg, onDone: remoteJtcatOnDone(qso),
           clearQso: () => { remoteJtcatQso = null; remoteJtcatBroadcastQso(); },
           notifyAbort: (msg) => {
@@ -7605,6 +7784,7 @@ function startJtcat(mode) {
         jtcatHandleRetryStall({
           qso, mode: data.mode, engine: ft8Engine,
           runMode: jtcatFullAutoCq && jtcatFullAutoCqOwner === 'popout',
+          workableCount: runWorkable,
           setTxMsg: popoutJtcatSetTxMsg, onDone: popoutJtcatOnDone(qso),
           clearQso: () => { popoutJtcatQso = null; popoutBroadcastQso(); },
           notifyAbort: (msg) => {
@@ -7695,15 +7875,8 @@ function startJtcat(mode) {
         // answers) — see jtcatTryAnswerDirectCaller. Only hunt a fresh CQ if we
         // didn't engage one, so a callback always beats starting a new QSO.
         const answeredCaller = await jtcatTryAnswerDirectCaller(results, myCall, myGrid);
-        const candidates = answeredCaller ? [] : results
-          .filter(d => matchesAutoCqFilter(d.text, jtcatAutoCqMode))
-          .map(d => ({ ...d, ...parseCqMessage(d.text) }))
-          .filter(d => {
-            if (!d.call || d.call === myCall) return false;
-            if (jtcatAutoCqWorkedSession.has(d.call)) return false;
-            if (workedQsos && workedQsos.has(d.call)) return false;
-            return true;
-          });
+        const candidates = answeredCaller ? []
+          : jtcatWorkableCallers(results, myCall, { filterMode: jtcatAutoCqMode });
 
         // Event-needed stations outrank raw signal strength (events-roadmap
         // #4): a tracked-event station you still need (13 Colonies etc. —
@@ -23512,13 +23685,10 @@ app.whenReady().then(() => {
       // Dupe check — manual double-click only (the auto-CQ/run-mode paths
       // SKIP worked calls; a human click proceeds with a warning, mirroring
       // WSJT-X's worked-before coloring rather than refusing the QSO).
-      const dupeEntries = workedQsos.get((data.call || '').toUpperCase());
-      if (dupeEntries && dupeEntries.length && jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
-        const curBand = (freqToBand((_currentFreqHz || 0) / 1e6) || '').toUpperCase();
-        const curMode = ((replyEngine && replyEngine._mode) || 'FT8').toUpperCase();
-        const sameBandMode = dupeEntries.some((w) =>
-          (w.band || '').toUpperCase() === curBand && (w.mode || '').toUpperCase() === curMode);
-        const last = dupeEntries[dupeEntries.length - 1];
+      const { band: curBand, mode: curMode } = jtcatCurrentBandMode(replyEngine);
+      const dupe = jtcatWorkedInfo(data.call, curBand, curMode);
+      if (dupe.worked && jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
+        const { sameBandMode, entries: dupeEntries, last } = dupe;
         const lastDate = (last.date || '').replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3');
         jtcatPopoutWin.webContents.send('jtcat-dupe-warning', {
           message: data.call + ' already worked' + (sameBandMode ? ' on ' + curBand + ' ' + curMode : ''),
@@ -28245,6 +28415,12 @@ app.whenReady().then(() => {
             remoteJtcatBroadcastQso();
           }
         }
+        // Run-mode drained-band bookkeeping — same shape as the single-engine
+        // path. The TX-period dedup inside jtcatHandleRetryStall keeps N slices
+        // from counting N unanswered CQs per cycle.
+        const runWorkable = jtcatFullAutoCq ? jtcatRunWorkableCount(data.results || []) : 0;
+        if (jtcatFullAutoCqPaused && runWorkable > 0) jtcatResumeRunCq(runWorkable);
+
         if (popoutJtcatQso && popoutJtcatQso.phase !== 'done') {
           const phaseBefore = popoutJtcatQso.phase;
           popoutJtcatQso._heardThisCycle = false;
@@ -28256,6 +28432,7 @@ app.whenReady().then(() => {
             jtcatHandleRetryStall({
               qso, mode: data.mode, engine,
               runMode: jtcatFullAutoCq && jtcatFullAutoCqOwner === 'popout',
+              workableCount: runWorkable,
               setTxMsg: popoutJtcatSetTxMsg, onDone: popoutJtcatOnDone(qso),
               clearQso: () => { popoutJtcatQso = null; popoutBroadcastQso(); },
               notifyAbort: (msg) => {
@@ -28283,7 +28460,10 @@ app.whenReady().then(() => {
             const qso = remoteJtcatQso;
             jtcatHandleRetryStall({
               qso, mode: data.mode, engine,
-              runMode: false, // Full Auto CQ is popout-owner-only today
+              // Was hardcoded false from the popout-only era — see the
+              // single-engine path. A phone-owned run must re-arm too.
+              runMode: jtcatFullAutoCq && jtcatFullAutoCqOwner === 'remote',
+              workableCount: runWorkable,
               setTxMsg: remoteJtcatSetTxMsg, onDone: remoteJtcatOnDone(qso),
               clearQso: () => { remoteJtcatQso = null; remoteJtcatBroadcastQso(); },
               notifyAbort: (msg) => {
