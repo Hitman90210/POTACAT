@@ -470,6 +470,7 @@ const GLOBAL_KEYS = new Set([
   'n1mmUdpPort',       // N1MM broadcast port
   'audioInputDeviceId', 'audioOutputDeviceId',  // OS audio device picks
   'jtcatRxGain',       // JTCAT RX gain 0–1 — synced slider, machine audio property
+  'jtcatRxGainByBand', // per-band memory for the above (same machine property)
   'jtcatWaterfallSpeed', // waterfall lines/sec — display property of this screen
                        // (same reasoning as lightMode/darkVariant above)
   'mainMicDeviceId', 'mainPlaybackDeviceId',
@@ -838,17 +839,58 @@ let win = null;
 // the other windows → echo jtcat-rx-gain-state to remote clients. The origin
 // surface is skipped so a dragging slider isn't fought by its own echo
 // (remote-server is single-client, so 'remote' origin = the dragger).
+//
+// PER-BAND MEMORY (K3SBP 2026-08-05): the level that hears 17m is not the
+// level that hears 20m, so the setting above is really "the level for the band
+// we're on". Every operator change is filed under the current band in
+// settings.jtcatRxGainByBand, and changing band restores that band's level.
+// settings.jtcatRxGain stays the live/last value — it's what every surface
+// hydrates from at connect, and it's the fallback for a band never set.
 let _jtcatRxGainSaveTimer = null;
+let _jtcatRxGainBand = '';   // band whose level is currently loaded
 function applyJtcatRxGain(value, origin) {
   let v = Number(value);
   if (!Number.isFinite(v)) return;
   v = Math.max(0, Math.min(1, v));
   settings.jtcatRxGain = v;
+  // File it under the current band — but not when WE just restored it on a
+  // band change ('band'), which would only write back what we read.
+  if (origin !== 'band') {
+    const band = _jtcatRxGainBand || (_currentFreqHz ? (freqToBand(_currentFreqHz / 1e6) || '') : '');
+    if (band) {
+      if (!settings.jtcatRxGainByBand || typeof settings.jtcatRxGainByBand !== 'object') {
+        settings.jtcatRxGainByBand = {};
+      }
+      settings.jtcatRxGainByBand[band] = v;
+    }
+  }
   clearTimeout(_jtcatRxGainSaveTimer);
   _jtcatRxGainSaveTimer = setTimeout(() => { try { saveSettings(settings); } catch {} }, 1200);
   if (origin !== 'main' && win && !win.isDestroyed()) win.webContents.send('jtcat-set-rx-gain', v);
   if (origin !== 'popout' && jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) jtcatPopoutWin.webContents.send('jtcat-set-rx-gain', v);
   if (origin !== 'remote' && remoteServer) remoteServer.broadcastJtcatRxGainState({ value: v });
+}
+
+/**
+ * Band changed — load that band's remembered RX level. Driven from
+ * sendCatFrequency, the single sink every frequency source funnels through
+ * (tune, knob, scan, spot click, WSPR hop, remote), so no per-path hooks.
+ * A band with nothing stored keeps the current level rather than snapping to
+ * a default: that level then becomes the band's, on the operator's first
+ * adjustment. Runs whether or not JTCAT is decoding — the sliders should
+ * always read the level that band will use.
+ */
+function jtcatRxGainFollowBand(hz) {
+  if (!hz || hz <= 0 || !settings) return;
+  const band = freqToBand(hz / 1e6);
+  if (!band || band === _jtcatRxGainBand) return;
+  _jtcatRxGainBand = band;
+  const stored = settings.jtcatRxGainByBand && settings.jtcatRxGainByBand[band];
+  if (typeof stored !== 'number' || !Number.isFinite(stored)) return;
+  const current = typeof settings.jtcatRxGain === 'number' ? settings.jtcatRxGain : 1;
+  if (Math.abs(stored - current) < 0.005) return;   // already there — stay quiet
+  sendCatLog(`[JTCAT] RX gain ${Math.round(stored * 100)}% restored for ${band}`);
+  applyJtcatRxGain(stored, 'band');
 }
 
 // The one authoritative writer for CW speed — same shape as applyJtcatRxGain.
@@ -1986,6 +2028,9 @@ function sendCatFrequency(hz) {
     const b = freqToBand(hz / 1e6);
     if (b && b !== _swrTrippedBand) clearSwrTrip('band change');
   }
+  // Same reasoning, same sink: JTCAT's RX level is remembered per band, so a
+  // band change restores the level that band was last run at.
+  jtcatRxGainFollowBand(hz);
   if (win && !win.isDestroyed()) win.webContents.send('cat-frequency', hz);
   if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) jtcatPopoutWin.webContents.send('cat-frequency', hz);
   if (sstvPopoutWin && !sstvPopoutWin.isDestroyed()) sstvPopoutWin.webContents.send('cat-frequency', hz);
