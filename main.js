@@ -5306,16 +5306,21 @@ function js8Running() {
  * control panel runs. Nothing POTACAT can write into JS8Call.ini substitutes
  * for it. (K3SBP 2026-08-06.)
  */
-function findDaxApp() {
+function findSmartSdrApp(exeName) {
   const found = [];
   for (const spec of js8Process.daxSearchSpecs()) {
     let dirs = [];
     try { dirs = fs.readdirSync(spec.base); } catch { continue; }
     for (const d of dirs) {
       if (!/^SmartSDR/i.test(d)) continue;
-      const exe = spec.sub ? path.join(spec.base, d, spec.sub, 'DAX.exe')
-                           : path.join(spec.base, d, 'DAX.exe');
-      try { fs.accessSync(exe); found.push(exe); } catch { /* next */ }
+      // v4.2+ keeps DAX.exe and CAT.exe beside SmartSDR.exe; older layouts put
+      // each in its own subfolder named after the app.
+      for (const exe of [
+        spec.sub ? path.join(spec.base, d, spec.sub, exeName) : path.join(spec.base, d, exeName),
+        path.join(spec.base, d, path.basename(exeName, '.exe'), exeName),
+      ]) {
+        try { fs.accessSync(exe); found.push(exe); break; } catch { /* next */ }
+      }
     }
   }
   // By version, not by which layout answered first: an upgrade to v4.2+ leaves
@@ -5325,23 +5330,63 @@ function findDaxApp() {
   return js8Process.pickNewestDax(found);
 }
 
-/** Start the DAX control panel. Never kills one; it is the operator's window. */
-function launchDaxApp() {
-  const exe = findDaxApp();
+function findDaxApp() { return findSmartSdrApp('DAX.exe'); }
+/** SmartSDR CAT — the shim that publishes the 5002-5005 slice serial ports. */
+function findCatApp() { return findSmartSdrApp('CAT.exe'); }
+
+/**
+ * Is anything actually listening on a SmartSDR CAT slice port?
+ *
+ * POTACAT does not use these: Flex Direct drives the radio over the native API
+ * on 4992, so `settings.catTarget` can be empty and everything still works.
+ * That made it easy to propose moving JS8Call to "slice B, port 5003" on a
+ * station where SmartSDR CAT has never been started and nothing is listening on
+ * any of them — advice that cannot work, written into someone's config file.
+ * (K3SBP 2026-08-06: nothing on 5002-5005, CAT.exe installed but not running.)
+ */
+function probeCatPort(port, timeoutMs = 400) {
+  const net = require('net');
+  return new Promise((resolve) => {
+    const sock = new net.Socket();
+    let done = false;
+    const finish = (open) => { if (done) return; done = true; try { sock.destroy(); } catch {} resolve(open); };
+    sock.setTimeout(timeoutMs);
+    sock.once('connect', () => finish(true));
+    sock.once('timeout', () => finish(false));
+    sock.once('error', () => finish(false));
+    try { sock.connect(port, '127.0.0.1'); } catch { finish(false); }
+  });
+}
+
+/** Which of the SmartSDR CAT slice ports are live, lowest first. */
+async function openCatSlicePorts() {
+  const ports = [5002, 5003, 5004, 5005];
+  const open = await Promise.all(ports.map((p) => probeCatPort(p)));
+  return ports.filter((_p, i) => open[i]);
+}
+
+/**
+ * Start one of SmartSDR's helper apps. Never kills one — they are the
+ * operator's windows, and they outlive POTACAT by design.
+ */
+function launchSmartSdrApp(exe, label) {
   if (!exe) {
-    sendCatLog('[JS8Call] cannot start DAX: no SmartSDR DAX control panel found.');
-    return { ok: false, error: 'Could not find the SmartSDR DAX control panel. Start DAX from your SmartSDR install, then try again.' };
+    sendCatLog(`[JS8Call] cannot start ${label}: not found in any SmartSDR install.`);
+    return { ok: false, error: `Could not find ${label}. Start it from your SmartSDR installation, then press Retry.` };
   }
   try {
-    sendCatLog('[JS8Call] launching DAX: ' + exe);
+    sendCatLog(`[JS8Call] launching ${label}: ${exe}`);
     const p = spawn(exe, [], { stdio: 'ignore', detached: true });
-    p.unref();     // DAX outlives POTACAT; it is the operator's audio plumbing
-    p.on('error', (err) => sendCatLog('[JS8Call] DAX launch failed: ' + (err.message || err)));
+    p.unref();
+    p.on('error', (err) => sendCatLog(`[JS8Call] ${label} launch failed: ` + (err.message || err)));
   } catch (err) {
-    return { ok: false, error: 'Could not start DAX: ' + (err.message || err) };
+    return { ok: false, error: `Could not start ${label}: ` + (err.message || err) };
   }
   return { ok: true, exe };
 }
+
+function launchDaxApp() { return launchSmartSdrApp(findDaxApp(), 'SmartSDR DAX'); }
+function launchCatApp() { return launchSmartSdrApp(findCatApp(), 'SmartSDR CAT'); }
 
 /**
  * What one-click setup would do, without doing any of it. The popout shows this
@@ -5354,22 +5399,27 @@ function launchDaxApp() {
  * slices. Anywhere else there is no second receiver to move to, so there is
  * nothing honest to propose and this returns null.
  */
-function js8RadioPlan(setup, labels = []) {
+function js8RadioPlan(setup, labels = [], catPorts = null) {
   if (!setup || setup.rigFamily !== 'flex') return null;
   const ours = (settings.catTarget && settings.catTarget.port) || 5002;
-  const port = [5002, 5003, 5004, 5005].find((p) => p !== ours) || 5003;
+  // Only offer a slice port something is actually listening on. `catPorts` null
+  // means "not probed" and keeps the old assumption; an empty array means we
+  // looked and SmartSDR CAT is not running, so there is no honest port to name.
+  const live = catPorts === null ? [5002, 5003, 5004, 5005] : catPorts;
+  const port = live.find((p) => p !== ours) || null;
 
   // Slice-to-DAX-channel is a CONVENTION; which channels the machine presents
   // is a fact, and only the fact can go into a config file. K3SBP's station
   // has no DAX RX 4 and calls its transmit endpoint "DAX RESERVED AUDIO TX",
   // so the template this used to build named devices that did not exist and
   // JS8Call reported it as an unsupported audio format (2026-08-06).
-  const preferred = (port - 5002) + 1;
+  const preferred = port ? (port - 5002) + 1 : 0;
   const ch = js8Audio.chooseDaxRxChannel(labels, [_flexDaxChannel || 1], preferred);
   const soundIn = ch ? js8Audio.pickDaxRx(labels, ch) : null;
   const soundOut = js8Audio.pickDaxTx(labels);
 
-  const plan = { catPort: port };
+  const plan = {};
+  if (port) plan.catPort = port;
   // Omit what we could not verify rather than writing a guess. desiredJs8Settings
   // skips absent keys, so JS8Call keeps whatever it already had and the operator
   // is told which part POTACAT could not do.
@@ -5423,6 +5473,7 @@ async function planJs8Setup({ includeRadio = null } = {}) {
   const setup = readJs8Setup();
   if (!setup) return { ok: false, error: 'No JS8Call configuration found. Install JS8Call and run it once.' };
   const labels = await js8AudioLabels();
+  const catPorts = setup.rigFamily === 'flex' ? await openCatSlicePorts() : null;
 
   // A real, detected collision decides the default — offering an unticked box
   // beside a warning that the two apps will fight over the same slice makes the
@@ -5437,7 +5488,7 @@ async function planJs8Setup({ includeRadio = null } = {}) {
     js8Audio.deviceMissing(setup.found.soundOut, labels));
   const collides = js8Problems.some((p) => p.code === 'cat-slice-collision' || p.code === 'dax-rx-collision');
   const wantRadio = includeRadio === null ? (collides || !!deadDevice) : !!includeRadio;
-  const radio = wantRadio ? js8RadioPlan(setup, labels) : null;
+  const radio = wantRadio ? js8RadioPlan(setup, labels, catPorts) : null;
 
   const want = js8Process.desiredJs8Settings({
     tcpPort: settings.js8Port || setup.found.tcpPort || 2442,
@@ -5466,6 +5517,13 @@ async function planJs8Setup({ includeRadio = null } = {}) {
     // that still cannot be opened. null = we could not tell.
     daxDown: setup.rigFamily === 'flex' ? js8Audio.daxProvisioned(labels) === false : false,
     daxApp: findDaxApp(),
+    // The other half of the same story. POTACAT drives a Flex over the native
+    // API on 4992 and never needs these slice ports, so a perfectly working
+    // station can have none of them — and JS8Call, which can only speak serial
+    // CAT, then has nothing to point at.
+    catShimDown: setup.rigFamily === 'flex' && catPorts !== null && catPorts.length === 0,
+    catApp: findCatApp(),
+    catPorts: catPorts || [],
     deadDevice: !!deadDevice,
     // Named so the panel can say WHICH device is missing — "your audio is
     // wrong" sends the operator hunting; naming the string ends it.
@@ -5504,7 +5562,9 @@ async function applyJs8Setup({ includeRadio = null } = {}) {
   // is the one failure this whole confirm-first design exists to prevent.
   const want = js8Process.desiredJs8Settings({
     tcpPort: settings.js8Port || setup.found.tcpPort || 2442,
-    radio: plan.includeRadio ? js8RadioPlan(setup, await js8AudioLabels()) : null,
+    radio: plan.includeRadio
+      ? js8RadioPlan(setup, await js8AudioLabels(), await openCatSlicePorts())
+      : null,
   });
   const patched = js8Process.planJs8IniPatch(raw, want);
 
@@ -23743,6 +23803,7 @@ app.whenReady().then(() => {
   });
   ipcMain.handle('js8call-launch', () => { markUserActive(); return launchJs8Call(); });
   ipcMain.handle('js8call-launch-dax', () => { markUserActive(); return launchDaxApp(); });
+  ipcMain.handle('js8call-launch-cat', () => { markUserActive(); return launchCatApp(); });
   // Re-read the ini on demand so the Settings panel can show the effect of a
   // change the operator just made in JS8Call, without restarting anything.
   ipcMain.handle('js8call-check-setup', () => {

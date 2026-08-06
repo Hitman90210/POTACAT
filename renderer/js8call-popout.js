@@ -24,6 +24,7 @@
       setupLaunch = el('jc-setup-launch'), setupRadioWrap = el('jc-setup-radio-wrap'),
       setupRadio = el('jc-setup-radio'), setupRadioWhy = el('jc-setup-radio-why'),
       setupNote = el('jc-setup-note'), setupDax = el('jc-setup-dax'),
+      setupCat = el('jc-setup-cat'),
       setupManual = el('jc-setup-manual');
 
   var connected = false;
@@ -326,7 +327,8 @@
     showSetup(true);
     setupChanges.innerHTML = '';
     setupNote.hidden = true;
-    setupGo.hidden = setupLaunch.hidden = setupRadioWrap.hidden = setupDax.hidden = true;
+    setupGo.hidden = setupLaunch.hidden = setupRadioWrap.hidden = true;
+    setupDax.hidden = setupCat.hidden = true;
 
     var p;
     // includeRadio deliberately unsent on the first pass: main decides it from
@@ -349,20 +351,36 @@
     // change JS8Call's settings, and no setting reaches the radio while the DAX
     // endpoints are inert placeholders — showing the usual button here would
     // hand the operator a fix that cannot work.
-    if (p.daxDown) {
-      setupTitle.textContent = 'Start SmartSDR DAX first';
+    if (p.daxDown || p.catShimDown) {
+      // Both prerequisites at once. POTACAT reaches a Flex over the native API
+      // and needs neither of these, so on a Flex Direct station they are BOTH
+      // usually missing — reporting one per visit turns a single answer into a
+      // guessing game across several rounds.
+      setupTitle.textContent = 'JS8Call needs two SmartSDR helpers running';
       setupLede.innerHTML =
-        'POTACAT talks to your Flex over the network and does not need DAX, so it is not running. ' +
-        'JS8Call is an ordinary Windows program and can only hear the radio through DAX’s audio devices — ' +
-        'until the DAX control panel runs, those devices exist but carry nothing, and JS8Call reports it as ' +
-        '<b>“Requested output audio format is not supported on device”</b>.';
-      setupDax.hidden = !p.daxApp;
-      setupManual.innerHTML = (p.daxApp
-        ? '<p class="jc-quiet">' + esc(p.daxApp) + '</p>'
-        : '<p>Start <code>DAX</code> from your SmartSDR installation, then reopen this window.</p>') +
-        foldout('<b>In DAX:</b> tick <code>DAX RX 1..8</code> for a channel JS8Call can use, and ' +
-          '<code>DAX TX</code>. Then come back here and POTACAT will finish the setup.<br><br>' +
-          radioAdvice(p.canDoRadio));
+        'POTACAT drives your Flex over the network, so it needs neither of these and they are not running. ' +
+        'JS8Call is an ordinary Windows program: it can only hear the radio through DAX’s sound devices, ' +
+        'and only tune it through a SmartSDR CAT serial port.';
+      setupChanges.innerHTML = '';
+      if (p.daxDown) {
+        var li1 = document.createElement('li');
+        li1.innerHTML = '<b>DAX</b> — audio. Without it the sound devices exist but carry nothing, ' +
+          'which JS8Call reports as “Requested output audio format is not supported on device”.';
+        setupChanges.appendChild(li1);
+      }
+      if (p.catShimDown) {
+        var li2 = document.createElement('li');
+        li2.innerHTML = '<b>SmartSDR CAT</b> — radio control. Nothing is listening on ports 5002-5005, ' +
+          'so JS8Call has no port to point at and reports no radio.';
+        setupChanges.appendChild(li2);
+      }
+      setupDax.hidden = !(p.daxDown && p.daxApp);
+      setupCat.hidden = !(p.catShimDown && p.catApp);
+      setupManual.innerHTML =
+        foldout('<b>After starting them:</b> in DAX tick a <code>DAX RX</code> channel and <code>DAX TX</code>; ' +
+          'in SmartSDR CAT create a port for a slice. Then press Retry above and POTACAT will finish the setup.' +
+          '<br><br><b>Or skip both.</b> Set JS8Call’s <code>Radio &gt; Rig</code> to <code>None</code> and give it ' +
+          'audio from any virtual cable — it will decode without touching the radio, and you tune from POTACAT.');
       return;
     }
 
@@ -484,16 +502,21 @@
     else { setupTitle.textContent = 'Starting JS8Call…'; setupLede.textContent = 'Give it a few seconds.'; setupLaunch.hidden = true; }
   });
 
-  setupDax.addEventListener('click', async function () {
-    setupDax.disabled = true;
-    var r;
-    try { r = await window.api.launchDax(); } catch (e) { r = { ok: false, error: e && e.message }; }
-    setupDax.disabled = false;
-    if (!r || !r.ok) { setupLede.textContent = (r && r.error) || 'Could not start DAX.'; return; }
-    setupTitle.textContent = 'Starting DAX…';
-    setupLede.textContent = 'Tick a DAX RX channel and DAX TX in its window, then press Retry above.';
-    setupDax.hidden = true;
-  });
+  function wireHelperLaunch(btn, call, name, thenDo) {
+    btn.addEventListener('click', async function () {
+      btn.disabled = true;
+      var r;
+      try { r = await call(); } catch (e) { r = { ok: false, error: e && e.message }; }
+      btn.disabled = false;
+      if (!r || !r.ok) { setupLede.textContent = (r && r.error) || ('Could not start ' + name + '.'); return; }
+      btn.hidden = true;
+      setupLede.textContent = 'Started ' + name + '. ' + thenDo + ' Then press Retry above.';
+    });
+  }
+  wireHelperLaunch(setupDax, function () { return window.api.launchDax(); }, 'DAX',
+    'Tick a DAX RX channel and DAX TX in its window.');
+  wireHelperLaunch(setupCat, function () { return window.api.launchCat(); }, 'SmartSDR CAT',
+    'Create a serial port for a slice in its window.');
 
   if (setupRadio) setupRadio.addEventListener('change', function () {
     radioTouched = true;
