@@ -14,7 +14,7 @@
 const assert = require('assert');
 const {
   parseDaxLabel, daxRxChannels, pickDaxRx, pickDaxTx, chooseDaxRxChannel, deviceMissing,
-  isPlaceholderDax, daxProvisioned, daxFamilyKind, resolveDaxPair,
+  isPlaceholderDax, daxProvisioned, daxFamilyKind, resolveDaxPair, deviceProblem,
 } = require('../lib/js8call-audio');
 
 let pass = 0, fail = 0;
@@ -204,6 +204,37 @@ test('an empty device list makes no claim about anything', () => {
   // Headless, or enumeration failed. Reporting everything as missing would
   // bury the operator in false alarms.
   assert.strictEqual(deviceMissing('DAX Audio TX (FlexRadio Systems DAX TX)', []), true);
+});
+
+// ── present is still not usable ──────────────────────────────────────────────
+
+test('the exact pair JS8Call was left pointed at is caught', () => {
+  // Both enumerate. Neither carries audio. deviceMissing passed both, so
+  // POTACAT reported "JS8Call is ready" and started it into the same error.
+  assert.strictEqual(
+    deviceProblem('DAX RESERVED AUDIO TX (FlexRadio Systems DAX TX)', BOTH_FAMILIES), 'placeholder');
+  assert.strictEqual(
+    deviceProblem('DAX Audio RX 2 (FlexRadio Systems DAX Audio)', BOTH_FAMILIES), 'dead-family');
+});
+
+test('devices from the live family pass', () => {
+  assert.strictEqual(deviceProblem('DAX RX 2 (FlexRadio DAX)', BOTH_FAMILIES), null);
+  assert.strictEqual(deviceProblem('DAX TX (FlexRadio DAX)', BOTH_FAMILIES), null);
+});
+
+test('an absent device is still reported absent', () => {
+  assert.strictEqual(deviceProblem('DAX Audio TX (FlexRadio Systems DAX TX)', BOTH_FAMILIES), 'missing');
+});
+
+test('with DAX down, nothing is accused of being stale', () => {
+  // No live family to compare against, and daxDown has its own screen. Calling
+  // every device "old driver" there would just be a second wrong answer.
+  assert.strictEqual(deviceProblem('DAX Audio RX 2 (FlexRadio Systems DAX Audio)', REAL), null);
+});
+
+test('a non-DAX device is never judged by DAX rules', () => {
+  assert.strictEqual(deviceProblem('Speakers (Elgato Wave:3)', BOTH_FAMILIES), null);
+  assert.strictEqual(deviceProblem('', BOTH_FAMILIES), null);
 });
 
 console.log(`\nJS8Call audio: ${pass} passed, ${fail} failed`);

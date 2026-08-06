@@ -408,15 +408,16 @@
     // output audio format is not supported on device", which sends the
     // operator hunting through sample rates for a device that is not there.
     // Name the string.
-    var dead = (p.deadDeviceNames || []).filter(Boolean);
+    var dead = (p.deviceProblems || []).filter(Boolean);
     setupNote.hidden = !dead.length;
     if (dead.length) {
-      setupNote.innerHTML = '<b>JS8Call is set to use ' +
-        dead.map(function (d) { return '<code>' + esc(d) + '</code>'; }).join(' and ') +
-        ', which ' + (dead.length > 1 ? 'are' : 'is') + ' not on this PC.</b> ' +
-        'That is what “Requested output audio format is not supported on device” means. ' +
-        'The change' + (dead.length > 1 ? 's' : '') + ' below point' + (dead.length > 1 ? '' : 's') +
-        ' at the real device name' + (dead.length > 1 ? 's' : '') + '.';
+      setupNote.innerHTML =
+        '<b>JS8Call’s audio devices will not work:</b>' +
+        '<ul style="margin:6px 0 0;padding-left:18px;">' +
+        dead.map(function (d) { return '<li>' + esc(d) + '</li>'; }).join('') +
+        '</ul><div style="margin-top:6px;">That is what “Requested output audio format is not ' +
+        'supported on device” means — it is reported as a format problem either way. ' +
+        'The change' + (dead.length > 1 ? 's' : '') + ' below point at devices that carry audio.</div>';
     }
 
     if (p.running) {

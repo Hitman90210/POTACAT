@@ -5500,9 +5500,16 @@ async function planJs8Setup({ includeRadio = null } = {}) {
   // exactly the state that produces "Requested output audio format is not
   // supported on device", a message about formats that is really about a
   // missing device, and nothing else on this screen would have explained it.
-  const deadDevice = labels.length && (
-    js8Audio.deviceMissing(setup.found.soundIn, labels) ||
-    js8Audio.deviceMissing(setup.found.soundOut, labels));
+  // deviceProblem, not deviceMissing: both devices JS8Call was pointed at here
+  // enumerated fine and neither could carry audio (one a placeholder, one from
+  // the dead driver generation), so a presence check reported "ready" and
+  // launched JS8Call straight into the same error.
+  const devTrouble = labels.length
+    ? [setup.found.soundIn, setup.found.soundOut]
+        .map((d) => ({ device: d, why: js8Audio.deviceProblem(d, labels) }))
+        .filter((x) => x.device && x.why)
+    : [];
+  const deadDevice = devTrouble.length > 0;
   const collides = js8Problems.some((p) => p.code === 'cat-slice-collision' || p.code === 'dax-rx-collision');
   const wantRadio = includeRadio === null ? (collides || !!deadDevice) : !!includeRadio;
   const radio = wantRadio ? js8RadioPlan(setup, labels, catPorts) : null;
@@ -5546,11 +5553,10 @@ async function planJs8Setup({ includeRadio = null } = {}) {
     // CAT, then has nothing to point at.
     catShimDown: setup.rigFamily === 'flex' && catPorts !== null && catPorts.length === 0,
     catPorts: catPorts || [],
-    deadDevice: !!deadDevice,
-    // Named so the panel can say WHICH device is missing — "your audio is
-    // wrong" sends the operator hunting; naming the string ends it.
-    deadDeviceNames: labels.length ? [setup.found.soundIn, setup.found.soundOut]
-      .filter((d) => js8Audio.deviceMissing(d, labels)) : [],
+    deadDevice,
+    // Named, and with the REASON — "your audio is wrong" sends the operator
+    // hunting; "that one is a placeholder" ends it.
+    deviceProblems: devTrouble.map((x) => js8Audio.describeDeviceProblem(x.device, x.why)),
     includeRadio: wantRadio,
   };
 }
