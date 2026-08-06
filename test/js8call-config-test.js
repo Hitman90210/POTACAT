@@ -25,6 +25,7 @@ const {
   js8ConnectBlocked,
   js8MayTransmitUnprompted,
   js8HeartbeatText,
+  sameDevice,
 } = require('../lib/js8call-config');
 
 let pass = 0, fail = 0;
@@ -167,7 +168,7 @@ test('readJs8Settings defaults sanely on an empty ini', () => {
 
 test('the real-world hostile config reports every problem, worst first', () => {
   const probs = diagnoseJs8Config({
-    ini: parseJs8Ini(HOSTILE), potacatSlicePort: 5002, potacatDaxChannel: 1,
+    ini: parseJs8Ini(HOSTILE), rigFamily: 'flex', potacatSlicePort: 5002, potacatDaxChannel: 1,
   });
   const codes = probs.map((p) => p.code);
   assert.ok(codes.includes('api-disabled'), codes.join(','));
@@ -181,7 +182,7 @@ test('the real-world hostile config reports every problem, worst first', () => {
 
 test('a correctly set up station reports nothing that blocks', () => {
   const probs = diagnoseJs8Config({
-    ini: parseJs8Ini(HEALTHY), potacatSlicePort: 5002, potacatDaxChannel: 1,
+    ini: parseJs8Ini(HEALTHY), rigFamily: 'flex', potacatSlicePort: 5002, potacatDaxChannel: 1,
   });
   assert.deepStrictEqual(js8ConnectBlocked(probs), [], JSON.stringify(probs));
   assert.deepStrictEqual(probs, [], 'and nothing at all, since collisions are resolved too');
@@ -215,7 +216,7 @@ test('an outbound heartbeat is reported but never blocks', () => {
 test('only a dead API blocks the connection', () => {
   const ini = parseJs8Ini(HOSTILE); // API off, autoreply on, both collisions
   const blocked = js8ConnectBlocked(diagnoseJs8Config({
-    ini, potacatSlicePort: 5002, potacatDaxChannel: 1,
+    ini, rigFamily: 'flex', potacatSlicePort: 5002, potacatDaxChannel: 1,
   }));
   assert.deepStrictEqual(blocked.map((p) => p.code), ['api-disabled'],
     'collisions and unprompted TX are things to know, not reasons to refuse');
@@ -249,17 +250,77 @@ test('collision checks are skipped when POTACAT context is unknown', () => {
 
 test('a different slice and DAX channel is not a collision', () => {
   const probs = diagnoseJs8Config({
-    ini: parseJs8Ini(HEALTHY), potacatSlicePort: 5002, potacatDaxChannel: 1,
+    ini: parseJs8Ini(HEALTHY), rigFamily: 'flex', potacatSlicePort: 5002, potacatDaxChannel: 1,
   });
   assert.deepStrictEqual(probs.map((p) => p.code), []);
 });
 
 test('the slice collision message names the slice letter', () => {
   const probs = diagnoseJs8Config({
-    ini: parseJs8Ini(HOSTILE), potacatSlicePort: 5002,
+    ini: parseJs8Ini(HOSTILE), rigFamily: 'flex', potacatSlicePort: 5002,
   });
   const c = probs.find((p) => p.code === 'cat-slice-collision');
   assert.ok(/slice A/.test(c.message), c.message);
+});
+
+// ── rig scoping ──────────────────────────────────────────────────────────────
+// CLAUDE.md: anything naming DAX or slices must be gated on the rig — an
+// IC-7300 operator must never be told to "give JS8Call its own slice", which is
+// advice they cannot act on. The collisions are real on every rig; only the
+// vocabulary is Flex-specific. (K3SBP 2026-08-06, catching this shipped.)
+test('slice and DAX language appears ONLY on a Flex', () => {
+  const ini = parseJs8Ini(HOSTILE);
+  const flex = diagnoseJs8Config({ ini, rigFamily: 'flex', potacatSlicePort: 5002, potacatDaxChannel: 1 });
+  const icom = diagnoseJs8Config({ ini, rigFamily: 'icom', potacatSlicePort: 5002, potacatDaxChannel: 1 });
+  assert.ok(flex.some((p) => p.code === 'cat-slice-collision'));
+  assert.ok(flex.some((p) => p.code === 'dax-rx-collision'));
+  assert.ok(!icom.some((p) => p.code === 'cat-slice-collision'), 'no slices on an Icom');
+  assert.ok(!icom.some((p) => p.code === 'dax-rx-collision'), 'no DAX on an Icom');
+  const words = icom.map((p) => p.message + ' ' + p.fix).join(' ');
+  assert.ok(!/\bDAX\b/i.test(words), 'the word DAX must not reach a non-Flex operator: ' + words);
+  assert.ok(!/\bslice\b/i.test(words), 'nor the word slice: ' + words);
+});
+
+test('an unknown rig family is treated as non-Flex', () => {
+  // Better to say nothing Flex-specific than to guess wrong.
+  const probs = diagnoseJs8Config({ ini: parseJs8Ini(HOSTILE), potacatSlicePort: 5002, potacatDaxChannel: 1 });
+  assert.ok(!probs.some((p) => /slice|DAX/i.test(p.message)));
+});
+
+test('a non-Flex rig gets the collisions that DO apply to it', () => {
+  const ini = parseJs8Ini(withConfig(HOSTILE, 'CATSerialPort=COM4'));
+  const probs = diagnoseJs8Config({
+    ini, rigFamily: 'icom',
+    potacatCatPath: 'COM4',
+    potacatAudioIn: 'USB Audio CODEC',
+  });
+  const codes = probs.map((p) => p.code);
+  assert.ok(codes.includes('cat-port-collision'), codes.join(','));
+  assert.ok(/COM4/.test(probs.find((p) => p.code === 'cat-port-collision').message));
+});
+
+test('the audio collision matches devices spelled differently', () => {
+  // Windows, JS8Call and Chromium each name the same card their own way.
+  // Replace, don't append — a duplicate key means the later one wins.
+  const ini = parseJs8Ini(HOSTILE.replace(
+    'SoundInName=DAX Audio RX 1 (FlexRadio Systems DAX Audio)',
+    'SoundInName=Microphone (USB Audio CODEC)'));
+  const probs = diagnoseJs8Config({ ini, rigFamily: 'icom', potacatAudioIn: 'USB Audio CODEC' });
+  assert.ok(probs.some((p) => p.code === 'audio-in-collision'), JSON.stringify(probs.map((p) => p.code)));
+});
+
+test('sameDevice does not match unrelated cards', () => {
+  assert.strictEqual(sameDevice('USB Audio CODEC', 'Realtek High Definition Audio'), false);
+  assert.strictEqual(sameDevice('', 'USB Audio CODEC'), false, 'blank never matches');
+  assert.strictEqual(sameDevice('DAX Audio RX 1 (FlexRadio Systems DAX Audio)', 'DAX Audio RX 1'), true);
+});
+
+test('non-Flex collisions are skipped when POTACAT context is unknown', () => {
+  const probs = diagnoseJs8Config({ ini: parseJs8Ini(HOSTILE), rigFamily: 'icom' });
+  const codes = probs.map((p) => p.code);
+  assert.ok(!codes.includes('cat-port-collision'));
+  assert.ok(!codes.includes('audio-in-collision'));
+  assert.ok(codes.includes('api-disabled'), 'real blockers still report');
 });
 
 // ── heartbeat composition ────────────────────────────────────────────────────

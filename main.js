@@ -5088,13 +5088,20 @@ function readJs8Setup() {
   try { ini = js8Config.parseJs8Ini(fs.readFileSync(iniPath, 'utf8')); }
   catch { js8Problems = []; return null; }
   const found = js8Config.readJs8Settings(ini);
+  // Rig family selects the VOCABULARY: slices and DAX channels exist only on a
+  // Flex, and naming them to an IC-7300 operator is advice they cannot act on.
+  const activeRig = (settings.rigs || []).find((r) => r && r.id === settings.activeRigId) || null;
+  const fam = activeRig ? (RigFamily.rigFamily(activeRig) || '') : '';
   js8Problems = js8Config.diagnoseJs8Config({
     ini,
+    rigFamily: fam,
     // What POTACAT itself is using, so a collision can be named concretely.
     potacatSlicePort: (settings.catTarget && settings.catTarget.port) || 0,
     potacatDaxChannel: _flexDaxChannel || 0,
+    potacatCatPath: (settings.catTarget && settings.catTarget.path) || '',
+    potacatAudioIn: (activeRig && activeRig.remoteAudioInput) || settings.audioInputDeviceId || '',
   });
-  return { ini, found, iniPath };
+  return { ini, found, iniPath, rigFamily: fam };
 }
 
 /**

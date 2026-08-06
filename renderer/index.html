@@ -2660,7 +2660,7 @@
 
         <div class="help-text" style="display:block;margin-top:6px;padding:7px 9px;border:1px solid var(--border-primary);border-radius:4px;line-height:1.55;">
           <strong>One setting to change in JS8Call.</strong> Its API is off by default: tick <code>Enable TCP Server API</code> under <code>File &gt; Settings &gt; Reporting &gt; API</code>, then restart JS8Call. Everything else POTACAT reads as-is.
-          <br><strong>On a FlexRadio</strong>, give JS8Call its own slice and its own DAX channel so the two don't fight &mdash; the check above tells you if they collide.
+          <br>POTACAT and JS8Call can't both hold the same radio connection or the same sound card. The check above compares the two and tells you, in your radio's own terms, if they collide.
           <br><strong>Don't have it?</strong> Download from <a href="http://js8call.com/" data-external style="color:var(--accent-blue,#4fc3f7);">js8call.com</a>. JS8Call is a separate open-source (GPL-3.0) program by KN4CRD; POTACAT talks to it over a socket and ships none of its code.
         </div>
       </div>
