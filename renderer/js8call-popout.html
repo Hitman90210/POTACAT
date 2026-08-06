@@ -125,13 +125,26 @@
     .jc-setup-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .jc-setup-actions label { font-size: 11.5px; color: var(--text-secondary); display: flex;
       align-items: center; gap: 5px; cursor: pointer; }
-    .jc-setup-manual { margin-top: 14px !important; font-size: 11.5px; line-height: 1.7;
-      border-top: 1px solid var(--border-secondary, #1f1f2e); padding-top: 12px; }
+    .jc-setup-manual { margin-top: 14px; font-size: 11.5px; line-height: 1.7;
+      border-top: 1px solid var(--border-secondary, #1f1f2e); padding-top: 12px;
+      color: var(--text-secondary); }
+    .jc-setup-manual:empty { display: none; border-top: none; }
     .jc-setup-manual code { background: var(--bg-tertiary); padding: 1px 5px; border-radius: 3px;
       color: var(--text-primary); font-family: ui-monospace, monospace; }
     .jc-setup-manual b { color: var(--text-primary); }
     .jc-link { color: var(--accent-blue, #4fc3f7); cursor: pointer; text-decoration: underline; }
     .jc-link:hover { filter: brightness(1.15); }
+    .jc-quiet { color: var(--text-tertiary, #666); font-size: 11px; margin: 0 0 10px !important; }
+    /* The manual route, folded. Present for whoever needs it, silent for
+       everyone the button above already serves. */
+    .jc-fold-out summary { cursor: pointer; color: var(--text-secondary); font-size: 11.5px;
+      list-style: none; display: inline-flex; align-items: center; gap: 5px; user-select: none; }
+    .jc-fold-out summary::-webkit-details-marker { display: none; }
+    .jc-fold-out summary::before { content: '\25B8'; font-size: 9px; transition: transform .12s ease; }
+    .jc-fold-out[open] summary::before { transform: rotate(90deg); }
+    .jc-fold-out summary:hover { color: var(--text-primary); }
+    .jc-fold-out summary:focus-visible { outline: 2px solid var(--accent-blue, #4fc3f7); outline-offset: 2px; }
+    .jc-fold-out > div { margin-top: 9px; }
 
     /* --- compose ----------------------------------------------------------- */
     .jc-compose { border-top: 1px solid var(--border-secondary, #1f1f2e); padding: 8px 12px;
@@ -217,9 +230,11 @@
         <div class="jc-setup-actions">
           <button class="jc-btn go" id="jc-setup-go" hidden>Set up and start JS8Call</button>
           <button class="jc-btn" id="jc-setup-launch" hidden>Start JS8Call</button>
-          <label id="jc-setup-radio-wrap" hidden><input type="checkbox" id="jc-setup-radio"> also move it to its own slice and DAX channel</label>
+          <label id="jc-setup-radio-wrap" hidden><input type="checkbox" id="jc-setup-radio"> <span id="jc-setup-radio-why">give it its own slice</span></label>
         </div>
-        <p class="jc-setup-manual" id="jc-setup-manual"></p>
+        <!-- A div, not a p: it holds <p> and <details>, and a browser silently
+             closes a <p> at the first block child, orphaning everything after. -->
+        <div class="jc-setup-manual" id="jc-setup-manual"></div>
       </div>
 
       <div class="jc-msgs" id="jc-msgs"></div>

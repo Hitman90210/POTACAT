@@ -5320,11 +5320,16 @@ function js8RadioPlan(setup) {
   };
 }
 
-function planJs8Setup({ includeRadio = false } = {}) {
+function planJs8Setup({ includeRadio = null } = {}) {
   const setup = readJs8Setup();
   if (!setup) return { ok: false, error: 'No JS8Call configuration found. Install JS8Call and run it once.' };
 
-  const radio = includeRadio ? js8RadioPlan(setup) : null;
+  // A real, detected collision decides the default — offering an unticked box
+  // beside a warning that the two apps will fight over the same slice makes the
+  // operator do the diagnosis POTACAT has already done.
+  const collides = js8Problems.some((p) => p.code === 'cat-slice-collision' || p.code === 'dax-rx-collision');
+  const wantRadio = includeRadio === null ? collides : !!includeRadio;
+  const radio = wantRadio ? js8RadioPlan(setup) : null;
 
   const want = js8Process.desiredJs8Settings({
     tcpPort: settings.js8Port || setup.found.tcpPort || 2442,
@@ -5338,12 +5343,17 @@ function planJs8Setup({ includeRadio = false } = {}) {
   return {
     ok: true,
     iniPath: setup.iniPath,
-    changes: plan.changes.map((c) => ({ ...c, label: js8Process.describeJs8Change(c) })),
+    // Summarized, not one line per ini key: the list is a set of DECISIONS the
+    // operator is agreeing to, and the three radio keys are one of them.
+    changes: js8Process.summarizeJs8Changes(plan.changes).map((label) => ({ label })),
+    rawChanges: plan.changes,
     missingSection: plan.missingSection,
     running: js8Running(),
     binary: findJs8Call(),
     rigFamily: setup.rigFamily,
     canDoRadio: setup.rigFamily === 'flex',
+    radioCollision: collides,
+    includeRadio: wantRadio,
   };
 }
 
@@ -5352,7 +5362,7 @@ function planJs8Setup({ includeRadio = false } = {}) {
  * on exit, so anything written underneath a live instance is silently reverted
  * — the operator would see us claim success and nothing change.
  */
-function applyJs8Setup({ includeRadio = false } = {}) {
+function applyJs8Setup({ includeRadio = null } = {}) {
   const plan = planJs8Setup({ includeRadio });
   if (!plan.ok) return plan;
   if (plan.missingSection) {
@@ -5368,9 +5378,12 @@ function applyJs8Setup({ includeRadio = false } = {}) {
   try { raw = fs.readFileSync(setup.iniPath, 'utf8'); } catch (err) {
     return { ok: false, error: 'Could not read JS8Call.ini: ' + (err.message || err) };
   }
+  // plan.includeRadio, not the raw argument: the plan resolves `null` into the
+  // collision-driven default, and applying something other than what was shown
+  // is the one failure this whole confirm-first design exists to prevent.
   const want = js8Process.desiredJs8Settings({
     tcpPort: settings.js8Port || setup.found.tcpPort || 2442,
-    radio: includeRadio ? js8RadioPlan(setup) : null,
+    radio: plan.includeRadio ? js8RadioPlan(setup) : null,
   });
   const patched = js8Process.planJs8IniPatch(raw, want);
 
@@ -5384,7 +5397,7 @@ function applyJs8Setup({ includeRadio = false } = {}) {
     return { ok: false, error: 'Could not write JS8Call.ini: ' + (err.message || err) };
   }
   for (const c of patched.changes) sendCatLog(`[JS8Call] setup: ${js8Process.describeJs8Change(c)}`);
-  return { ok: true, changes: patched.changes.map((c) => ({ ...c, label: js8Process.describeJs8Change(c) })) };
+  return { ok: true, changes: js8Process.summarizeJs8Changes(patched.changes).map((label) => ({ label })) };
 }
 
 /** Is a JS8Call running that POTACAT did not start? Best-effort: if its API

@@ -22,7 +22,8 @@
   var setupEl = el('jc-setup'), setupTitle = el('jc-setup-title'), setupLede = el('jc-setup-lede'),
       setupChanges = el('jc-setup-changes'), setupGo = el('jc-setup-go'),
       setupLaunch = el('jc-setup-launch'), setupRadioWrap = el('jc-setup-radio-wrap'),
-      setupRadio = el('jc-setup-radio'), setupManual = el('jc-setup-manual');
+      setupRadio = el('jc-setup-radio'), setupRadioWhy = el('jc-setup-radio-why'),
+      setupManual = el('jc-setup-manual');
 
   var connected = false;
   var openId = null;
@@ -261,9 +262,11 @@
   // offers to do it instead — but always lists exactly what it will change
   // first, because this edits another application's config file.
 
-  // Written out so someone who would rather not have POTACAT touch their config
-  // (or whose JS8Call is running) can still just follow it.
-  var MANUAL = '<b>Or do it yourself in JS8Call:</b><br>' +
+  // Kept, but FOLDED. Someone who would rather not have POTACAT touch their
+  // config — or whose JS8Call is open — still needs the steps; everyone else
+  // needs one button. A wall of manual procedure printed beside that button
+  // makes the reader work out which of the two they are being offered.
+  var MANUAL = '<b>In JS8Call:</b><br>' +
     '1. <code>File &gt; Settings &gt; Reporting &gt; API</code> — tick <code>Enable TCP Server API</code> ' +
     'and <code>Accept TCP Requests</code>, and set max connections to 2 or more.<br>' +
     '2. Restart JS8Call.';
@@ -274,15 +277,21 @@
   // which one applies rather than one paragraph that is half wrong either way.
   function radioAdvice(canDoRadio) {
     if (canDoRadio) {
-      return '<b>About the radio:</b> JS8Call will complain it has no radio until it has its ' +
-        'own slice. Tick the box above and POTACAT will point it at a free slice and DAX ' +
-        'channel — both apps then receive at once, on different bands if you like. ' +
-        'POTACAT keeps the transmitter.';
+      return '<b>The radio:</b> JS8Call complains it has no radio until it has its own slice. ' +
+        'POTACAT gives it one — both apps then receive at once, on different bands if you ' +
+        'like, and POTACAT keeps the transmitter.';
     }
-    return '<b>About the radio:</b> JS8Call will complain it has no radio, because POTACAT ' +
-      'is holding the one CAT connection your rig has. That is expected, and JS8Call still ' +
-      'decodes fine without it. Set <code>File &gt; Settings &gt; Radio &gt; Rig</code> to ' +
-      '<code>None</code> to stop it asking; tune and transmit from POTACAT.';
+    return '<b>The radio:</b> JS8Call will complain it has no radio, because POTACAT holds ' +
+      'the one CAT connection your rig has. That is expected, and JS8Call still decodes fine ' +
+      'without it. Set <code>File &gt; Settings &gt; Radio &gt; Rig</code> to <code>None</code> ' +
+      'to stop it asking; tune and transmit from POTACAT.';
+  }
+
+  /** The fold. Collapsed by default — open it only if the button is not what
+   *  you want. `open` forces it out for the states where it IS the answer. */
+  function foldout(html, open) {
+    return '<details class="jc-fold-out"' + (open ? ' open' : '') + '>' +
+      '<summary>Rather do it yourself?</summary><div>' + html + '</div></details>';
   }
 
   // The setup panel and the transcript share one slot in the column — exactly
@@ -292,9 +301,18 @@
     setupEl.hidden = !on;
     msgsEl.hidden = on;
     headEl.hidden = on || !openCall;
+    // And the diagnostics bar goes with it. Every problem it lists is either
+    // something the button below fixes or something it deliberately leaves
+    // alone — printing all of it beside a one-click offer makes the operator
+    // read six manual procedures to decide whether to press one button.
+    // Post-connect it comes back, where a notice ("JS8Call may transmit on its
+    // own") is the only thing being said and is worth saying.
+    problemsEl.hidden = on;
   }
 
   var setupBusy = false;
+  // Once the operator moves the slice checkbox it is theirs, not ours.
+  var radioTouched = false;
 
   async function refreshSetup() {
     if (connected) { showSetup(false); return; }
@@ -309,43 +327,63 @@
     setupGo.hidden = setupLaunch.hidden = setupRadioWrap.hidden = true;
 
     var p;
-    try { p = await window.api.planSetup({ includeRadio: !!(setupRadio && setupRadio.checked) }); }
+    // includeRadio deliberately unsent on the first pass: main decides it from
+    // the collisions it actually found, and the checkbox reflects that answer
+    // rather than asking the operator to diagnose their own station.
+    var opts = radioTouched ? { includeRadio: !!(setupRadio && setupRadio.checked) } : {};
+    try { p = await window.api.planSetup(opts); }
     catch (e) { setupLede.textContent = 'Could not check JS8Call: ' + (e && e.message); return; }
 
     if (!p || !p.ok) {
-      setupTitle.textContent = 'JS8Call not found';
-      setupLede.textContent = (p && p.error) || 'No JS8Call configuration found.';
-      setupManual.innerHTML = 'Install JS8Call from <span class="jc-link" data-ext="http://js8call.com/">js8call.com</span>, ' +
-        'run it once so it writes its settings, then reopen this window.';
+      setupTitle.textContent = 'JS8Call is not installed';
+      setupLede.innerHTML = 'Download it from <span class="jc-link" data-ext="http://js8call.com/">js8call.com</span> ' +
+        'and run it once, then reopen this window — POTACAT will do the rest of the setup for you.';
+      setupManual.innerHTML = '';
       wireExternal();
       return;
     }
 
     setupRadioWrap.hidden = !p.canDoRadio;
+    if (setupRadio && !radioTouched) setupRadio.checked = !!p.includeRadio;
+    // The label carries whatever the change list above does NOT. Ticked, the
+    // list already spells the move out, so this is just the toggle's name.
+    // Unticked there is no line, so the box has to state the reason itself —
+    // otherwise a detected collision would sit on screen unmentioned.
+    if (setupRadioWhy) {
+      setupRadioWhy.textContent = setupRadio && setupRadio.checked
+        ? 'also move its radio settings'
+        : (p.radioCollision ? 'it is sharing POTACAT’s slice — move it too'
+                            : 'give it its own slice');
+    }
 
     if (p.running) {
       // Qt rewrites the whole ini on exit, so patching under a live instance
       // would be silently undone. Say that rather than failing later.
-      setupTitle.textContent = 'JS8Call is running';
-      setupLede.textContent = 'POTACAT can set it up for you, but only while JS8Call is closed — it rewrites its settings file when it exits, so changes made now would be undone. Close JS8Call and this will offer to do it.';
-      setupManual.innerHTML = MANUAL + '<br><br>' + radioAdvice(p.canDoRadio);
+      setupTitle.textContent = 'Close JS8Call and POTACAT will set it up';
+      setupLede.textContent = 'JS8Call rewrites its settings file when it exits, so anything changed while it is open would be undone. Close it and this will offer to do the whole thing in one click.';
+      // Here the manual route IS the answer for someone who wants to stay in
+      // JS8Call, so it opens rather than hiding behind a summary.
+      setupManual.innerHTML = foldout(MANUAL + '<br><br>' + radioAdvice(p.canDoRadio), true);
       return;
     }
 
     if (!p.changes.length) {
       setupTitle.textContent = 'JS8Call is ready';
-      setupLede.textContent = 'Its settings are already right for POTACAT. Start it and traffic will appear here.';
+      setupLede.textContent = p.binary
+        ? 'Its settings already suit POTACAT. Start it and traffic appears here.'
+        : 'Its settings already suit POTACAT. Open JS8Call and traffic appears here.';
       setupLaunch.hidden = !p.binary;
       setupManual.innerHTML = (p.binary ? '' :
-        'POTACAT could not find the JS8Call program to start it — open it yourself, or set its ' +
-        'location in Settings &gt; Station &gt; JS8Call.<br><br>') + radioAdvice(p.canDoRadio);
+        '<p>POTACAT could not find the JS8Call program to start it. Set its location in ' +
+        'Settings &gt; Station &gt; JS8Call if you want the button here.</p>') +
+        foldout(radioAdvice(p.canDoRadio));
       return;
     }
 
-    setupTitle.textContent = 'One click and JS8Call is ready';
+    setupTitle.textContent = p.binary ? 'Set JS8Call up' : 'Set JS8Call up';
     setupLede.textContent = p.binary
-      ? 'POTACAT will change these settings in JS8Call, then start it:'
-      : 'POTACAT will change these settings in JS8Call (it could not find the program to start it, so open JS8Call yourself afterwards):';
+      ? 'POTACAT will make these changes in JS8Call, then start it:'
+      : 'POTACAT will make these changes in JS8Call. It could not find the program to start it, so open JS8Call yourself afterwards.';
     p.changes.forEach(function (c) {
       var li = document.createElement('li');
       li.textContent = c.label;
@@ -353,8 +391,9 @@
     });
     setupGo.hidden = false;
     setupGo.textContent = p.binary ? 'Set up and start JS8Call' : 'Set up JS8Call';
-    setupManual.innerHTML = MANUAL + '<br><br>' + radioAdvice(p.canDoRadio) +
-      '<br><br>A timestamped backup of JS8Call.ini is kept either way.';
+    setupManual.innerHTML =
+      '<p class="jc-quiet">Your JS8Call.ini is backed up first, and nothing else in it is touched.</p>' +
+      foldout(MANUAL + '<br><br>' + radioAdvice(p.canDoRadio));
   }
 
   function wireExternal() {
@@ -395,7 +434,10 @@
     else { setupTitle.textContent = 'Starting JS8Call…'; setupLede.textContent = 'Give it a few seconds.'; setupLaunch.hidden = true; }
   });
 
-  if (setupRadio) setupRadio.addEventListener('change', refreshSetup);
+  if (setupRadio) setupRadio.addEventListener('change', function () {
+    radioTouched = true;
+    refreshSetup();
+  });
 
   // ── wire-up ────────────────────────────────────────────────────────────────
 

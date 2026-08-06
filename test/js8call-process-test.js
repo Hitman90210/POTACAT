@@ -16,7 +16,7 @@
 const assert = require('assert');
 const {
   js8BinaryNames, js8PathCandidates, js8LaunchArgs,
-  desiredJs8Settings, planJs8IniPatch, describeJs8Change,
+  desiredJs8Settings, planJs8IniPatch, describeJs8Change, summarizeJs8Changes, shortDevice,
 } = require('../lib/js8call-process');
 
 let pass = 0, fail = 0;
@@ -180,13 +180,58 @@ test('the radio move rewrites CAT and PTT together', () => {
 
 // ── the confirmation the operator reads ──────────────────────────────────────
 
-test('every change describes itself in plain words', () => {
+test('a flag states its outcome and stops — no boolean to parse', () => {
   assert.strictEqual(describeJs8Change({ key: 'TCPEnabled', from: 'false', to: 'true' }),
-    'Turn the TCP API on: false → true');
+    'Turn the TCP API on');
+  assert.strictEqual(describeJs8Change({ key: 'AcceptTCPRequests', from: 'false', to: 'true' }),
+    'Let POTACAT send messages through JS8Call');
+});
+
+test('a value that carries information keeps its before and after', () => {
+  // The port IS the point here — hiding it would leave the operator unable to
+  // check the move against what their radio actually has.
+  assert.strictEqual(
+    describeJs8Change({ key: 'CATNetworkPort', from: '127.0.0.1:5002', to: '127.0.0.1:5003' }),
+    'Move radio control to its own slice: 127.0.0.1:5002 → 127.0.0.1:5003');
+  assert.strictEqual(describeJs8Change({ key: 'TCPMaxConnections', from: '1', to: '4' }),
+    'Allow more than one program to connect: 1 → 4');
   assert.strictEqual(describeJs8Change({ key: 'HBMessage', from: '', to: 'HB FN20' }),
     'HBMessage → HB FN20');
-  assert.ok(/Radio control port/.test(
-    describeJs8Change({ key: 'CATNetworkPort', from: '127.0.0.1:5002', to: '127.0.0.1:5003' })));
+});
+
+// ── the list the operator reads ──────────────────────────────────────────────
+
+test('the reason nothing works leads, whatever order the ini was in', () => {
+  // Shuffled deliberately: planJs8IniPatch emits in file order, which put
+  // "Turn the TCP API on" fifth, behind a PTT port.
+  const lines = summarizeJs8Changes([
+    { key: 'PTTport', from: '127.0.0.1:5002', to: '127.0.0.1:5003' },
+    { key: 'SoundInName', from: 'DAX Audio RX 1 (FlexRadio Systems DAX Audio)', to: 'DAX Audio RX 2 (FlexRadio Systems DAX Audio)' },
+    { key: 'CATNetworkPort', from: '127.0.0.1:5002', to: '127.0.0.1:5003' },
+    { key: 'AcceptTCPRequests', from: 'false', to: 'true' },
+    { key: 'TCPEnabled', from: 'false', to: 'true' },
+    { key: 'TCPMaxConnections', from: '1', to: '4' },
+  ]);
+  assert.strictEqual(lines[0], 'Turn the TCP API on');
+  assert.strictEqual(lines.length, 4, 'the radio trio is one decision, not three:\n' + lines.join('\n'));
+  assert.strictEqual(lines[3],
+    'Give it its own slice: radio control and PTT to 127.0.0.1:5003, receive audio to DAX Audio RX 2');
+});
+
+test('a change we did not anticipate is still shown, never dropped', () => {
+  const lines = summarizeJs8Changes([{ key: 'HBMessage', from: '', to: 'HB FN20' }]);
+  assert.deepStrictEqual(lines, ['HBMessage → HB FN20']);
+});
+
+test('no changes produces no lines', () => {
+  assert.deepStrictEqual(summarizeJs8Changes([]), []);
+  assert.deepStrictEqual(summarizeJs8Changes(null), []);
+});
+
+test('a device drops the driver name it repeats', () => {
+  assert.strictEqual(shortDevice('DAX Audio RX 2 (FlexRadio Systems DAX Audio)'), 'DAX Audio RX 2');
+  assert.strictEqual(shortDevice('Speakers'), 'Speakers');
+  assert.strictEqual(shortDevice(''), '');
 });
 
 console.log(`\nJS8Call process: ${pass} passed, ${fail} failed`);
