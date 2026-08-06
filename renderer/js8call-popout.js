@@ -397,7 +397,7 @@
       return;
     }
 
-    setupTitle.textContent = p.binary ? 'Set JS8Call up' : 'Set JS8Call up';
+    setupTitle.textContent = 'Set JS8Call up';
     setupLede.textContent = p.binary
       ? 'POTACAT will make these changes in JS8Call, then start it:'
       : 'POTACAT will make these changes in JS8Call. It could not find the program to start it, so open JS8Call yourself afterwards.';
@@ -434,12 +434,23 @@
       setupManual.innerHTML = MANUAL + '<br><br>' + radioAdvice(p.canDoRadio);
       return;
     }
-    setupTitle.textContent = 'Starting JS8Call…';
-    setupLede.textContent = r.launchError
-      ? r.launchError
-      : 'Settings applied. JS8Call is starting — it takes a few seconds to open its audio device before POTACAT can connect.';
+    // Report what actually happened, not what was intended. The settings can
+    // land and the launch still not run, and a panel that says "Starting
+    // JS8Call" either way leaves the operator waiting on nothing.
     setupChanges.innerHTML = '';
+    setupNote.hidden = true;
     setupGo.hidden = true;
+    if (r.launchError) {
+      setupTitle.textContent = 'Settings applied — now open JS8Call';
+      setupLede.textContent = r.launchError;
+      setupLaunch.hidden = true;
+    } else if (r.already) {
+      setupTitle.textContent = 'Settings applied';
+      setupLede.textContent = 'JS8Call is already running. Restart it for the new settings to take effect — it only reads them at startup.';
+    } else {
+      setupTitle.textContent = 'Starting JS8Call…';
+      setupLede.textContent = 'Settings applied. JS8Call takes a few seconds to open its audio device before POTACAT can connect.';
+    }
   });
 
   setupLaunch.addEventListener('click', async function () {

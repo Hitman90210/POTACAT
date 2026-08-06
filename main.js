@@ -5437,7 +5437,10 @@ async function applyJs8Setup({ includeRadio = null } = {}) {
   if (js8ExternalJs8CallRunning()) {
     return { ok: false, error: 'Close JS8Call first. It rewrites its settings file when it exits, so changes made while it is running would be undone.' };
   }
-  if (!plan.changes.length) return { ok: true, changes: [], already: true };
+  // `noChanges`, not `already` — the IPC layer uses `already` for "JS8Call was
+  // already running", and one key meaning two things is how a caller ends up
+  // reporting the wrong one.
+  if (!plan.changes.length) return { ok: true, changes: [], noChanges: true };
 
   const setup = readJs8Setup();
   let raw;
@@ -5483,9 +5486,16 @@ function js8ExternalJs8CallRunning() {
  * which is what closing one of two open applications should do.
  */
 function launchJs8Call() {
-  if (js8ExternalJs8CallRunning()) return { ok: true, already: true };
+  // Every exit from this function says what it did. Not launching is a normal
+  // outcome twice over (already up / not found), and both used to leave the
+  // log with nothing between "settings applied" and silence.
+  if (js8ExternalJs8CallRunning()) {
+    sendCatLog('[JS8Call] already running — not starting a second copy.');
+    return { ok: true, already: true };
+  }
   const bin = findJs8Call();
   if (!bin) {
+    sendCatLog('[JS8Call] cannot start it: no JS8Call program found in the usual places.');
     return { ok: false, error: 'Could not find JS8Call. Set its location in Settings > Station > JS8Call, or download it from js8call.com.' };
   }
   try {
@@ -23665,11 +23675,19 @@ app.whenReady().then(() => {
   });
   // One-click setup: show the plan, apply it, start JS8Call.
   ipcMain.handle('js8call-plan-setup', (_e, opts) => planJs8Setup(opts || {}));
-  ipcMain.handle('js8call-apply-setup', (_e, opts) => {
+  // applyJs8Setup is async (it enumerates audio devices). Awaiting it is not a
+  // style point: a bare `const r = applyJs8Setup()` makes r a Promise, r.ok
+  // undefined, the launch silently skipped — and `return r` still resolves to
+  // {ok:true}, so the panel reported success for something that never ran.
+  // A success path that lies is worse than a failure. (K3SBP 2026-08-06:
+  // settings patched, "Starting JS8Call…", no JS8Call.)
+  ipcMain.handle('js8call-apply-setup', async (_e, opts) => {
     markUserActive();
-    const r = applyJs8Setup(opts || {});
-    if (r.ok) { const l = launchJs8Call(); if (!l.ok) return { ...r, launchError: l.error }; }
-    return r;
+    const r = await applyJs8Setup(opts || {});
+    if (!r.ok) return r;
+    const l = launchJs8Call();
+    return l.ok ? { ...r, launched: !l.already, already: !!l.already }
+                : { ...r, launchError: l.error };
   });
   ipcMain.handle('js8call-launch', () => { markUserActive(); return launchJs8Call(); });
   // Re-read the ini on demand so the Settings panel can show the effect of a
