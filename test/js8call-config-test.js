@@ -23,6 +23,7 @@ const {
   readJs8Settings,
   diagnoseJs8Config,
   js8ConnectBlocked,
+  js8MayTransmitUnprompted,
 } = require('../lib/js8call-config');
 
 let pass = 0, fail = 0;
@@ -185,18 +186,46 @@ test('a correctly set up station reports nothing that blocks', () => {
   assert.deepStrictEqual(probs, [], 'and nothing at all, since collisions are resolved too');
 });
 
-test('auto-reply alone blocks the connection — a monitor must not transmit', () => {
+// Auto-reply must NEVER block the connection. Refusing would not stop a single
+// transmission — JS8Call answers heartbeats whether or not POTACAT is attached
+// — it would only blind us to transmissions that happen anyway. Connecting is
+// how we see the PTT and yield the radio, so it is strictly safer than not.
+// Auto-reply is also how the heartbeat network is meant to work. (K3SBP
+// 2026-08-06, reversing the first cut of this rule.)
+test('auto-reply is reported but never blocks', () => {
   const ini = parseJs8Ini(HEALTHY.replace('AutoreplyOnAtStartup=false', 'AutoreplyOnAtStartup=true'));
-  const blocked = js8ConnectBlocked(diagnoseJs8Config({ ini }));
-  assert.strictEqual(blocked.length, 1);
-  assert.strictEqual(blocked[0].code, 'autoreply-on');
-  assert.strictEqual(blocked[0].severity, 'unsafe');
+  const probs = diagnoseJs8Config({ ini });
+  assert.deepStrictEqual(js8ConnectBlocked(probs), [], 'nothing blocks');
+  const n = probs.find((p) => p.code === 'autoreply-on');
+  assert.ok(n, 'still reported');
+  assert.strictEqual(n.severity, 'notice');
+  assert.ok(/transmit at any time/.test(n.message), n.message);
 });
 
-test('an unattended heartbeat blocks too', () => {
+test('an outbound heartbeat is reported but never blocks', () => {
   const ini = parseJs8Ini(HEALTHY.replace('HBInterval=0', 'HBInterval=15'));
-  const codes = js8ConnectBlocked(diagnoseJs8Config({ ini })).map((p) => p.code);
-  assert.deepStrictEqual(codes, ['heartbeat-on']);
+  const probs = diagnoseJs8Config({ ini });
+  assert.deepStrictEqual(js8ConnectBlocked(probs), []);
+  const n = probs.find((p) => p.code === 'heartbeat-on');
+  assert.strictEqual(n.severity, 'notice');
+  assert.ok(/every 15 minutes/.test(n.message), n.message);
+});
+
+test('only a dead API blocks the connection', () => {
+  const ini = parseJs8Ini(HOSTILE); // API off, autoreply on, both collisions
+  const blocked = js8ConnectBlocked(diagnoseJs8Config({
+    ini, potacatSlicePort: 5002, potacatDaxChannel: 1,
+  }));
+  assert.deepStrictEqual(blocked.map((p) => p.code), ['api-disabled'],
+    'collisions and unprompted TX are things to know, not reasons to refuse');
+});
+
+test('js8MayTransmitUnprompted drives the yield path', () => {
+  assert.strictEqual(js8MayTransmitUnprompted(parseJs8Ini(HOSTILE)), true, 'autoreply on');
+  assert.strictEqual(js8MayTransmitUnprompted(parseJs8Ini(HEALTHY)), false, 'neither on');
+  assert.strictEqual(
+    js8MayTransmitUnprompted(parseJs8Ini(HEALTHY.replace('HBInterval=0', 'HBInterval=10'))),
+    true, 'heartbeat alone is enough');
 });
 
 test('AcceptTCPRequests only matters when we intend to transmit', () => {
