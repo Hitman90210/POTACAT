@@ -110,9 +110,71 @@
       : 'JS8Call is receiving.';
 
     renderProblems(s && s.problems);
+
+    // Transmit controls follow the connection, and the heartbeat text is
+    // re-read on connect so a template edited in JS8Call is picked up.
+    var wasConnected = connected;
+    connected = up;
+    refreshTxEnabled();
+    if (up && !wasConnected) loadHeartbeat();
   });
 
-  window.api.onActivity(addRow);
+  window.api.onActivity(function (a) {
+    if (a && a.kind === 'tx-queued') { showTxNote('Queued: ' + a.text, 'ok'); return; }
+    addRow(a);
+  });
+
+  // ── Transmit ───────────────────────────────────────────────────────────────
+  // Operator-initiated only. The heartbeat text is composed from JS8Call's own
+  // HBMessage template and shown BEFORE it is sent, because a transmit button
+  // that hides its payload is how the wrong thing ends up on the air.
+  var hbBtn = document.getElementById('jc-hb');
+  var textEl = document.getElementById('jc-text');
+  var sendBtn = document.getElementById('jc-send');
+  var noteEl = document.getElementById('jc-tx-note');
+  var hbText = '';
+  var connected = false;
+
+  function showTxNote(msg, cls) {
+    noteEl.className = cls || '';
+    noteEl.innerHTML = msg;
+  }
+
+  function refreshTxEnabled() {
+    hbBtn.disabled = !connected || !hbText;
+    sendBtn.disabled = !connected;
+    textEl.disabled = !connected;
+  }
+
+  async function loadHeartbeat() {
+    try { hbText = (await window.api.heartbeatText()) || ''; }
+    catch (e) { hbText = ''; }
+    if (hbText) {
+      hbBtn.title = 'Send: ' + hbText;
+      if (!noteEl.textContent) showTxNote('Heartbeat will send <code>' + esc(hbText) + '</code>', '');
+    }
+    refreshTxEnabled();
+  }
+
+  async function transmit(text) {
+    showTxNote('Sending…', '');
+    var r;
+    try { r = await window.api.send(text); }
+    catch (e) { showTxNote('Send failed: ' + esc(e && e.message), 'err'); return; }
+    if (r && r.ok) showTxNote('Queued: <code>' + esc(r.text) + '</code>', 'ok');
+    else showTxNote(esc((r && r.error) || 'Send refused.'), 'err');
+  }
+
+  hbBtn.addEventListener('click', function () { if (hbText) transmit(hbText); });
+  sendBtn.addEventListener('click', function () {
+    var t = textEl.value.trim();
+    if (!t) return;
+    transmit(t);
+    textEl.value = '';
+  });
+  textEl.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); sendBtn.click(); }
+  });
 
   window.api.onTheme(function (t) {
     if (typeof window._applyPopoutTheme === 'function') window._applyPopoutTheme(t);

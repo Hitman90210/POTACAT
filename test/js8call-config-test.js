@@ -24,6 +24,7 @@ const {
   diagnoseJs8Config,
   js8ConnectBlocked,
   js8MayTransmitUnprompted,
+  js8HeartbeatText,
 } = require('../lib/js8call-config');
 
 let pass = 0, fail = 0;
@@ -259,6 +260,47 @@ test('the slice collision message names the slice letter', () => {
   });
   const c = probs.find((p) => p.code === 'cat-slice-collision');
   assert.ok(/slice A/.test(c.message), c.message);
+});
+
+// ── heartbeat composition ────────────────────────────────────────────────────
+// There is no heartbeat command in the API — the command vocabulary extracted
+// from the JS8Call binary is TX.SEND_MESSAGE / TX.SET_TEXT / RIG.PTT /
+// STATION.* / RX.* / INBOX.* and nothing else. So a heartbeat is an ordinary
+// message, and rather than invent a format we render the operator's OWN
+// HBMessage template. Whatever JS8Call would send when they press HB is what
+// POTACAT sends.
+// Keys must land INSIDE [Configuration] — appending to the end of the fixture
+// puts them in [MainWindow], where js8Value correctly refuses to find them.
+function withConfig(base, lines) {
+  return base.replace('MyCall=K3SBP', 'MyCall=K3SBP\n' + lines);
+}
+
+test('heartbeat renders the station\'s own template', () => {
+  const ini = parseJs8Ini(withConfig(HEALTHY, 'HBMessage=HB <MYGRID4>'));
+  assert.strictEqual(js8HeartbeatText(ini), '@HB HB FN20');
+});
+
+test('heartbeat substitutes every token JS8Call uses', () => {
+  const ini = parseJs8Ini(withConfig(HEALTHY, 'HBMessage=<MYCALL> BEACON <MYGRID4> <MYGRID>'));
+  assert.strictEqual(js8HeartbeatText(ini), '@HB K3SBP BEACON FN20 FN20JB');
+});
+
+test('a template already addressed to a group is left alone', () => {
+  // @ALLCALL, @DX and @GROUP live alongside @HB in the binary; an operator who
+  // has aimed their heartbeat somewhere specific must not be silently
+  // re-addressed to @HB.
+  const ini = parseJs8Ini(withConfig(HEALTHY, 'HBMessage=@ALLCALL HELLO <MYGRID4>'));
+  assert.strictEqual(js8HeartbeatText(ini), '@ALLCALL HELLO FN20');
+});
+
+test('a missing HBMessage falls back to the JS8Call default', () => {
+  assert.strictEqual(js8HeartbeatText(parseJs8Ini(HEALTHY)), '@HB HB FN20');
+});
+
+test('heartbeat collapses whitespace so an empty token leaves no gap', () => {
+  const noGrid = HEALTHY.replace('MyGrid=FN20JB\n', '');
+  const ini = parseJs8Ini(withConfig(noGrid, 'HBMessage=HB   <MYGRID4>   '));
+  assert.strictEqual(js8HeartbeatText(ini), '@HB HB', 'no trailing or doubled spaces');
 });
 
 console.log(`\nJS8Call config: ${pass} passed, ${fail} failed`);

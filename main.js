@@ -5188,6 +5188,52 @@ function handleJs8Tx(on) {
   sendJs8Status({ connected: !!(js8Client && js8Client.connected), tx: js8TxActive });
 }
 
+/**
+ * Ask JS8Call to transmit something. Returns {ok, error, text}.
+ *
+ * The distinction that makes this safe enough to ship ahead of the full TX
+ * work: JS8Call already keys the radio on its own for heartbeat auto-replies,
+ * and the radio-owner yield handles that collision. What is NEW here is
+ * POTACAT *causing* a transmission — so if POTACAT's own engine holds the
+ * radio, commanding one would be a collision of our own making, and we refuse.
+ * JS8Call's unprompted keying still needs the rigctld-listener work (Phase 3)
+ * before POTACAT can gate it; this only refuses to make things worse.
+ */
+function js8Transmit(text) {
+  const t = String(text || '').trim();
+  if (!t) return { ok: false, error: 'Nothing to send.' };
+  if (!settings.enableJs8Call) return { ok: false, error: 'The JS8Call bridge is off.' };
+  if (!js8Client || !js8Client.connected) return { ok: false, error: 'Not connected to JS8Call.' };
+
+  // JS8Call silently ignores commands unless "Accept TCP Requests" is ticked —
+  // a send that vanishes with no error is exactly the failure this whole
+  // integration is built to avoid, so say it up front.
+  const setup = readJs8Setup();
+  if (setup && !setup.found.acceptTcpRequests) {
+    return { ok: false, error: 'JS8Call is not accepting API commands. Tick "Accept TCP Requests" under File > Settings > Reporting > API, then restart JS8Call.' };
+  }
+
+  // Don't ask for a transmission while POTACAT's own engine owns the radio.
+  // (js8call is a preemptive owner, so acquireRadio would say yes — that path
+  // is for OBSERVING a transmission already happening, not for starting one.)
+  if (radioOwner !== 'none' && radioOwner !== 'js8call') {
+    return { ok: false, error: `The radio is in use by ${radioOwner}. Stop it before transmitting from JS8Call.` };
+  }
+
+  const sent = js8Client.sendMessage(t);
+  if (!sent) return { ok: false, error: 'Could not write to JS8Call.' };
+  sendCatLog(`[JS8Call] queued for transmission: ${t}`);
+  pushJs8Tail({ kind: 'tx-queued', text: t, utc: Date.now() });
+  return { ok: true, text: t };
+}
+
+/** The heartbeat this station would send, composed from JS8Call's own template. */
+function js8HeartbeatText() {
+  const setup = readJs8Setup();
+  if (!setup) return '';
+  return js8Config.js8HeartbeatText(setup.ini);
+}
+
 /** Stop JTCAT keying because an external transmitter took the radio. */
 function haltJtcatForPreemption() {
   try {
@@ -23245,6 +23291,14 @@ app.whenReady().then(() => {
   ipcMain.on('js8call-popout-minimize', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.minimize(); });
   ipcMain.on('js8call-popout-close', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.close(); });
   ipcMain.on('js8call-reconnect', () => { if (settings.enableJs8Call) connectJs8Call(); });
+  // Transmit. Always operator-initiated — there is no automatic path here, and
+  // the reply carries the refusal reason so the popout can show it rather than
+  // appearing to have done nothing.
+  ipcMain.handle('js8call-send', (_e, text) => {
+    markUserActive();
+    return js8Transmit(text);
+  });
+  ipcMain.handle('js8call-heartbeat-text', () => js8HeartbeatText());
   // Re-read the ini on demand so the Settings panel can show the effect of a
   // change the operator just made in JS8Call, without restarting anything.
   ipcMain.handle('js8call-check-setup', () => {

@@ -21,6 +21,10 @@ contextBridge.exposeInMainWorld('api', {
   onTheme: (cb) => ipcRenderer.on('js8call-popout-theme', (_e, t) => cb(t)),
 
   reconnect: () => ipcRenderer.send('js8call-reconnect'),
+  // Transmit. Returns {ok, error, text} so a refusal can be shown rather than
+  // silently doing nothing.
+  send: (text) => ipcRenderer.invoke('js8call-send', text),
+  heartbeatText: () => ipcRenderer.invoke('js8call-heartbeat-text'),
   checkSetup: () => ipcRenderer.invoke('js8call-check-setup'),
   openExternal: (url) => ipcRenderer.send('open-external', url),
 

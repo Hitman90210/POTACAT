@@ -80,6 +80,22 @@
     .jc-btn { background: var(--bg-input, #0f1419); border: 1px solid var(--border-primary);
       color: var(--text-primary); border-radius: 3px; padding: 3px 10px; font-size: 11px; cursor: pointer; }
     .jc-btn:hover { background: var(--bg-hover); }
+    .jc-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* Transmit row */
+    .jc-tx-row { display: flex; gap: 6px; align-items: center; padding: 7px 10px; flex-shrink: 0;
+      background: var(--bg-secondary); border-top: 1px solid var(--border-primary); }
+    .jc-tx-row input { flex: 1; min-width: 0; padding: 4px 7px; font-size: 12px;
+      background: var(--bg-input, #0f1419); border: 1px solid var(--border-primary);
+      color: var(--text-primary); border-radius: 3px; }
+    .jc-hb { font-weight: 600; }
+    #jc-tx-note { padding: 0 10px 7px; font-size: 11px; color: var(--text-secondary);
+      background: var(--bg-secondary); flex-shrink: 0; min-height: 0; line-height: 1.5; }
+    #jc-tx-note.err { color: var(--accent-red, #e94560); }
+    #jc-tx-note.ok { color: var(--accent-green-btn, #4ecca3); }
+    /* The composed heartbeat, shown before it is sent. */
+    #jc-tx-note code { background: var(--bg-tertiary, #1a1a2e); padding: 1px 5px; border-radius: 3px;
+      font-family: monospace; color: var(--text-primary); }
   </style>
 </head>
 <body>
@@ -115,6 +131,17 @@
     </div>
   </div>
   <div class="jc-pane" id="jc-pane-mine"></div>
+
+  <!-- Transmit. Deliberately shows the exact text that will go on the air
+       before it does — a transmit button that hides its payload is how people
+       put the wrong thing out. Operator-initiated only; there is no automatic
+       path from POTACAT. -->
+  <div class="jc-tx-row" id="jc-tx-row">
+    <button class="jc-btn jc-hb" id="jc-hb" title="Send your heartbeat to the @HB group">Heartbeat</button>
+    <input type="text" id="jc-text" placeholder="Message to send via JS8Call" maxlength="200" autocomplete="off" spellcheck="false">
+    <button class="jc-btn" id="jc-send">Send</button>
+  </div>
+  <div id="jc-tx-note"></div>
 
   <script src="js8call-popout.js"></script>
 </body>
