@@ -275,6 +275,7 @@ const mercuryProcess = require('./lib/mercury-process');
 const { MercuryClient } = require('./lib/mercury-client');
 const js8Config = require('./lib/js8call-config');
 const { Js8CallClient, isDirectedTo } = require('./lib/js8call-client');
+const { Js8Threads } = require('./lib/js8call-threads');
 const radioOwnerLib = require('./lib/radio-owner');
 const { attachMercuryRadioBridge } = require('./lib/mercury-radio-bridge');
 const mercuryAudioBridge = require('./lib/mercury-audio-bridge');
@@ -1203,6 +1204,10 @@ let js8Problems = [];           // last diagnoseJs8Config() result, for the UI
 let js8TxActive = false;        // JS8Call currently keying
 let _js8TxFailsafeTimer = null; // ceiling on a stuck PTT (see JS8_TX_FAILSAFE_MS)
 let _js8StartWatchdog = null;   // "it never connected, and here is why"
+// Conversation state lives in MAIN, not the renderer, so unread counts keep
+// accumulating while the window is closed — the whole point of an inbox.
+let js8Threads = new Js8Threads({});
+let js8Heard = [];              // stations audible now, for the right rail
 // The exclusive radio TX/audio path can be held by at most one mode engine at a
 // time (lib/radio-owner.js). JTCAT and Mercury must never both key the rig.
 let radioOwner = 'none';        // 'none' | 'jtcat' | 'mercury'
@@ -5150,6 +5155,10 @@ function disconnectJs8Call() {
     try { js8Client.disconnect(); } catch { /* already down */ }
     js8Client = null;
   }
+  // Conversations deliberately SURVIVE a disconnect — a reconnect shouldn't
+  // wipe the operator's unread mail. Only the audible list is discarded,
+  // because it is a claim about right now and would be a lie a minute later.
+  js8Heard = [];
   js8LastStatus = null;   // so the next status isn't deduped away
   sendJs8Status({ connected: false });
 }
@@ -5224,6 +5233,10 @@ function js8Transmit(text) {
   if (!sent) return { ok: false, error: 'Could not write to JS8Call.' };
   sendCatLog(`[JS8Call] queued for transmission: ${t}`);
   pushJs8Tail({ kind: 'tx-queued', text: t, utc: Date.now() });
+  // Show it in the thread immediately rather than waiting for the radio to
+  // confirm — the operator should see their own message where they sent it.
+  const rec = js8Threads.recordOutgoing(t);
+  if (rec.threadId) js8PushThreads(rec.threadId);
   return { ok: true, text: t };
 }
 
@@ -5249,6 +5262,47 @@ function haltJtcatForPreemption() {
   }
 }
 
+/**
+ * RX.CALL_ACTIVITY comes back as an object keyed by callsign. Flatten it into
+ * a sorted list the rail can render, strongest-and-most-recent first — that
+ * ordering is the answer to "who can I work", which a raw map is not.
+ */
+function normalizeJs8CallActivity(msg) {
+  const p = msg.params || {};
+  const out = [];
+  for (const [call, v] of Object.entries(p)) {
+    if (!call || call.startsWith('_') || !v || typeof v !== 'object') continue;
+    out.push({
+      call: String(call).toUpperCase(),
+      snr: v.SNR == null ? null : Number(v.SNR),
+      utc: Number(v.UTC) || 0,
+      grid: String(v.GRID || '').toUpperCase(),
+    });
+  }
+  // Recency first (a strong station heard an hour ago is not reachable now),
+  // SNR as the tiebreak within the same minute.
+  out.sort((a, b) => (Math.floor(b.utc / 60000) - Math.floor(a.utc / 60000)) || ((b.snr ?? -99) - (a.snr ?? -99)));
+  return out.slice(0, 40);
+}
+
+function js8PushHeard() {
+  if (js8PopoutWin && !js8PopoutWin.isDestroyed()) {
+    js8PopoutWin.webContents.send('js8call-heard', js8Heard);
+  }
+}
+
+/** Conversation list changed. The open thread rides along so the popout can
+ *  re-render both without a round trip. */
+function js8PushThreads(changedId) {
+  if (!js8PopoutWin || js8PopoutWin.isDestroyed()) return;
+  js8PopoutWin.webContents.send('js8call-threads', {
+    list: js8Threads.list(),
+    unread: js8Threads.totalUnread,
+    changed: changedId || null,
+    thread: changedId ? js8Threads.thread(changedId) : null,
+  });
+}
+
 function pushJs8Tail(entry) {
   js8Tail.push(entry);
   if (js8Tail.length > JS8_TAIL_CAP) js8Tail.shift();
@@ -5265,11 +5319,23 @@ function handleJs8Message(msg) {
   // radio there. JS8Call is on its OWN slice, so doing the same would make
   // POTACAT's frequency display, spot filtering, band logic and privileges
   // checker all believe the rig is on JS8Call's band.
-  if (t === 'STATION.CALLSIGN') js8Station.call = String(msg.value || '').toUpperCase();
+  if (t === 'STATION.CALLSIGN') {
+    js8Station.call = String(msg.value || '').toUpperCase();
+    // The callsign answers after the socket opens, so early frames can arrive
+    // before routing knows who we are.
+    js8Threads.setMyCall(js8Station.call);
+  }
   else if (t === 'STATION.GRID') js8Station.grid = String(msg.value || '').toUpperCase();
   else if (t === 'RIG.FREQ' || t === 'STATION.STATUS') {
     if (p.DIAL) js8Station.dial = Number(p.DIAL) || js8Station.dial;
     if (p.SPEED !== undefined) js8Station.speed = p.SPEED;
+  }
+
+  // Who is audible right now — the right rail's whole job is answering "can I
+  // reach anyone", which is the question that decides whether to call at all.
+  if (t === 'RX.CALL_ACTIVITY') {
+    js8Heard = normalizeJs8CallActivity(msg);
+    js8PushHeard();
   }
 
   if (t === 'RX.DIRECTED' || t === 'RX.ACTIVITY' || t === 'RX.SPOT') {
@@ -5282,8 +5348,18 @@ function handleJs8Message(msg) {
       utc: p.UTC || Date.now(),
     };
     pushJs8Tail(entry);
-    if (entry.kind === 'to-me') {
-      sendCatLog(`[JS8Call] message for you from ${entry.from}: ${entry.text}`);
+
+    // Only DIRECTED traffic forms conversations. RX.ACTIVITY is the raw stream
+    // and belongs in the all-traffic view, not threaded under a person.
+    if (t === 'RX.DIRECTED') {
+      const r = js8Threads.ingest({
+        from: p.FROM, to: p.TO, text: msg.value || '',
+        snr: p.SNR, offset: p.OFFSET, utc: p.UTC ? Number(p.UTC) : Date.now(),
+      });
+      if (r.threadId) js8PushThreads(r.threadId);
+      if (entry.kind === 'to-me' && !r.folded) {
+        sendCatLog(`[JS8Call] message for you from ${entry.from}: ${entry.text}`);
+      }
     }
   }
 
@@ -23282,6 +23358,8 @@ app.whenReady().then(() => {
         ? { connected: !!(js8Client && js8Client.connected), tx: js8TxActive }
         : { connected: false, error: 'The JS8Call bridge is off — enable it in Settings > Station' });
       for (const e of js8Tail) js8PopoutWin.webContents.send('js8call-activity', { ...e, replay: true });
+      js8PushThreads(null);
+      js8PushHeard();
     });
     js8PopoutWin.webContents.on('before-input-event', (_e, input) => {
       if (input.key === 'F12' && input.type === 'keyDown') js8PopoutWin.webContents.toggleDevTools();
@@ -23299,6 +23377,20 @@ app.whenReady().then(() => {
     return js8Transmit(text);
   });
   ipcMain.handle('js8call-heartbeat-text', () => js8HeartbeatText());
+  // Conversations. State lives in main so unread survives the window closing.
+  ipcMain.handle('js8call-threads', () => ({
+    list: js8Threads.list(), unread: js8Threads.totalUnread,
+    heard: js8Heard, station: js8Station,
+  }));
+  ipcMain.handle('js8call-thread', (_e, id) => {
+    js8Threads.setOpen(id);      // opening it is what marks it read
+    return { thread: js8Threads.thread(id), list: js8Threads.list(), unread: js8Threads.totalUnread };
+  });
+  ipcMain.on('js8call-thread-closed', () => js8Threads.setOpen(null));
+  // Ask JS8Call to re-send who it can hear. Cheap, and the rail goes stale fast.
+  ipcMain.on('js8call-refresh-heard', () => {
+    if (js8Client && js8Client.connected) js8Client.send({ type: 'RX.GET_CALL_ACTIVITY' });
+  });
   // Re-read the ini on demand so the Settings panel can show the effect of a
   // change the operator just made in JS8Call, without restarting anything.
   ipcMain.handle('js8call-check-setup', () => {

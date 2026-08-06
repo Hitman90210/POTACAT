@@ -8,42 +8,42 @@
   <script src="popout-theme-bootstrap.js"></script>
   <link rel="stylesheet" href="styles.css">
   <style>
-    /* Only var() names that exist in styles.css for BOTH themes — the mercury
-       popout's header comment explains why (undefined names silently fall back
-       to a dark hex and the window ignores light mode). */
+    /* Only var() names defined in styles.css for BOTH themes. The log-popout
+       header documents why: undefined names fall back to a dark hex and the
+       window silently ignores light mode. */
     body { background: var(--bg-primary, #1a1a2e); color: var(--text-primary, #e0e0e0);
            margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
            font-size: 13px; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .num { font-variant-numeric: tabular-nums; }
 
+    /* --- title + status ---------------------------------------------------- */
     .jc-titlebar { -webkit-app-region: drag; user-select: none; display: flex; align-items: center;
       justify-content: space-between; padding: 6px 10px; background: var(--bg-secondary, #16213e);
       border-bottom: 1px solid var(--border-primary, #333); font-size: 12px; font-weight: 600;
       color: var(--text-primary, #e0e0e0); flex-shrink: 0; }
-    .jc-titlebar .jc-controls { -webkit-app-region: no-drag; display: flex; gap: 4px; }
+    .jc-controls { -webkit-app-region: no-drag; display: flex; gap: 4px; }
     .jc-titlebar button { background: none; border: 1px solid var(--border-primary, #333);
       color: var(--text-secondary, #888); width: 22px; height: 22px; cursor: pointer;
       font-size: 13px; line-height: 1; border-radius: 3px; }
     .jc-titlebar button:hover { background: var(--bg-hover); color: var(--text-primary); }
 
-    /* Status strip: connection, station identity, TX. */
-    .jc-bar { display: flex; align-items: center; gap: 10px; padding: 5px 10px; font-size: 11px;
+    .jc-bar { display: flex; align-items: center; gap: 9px; padding: 5px 10px; font-size: 11px;
       background: var(--bg-secondary); border-bottom: 1px solid var(--border-primary);
-      color: var(--text-dim, #888); flex-shrink: 0; flex-wrap: wrap; }
-    .jc-dot { width: 8px; height: 8px; border-radius: 50%; background: #666; flex-shrink: 0; }
+      color: var(--text-secondary, #888); flex-shrink: 0; flex-wrap: wrap; }
+    .jc-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-tertiary, #666); flex: none; }
     .jc-dot.up { background: var(--accent-green-btn, #4ecca3); }
     .jc-dot.down { background: var(--accent-red, #e94560); }
-    .jc-call { font-weight: 600; color: var(--text-primary); font-variant-numeric: tabular-nums; }
-    /* TX indicator. JS8Call keys on its own schedule (heartbeat auto-reply is a
-       feature of the mode), so this is the operator's only visible warning that
-       the radio is live and POTACAT has stood down. */
-    .jc-tx { margin-left: auto; padding: 2px 8px; border-radius: 3px; font-weight: 600;
-      border: 1px solid var(--border-primary); color: var(--text-dim); }
+    .jc-bar b { color: var(--text-primary); font-weight: 600; }
+    /* TX is the operator's only warning that JS8Call has taken the radio. */
+    .jc-tx { margin-left: auto; padding: 2px 8px; border-radius: 3px; font-weight: 700;
+      border: 1px solid var(--border-primary); color: var(--text-tertiary, #666); flex: none; }
     .jc-tx.on { background: var(--accent-red, #e94560); color: #fff; border-color: var(--accent-red, #e94560);
       animation: jc-pulse 1s ease-in-out infinite; }
-    @keyframes jc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.65; } }
+    @keyframes jc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .65; } }
+    @media (prefers-reduced-motion: reduce) { .jc-tx.on { animation: none; } }
 
-    /* Setup problems — the whole point of the config reader. */
-    #jc-problems { flex-shrink: 0; }
+    #jc-problems { flex-shrink: 0; max-height: 30vh; overflow-y: auto; }
     .jc-prob { padding: 7px 10px; font-size: 12px; border-bottom: 1px solid var(--border-primary);
       background: var(--bg-tertiary, #1a1a2e); }
     .jc-prob b { display: block; color: var(--text-primary); font-weight: 600; margin-bottom: 2px; }
@@ -53,49 +53,103 @@
     .jc-prob.notice { border-left: 3px solid var(--accent-blue, #4fc3f7); }
     .jc-prob.warn { border-left: 3px solid var(--border-primary); }
 
-    .jc-tabs { display: flex; gap: 2px; padding: 4px 8px 0; background: var(--bg-secondary);
-      border-bottom: 1px solid var(--border-primary); flex-shrink: 0; }
-    .jc-tab { background: none; border: 1px solid transparent; border-bottom: none; color: var(--text-dim);
-      padding: 4px 12px; font-size: 12px; cursor: pointer; border-radius: 4px 4px 0 0; }
-    .jc-tab.active { background: var(--bg-primary); border-color: var(--border-primary);
-      color: var(--text-primary); font-weight: 600; }
+    /* --- three columns ----------------------------------------------------- */
+    .jc-cols { flex: 1; display: grid; grid-template-columns: 190px minmax(0, 1fr) 176px; min-height: 0; }
+    .jc-rail { background: var(--bg-secondary); overflow-y: auto; min-height: 0; }
+    .jc-rail-l { border-right: 1px solid var(--border-secondary, #1f1f2e); }
+    .jc-rail-r { border-left: 1px solid var(--border-secondary, #1f1f2e); }
+    .jc-railhead { font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+      color: var(--text-tertiary, #666); padding: 8px 10px 5px; font-weight: 600;
+      display: flex; align-items: baseline; gap: 6px; }
+    .jc-railhead button { margin-left: auto; background: none; border: none; padding: 0;
+      color: var(--accent-blue, #4fc3f7); font-size: 10px; cursor: pointer; }
+    /* Narrow window: the rails are supporting information, the thread is the app. */
+    @media (max-width: 720px) { .jc-cols { grid-template-columns: 150px minmax(0, 1fr); } .jc-rail-r { display: none; } }
+    @media (max-width: 520px) { .jc-cols { grid-template-columns: minmax(0, 1fr); } .jc-rail-l { display: none; } }
 
-    .jc-pane { flex: 1; overflow-y: auto; padding: 4px 0; display: none; }
-    .jc-pane.active { display: block; }
+    /* conversation rows */
+    .jc-conv { display: flex; gap: 7px; align-items: baseline; padding: 7px 10px; width: 100%;
+      background: none; border: none; border-left: 2px solid transparent; text-align: left;
+      color: inherit; font: inherit; cursor: pointer; }
+    .jc-conv + .jc-conv { border-top: 1px solid var(--border-secondary, #1f1f2e); }
+    .jc-conv:hover { background: var(--bg-hover); }
+    .jc-conv:focus-visible { outline: 2px solid var(--accent-blue, #4fc3f7); outline-offset: -2px; }
+    .jc-conv.sel { background: var(--bg-tertiary, #1a1a2e); border-left-color: var(--accent-blue, #4fc3f7); }
+    .jc-conv .c { font-weight: 600; font-size: 12.5px; color: var(--text-primary);
+      font-family: ui-monospace, monospace; flex: none; }
+    .jc-conv.unread .c { color: var(--accent-green-btn, #4ecca3); }
+    .jc-conv.group .c { color: var(--text-secondary); font-weight: 500; }
+    .jc-conv .p { font-size: 10.5px; color: var(--text-tertiary, #666); flex: 1; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .jc-conv .w { font-size: 10px; color: var(--text-tertiary, #666); flex: none; }
+    /* Filled green stays the non-themed mint so black on it passes contrast in
+       BOTH themes — the Save QSO lesson. --accent-green (themed) goes dark
+       forest in light mode and would make this unreadable. */
+    .jc-badge { background: var(--accent-green-btn, #4ecca3); color: #000; border-radius: 9px;
+      padding: 0 6px; font-size: 10px; font-weight: 700; flex: none; line-height: 16px;
+      min-width: 17px; text-align: center; }
 
-    .jc-row { display: flex; gap: 8px; padding: 3px 10px; font-family: monospace; font-size: 12px;
-      border-bottom: 1px solid var(--border-secondary, #1f1f2e); align-items: baseline; }
-    .jc-row .jc-t { color: var(--text-tertiary, #666); flex-shrink: 0; font-variant-numeric: tabular-nums; }
-    .jc-row .jc-s { color: var(--accent-blue); flex-shrink: 0; width: 34px; text-align: right;
-      font-variant-numeric: tabular-nums; }
-    .jc-row .jc-m { flex: 1; color: var(--text-primary); word-break: break-word; }
-    /* Addressed to you: the reason to have this window open at all. */
-    .jc-row.to-me { background: rgba(78, 204, 163, 0.10); }
-    .jc-row.to-me .jc-m { color: var(--accent-green-btn, #4ecca3); font-weight: 600; }
-    .jc-row.replay { opacity: 0.72; }
-
-    .jc-empty { padding: 22px 14px; text-align: center; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+    /* --- thread ------------------------------------------------------------ */
+    .jc-thread { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+    .jc-threadhead { display: flex; align-items: baseline; gap: 8px; padding: 8px 12px; flex-shrink: 0;
+      border-bottom: 1px solid var(--border-secondary, #1f1f2e); font-size: 11px; color: var(--text-secondary); }
+    .jc-threadhead b { font-size: 13px; color: var(--text-primary); font-family: ui-monospace, monospace; }
+    .jc-msgs { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column;
+      gap: 9px; min-height: 0; }
+    .jc-msg { max-width: 84%; }
+    .jc-msg .m { font-size: 10px; color: var(--text-tertiary, #666); margin-bottom: 2px; }
+    .jc-msg .b { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px; padding: 6px 9px; border-radius: 7px; border: 1px solid var(--border-secondary, #1f1f2e);
+      background: var(--bg-tertiary, #1a1a2e); color: var(--text-primary); word-break: break-word; }
+    .jc-msg.out { align-self: flex-end; }
+    .jc-msg.out .m { text-align: right; }
+    .jc-msg.out .b { background: var(--bg-hover); border-color: var(--accent-blue, #4fc3f7); }
+    .jc-fold { align-self: center; font-size: 10.5px; color: var(--text-tertiary, #666);
+      border: 1px dashed var(--border-primary); border-radius: 20px; padding: 2px 11px; }
+    .jc-empty { padding: 24px 16px; text-align: center; color: var(--text-secondary);
+      font-size: 12px; line-height: 1.65; }
     .jc-empty code { background: var(--bg-tertiary); padding: 1px 5px; border-radius: 3px; }
-    .jc-link { color: var(--accent-blue, #4fc3f7); cursor: pointer; text-decoration: underline; }
-    .jc-btn { background: var(--bg-input, #0f1419); border: 1px solid var(--border-primary);
-      color: var(--text-primary); border-radius: 3px; padding: 3px 10px; font-size: 11px; cursor: pointer; }
-    .jc-btn:hover { background: var(--bg-hover); }
-    .jc-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
-    /* Transmit row */
-    .jc-tx-row { display: flex; gap: 6px; align-items: center; padding: 7px 10px; flex-shrink: 0;
-      background: var(--bg-secondary); border-top: 1px solid var(--border-primary); }
-    .jc-tx-row input { flex: 1; min-width: 0; padding: 4px 7px; font-size: 12px;
+    /* --- compose ----------------------------------------------------------- */
+    .jc-compose { border-top: 1px solid var(--border-secondary, #1f1f2e); padding: 8px 12px;
+      background: var(--bg-secondary); flex-shrink: 0; }
+    .jc-chips { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 6px; }
+    .jc-chip { font-size: 11px; padding: 2px 9px; border-radius: 12px; cursor: pointer;
+      border: 1px solid var(--border-primary); color: var(--accent-blue, #4fc3f7);
+      background: transparent; font-family: ui-monospace, monospace; }
+    .jc-chip:hover { background: var(--bg-hover); }
+    .jc-chip:disabled { opacity: .4; cursor: not-allowed; }
+    .jc-row { display: flex; gap: 6px; align-items: center; }
+    .jc-row input { flex: 1; min-width: 0; padding: 5px 8px; font-size: 12px;
       background: var(--bg-input, #0f1419); border: 1px solid var(--border-primary);
-      color: var(--text-primary); border-radius: 3px; }
-    .jc-hb { font-weight: 600; }
-    #jc-tx-note { padding: 0 10px 7px; font-size: 11px; color: var(--text-secondary);
-      background: var(--bg-secondary); flex-shrink: 0; min-height: 0; line-height: 1.5; }
-    #jc-tx-note.err { color: var(--accent-red, #e94560); }
-    #jc-tx-note.ok { color: var(--accent-green-btn, #4ecca3); }
-    /* The composed heartbeat, shown before it is sent. */
-    #jc-tx-note code { background: var(--bg-tertiary, #1a1a2e); padding: 1px 5px; border-radius: 3px;
-      font-family: monospace; color: var(--text-primary); }
+      color: var(--text-primary); border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .jc-btn { border: 1px solid var(--border-primary); background: var(--bg-input, #0f1419);
+      color: var(--text-primary); border-radius: 4px; padding: 5px 12px; font-size: 12px;
+      font-weight: 600; cursor: pointer; flex: none; }
+    .jc-btn:hover { background: var(--bg-hover); }
+    .jc-btn:disabled { opacity: .45; cursor: not-allowed; }
+    .jc-btn.go { background: var(--accent-green-btn, #4ecca3); color: #000;
+      border-color: var(--accent-green-btn, #4ecca3); }
+    #jc-onair { margin-top: 6px; font-size: 10.5px; color: var(--text-secondary); line-height: 1.5;
+      min-height: 15px; }
+    #jc-onair.err { color: var(--accent-red, #e94560); }
+    #jc-onair.ok { color: var(--accent-green-btn, #4ecca3); }
+    #jc-onair code { font-family: ui-monospace, monospace; background: var(--bg-tertiary);
+      border: 1px solid var(--border-secondary, #1f1f2e); border-radius: 3px; padding: 1px 5px;
+      color: var(--text-primary); }
+
+    /* --- heard rail -------------------------------------------------------- */
+    .jc-stn { padding: 6px 10px; display: flex; align-items: baseline; gap: 6px; font-size: 11.5px;
+      width: 100%; background: none; border: none; border-left: 2px solid transparent;
+      text-align: left; color: inherit; font-family: inherit; cursor: pointer; }
+    .jc-stn + .jc-stn { border-top: 1px solid var(--border-secondary, #1f1f2e); }
+    .jc-stn:hover { background: var(--bg-hover); }
+    .jc-stn:focus-visible { outline: 2px solid var(--accent-blue, #4fc3f7); outline-offset: -2px; }
+    .jc-stn .c { font-weight: 600; font-family: ui-monospace, monospace; color: var(--text-primary); }
+    .jc-stn .s { margin-left: auto; font-family: ui-monospace, monospace; font-variant-numeric: tabular-nums;
+      color: var(--text-secondary); font-size: 10.5px; }
+    .jc-stn .a { font-size: 10px; color: var(--text-tertiary, #666); width: 28px; text-align: right; flex: none; }
   </style>
 </head>
 <body>
@@ -109,39 +163,47 @@
 
   <div class="jc-bar">
     <span class="jc-dot" id="jc-dot"></span>
-    <span id="jc-state">Connecting…</span>
-    <span class="jc-call" id="jc-station"></span>
-    <button class="jc-btn" id="jc-retry" title="Re-read JS8Call's settings and reconnect">Retry</button>
+    <span id="jc-state">Connecting&hellip;</span>
+    <b class="mono" id="jc-station"></b>
+    <span class="mono num" id="jc-dial"></span>
+    <button class="jc-btn" id="jc-retry" style="padding:2px 8px;font-size:10px;" title="Re-read JS8Call's settings and reconnect">Retry</button>
     <span class="jc-tx" id="jc-tx">RX</span>
   </div>
 
   <div id="jc-problems"></div>
 
-  <div class="jc-tabs">
-    <button class="jc-tab active" data-pane="all">Activity</button>
-    <button class="jc-tab" data-pane="mine">For me</button>
-  </div>
+  <div class="jc-cols">
+    <div class="jc-rail jc-rail-l">
+      <div class="jc-railhead">Conversations <span id="jc-unread"></span></div>
+      <div id="jc-convs"></div>
+    </div>
 
-  <div class="jc-pane active" id="jc-pane-all">
-    <div class="jc-empty" id="jc-empty">
-      Waiting for JS8Call…<br><br>
-      POTACAT reads a JS8Call you run yourself. It needs
-      <code>Enable TCP Server API</code> ticked under
-      <code>File &gt; Settings &gt; Reporting &gt; API</code>.
+    <div class="jc-thread">
+      <div class="jc-threadhead" id="jc-threadhead" hidden></div>
+      <div class="jc-msgs" id="jc-msgs">
+        <div class="jc-empty" id="jc-empty">
+          Waiting for JS8Call&hellip;<br><br>
+          POTACAT reads a JS8Call you run yourself. It needs
+          <code>Enable TCP Server API</code> under
+          <code>File &gt; Settings &gt; Reporting &gt; API</code>.
+        </div>
+      </div>
+
+      <div class="jc-compose">
+        <div class="jc-chips" id="jc-chips"></div>
+        <div class="jc-row">
+          <input type="text" id="jc-text" placeholder="Select a conversation, or type a full message" maxlength="200" autocomplete="off" spellcheck="false">
+          <button class="jc-btn go" id="jc-send">Send</button>
+        </div>
+        <div id="jc-onair"></div>
+      </div>
+    </div>
+
+    <div class="jc-rail jc-rail-r">
+      <div class="jc-railhead">Heard now <button id="jc-refresh" title="Ask JS8Call again">refresh</button></div>
+      <div id="jc-heard"></div>
     </div>
   </div>
-  <div class="jc-pane" id="jc-pane-mine"></div>
-
-  <!-- Transmit. Deliberately shows the exact text that will go on the air
-       before it does — a transmit button that hides its payload is how people
-       put the wrong thing out. Operator-initiated only; there is no automatic
-       path from POTACAT. -->
-  <div class="jc-tx-row" id="jc-tx-row">
-    <button class="jc-btn jc-hb" id="jc-hb" title="Send your heartbeat to the @HB group">Heartbeat</button>
-    <input type="text" id="jc-text" placeholder="Message to send via JS8Call" maxlength="200" autocomplete="off" spellcheck="false">
-    <button class="jc-btn" id="jc-send">Send</button>
-  </div>
-  <div id="jc-tx-note"></div>
 
   <script src="js8call-popout.js"></script>
 </body>

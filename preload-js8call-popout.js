@@ -25,6 +25,17 @@ contextBridge.exposeInMainWorld('api', {
   // silently doing nothing.
   send: (text) => ipcRenderer.invoke('js8call-send', text),
   heartbeatText: () => ipcRenderer.invoke('js8call-heartbeat-text'),
+
+  // Conversations. State is owned by main (lib/js8call-threads.js) so unread
+  // counts survive this window closing — an inbox that forgets is a log.
+  threads: () => ipcRenderer.invoke('js8call-threads'),
+  thread: (id) => ipcRenderer.invoke('js8call-thread', id),
+  threadClosed: () => ipcRenderer.send('js8call-thread-closed'),
+  onThreads: (cb) => ipcRenderer.on('js8call-threads', (_e, d) => cb(d)),
+
+  // Who is audible right now.
+  onHeard: (cb) => ipcRenderer.on('js8call-heard', (_e, list) => cb(list)),
+  refreshHeard: () => ipcRenderer.send('js8call-refresh-heard'),
   checkSetup: () => ipcRenderer.invoke('js8call-check-setup'),
   openExternal: (url) => ipcRenderer.send('open-external', url),
 
