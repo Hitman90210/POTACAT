@@ -360,6 +360,11 @@ contextBridge.exposeInMainWorld('api', {
   // once they're heard (slot parity comes from the decode, never guessed).
   jtcatSpotTargetSet: (t) => ipcRenderer.send('jtcat-spot-target-set', t),
   mercuryPopoutOpen: () => ipcRenderer.send('mercury-popout-open'),
+  // JS8Call bridge — open the message view, and read JS8Call's own config so
+  // Settings can report exactly what needs changing in it.
+  js8PopoutOpen: () => ipcRenderer.send('js8call-popout-open'),
+  js8CheckSetup: () => ipcRenderer.invoke('js8call-check-setup'),
+  onJs8Status: (cb) => ipcRenderer.on('js8call-status', (_e, s) => cb(s)),
   mercuryListDevices: () => ipcRenderer.invoke('mercury-list-devices'),
   jtcatSetUltracat: (on) => ipcRenderer.send('jtcat-set-ultracat', on),
   jtcatPopoutTheme: (theme) => ipcRenderer.send('jtcat-popout-theme', theme),

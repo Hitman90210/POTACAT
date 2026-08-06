@@ -273,6 +273,8 @@ const { DxClusterClient, looksLikeCallsign: clusterCallsignOk } = require('./lib
 const { RbnClient } = require('./lib/rbn');
 const mercuryProcess = require('./lib/mercury-process');
 const { MercuryClient } = require('./lib/mercury-client');
+const js8Config = require('./lib/js8call-config');
+const { Js8CallClient, isDirectedTo } = require('./lib/js8call-client');
 const radioOwnerLib = require('./lib/radio-owner');
 const { attachMercuryRadioBridge } = require('./lib/mercury-radio-bridge');
 const mercuryAudioBridge = require('./lib/mercury-audio-bridge');
@@ -1185,6 +1187,22 @@ let mercuryPopoutWin = null;    // the chat/file UI window (Phase 5)
 let mercuryReassembler = null;  // app-protocol frame reassembler on the data socket
 let mercuryChatTail = [];       // recent chat/system lines for replay on popout open (cap 200)
 let mercuryRxFile = null;       // in-progress inbound file { name, size, received, path, ws }
+
+// ─── JS8Call bridge ──────────────────────────────────────────────────────────
+// POTACAT does NOT decode JS8; it reads a JS8Call the operator runs, over that
+// app's TCP API. JS8Call is GPLv3 and a socket is mere aggregation, where
+// linking or porting its code would relicense POTACAT (same posture as wsprd
+// and Mercury). RX-only today: we watch its traffic and yield the radio when it
+// keys. See lib/js8call-config.js for why we read its ini but never write it.
+let js8Client = null;           // Js8CallClient — persistent API connection
+let js8LastStatus = null;       // last status pushed to the renderer (dedupe)
+let js8PopoutWin = null;        // the message-view window
+let js8Tail = [];               // recent activity for replay on popout open (cap 300)
+let js8Station = {};            // callsign/grid/dial as JS8Call reports them
+let js8Problems = [];           // last diagnoseJs8Config() result, for the UI
+let js8TxActive = false;        // JS8Call currently keying
+let _js8TxFailsafeTimer = null; // ceiling on a stuck PTT (see JS8_TX_FAILSAFE_MS)
+let _js8StartWatchdog = null;   // "it never connected, and here is why"
 // The exclusive radio TX/audio path can be held by at most one mode engine at a
 // time (lib/radio-owner.js). JTCAT and Mercury must never both key the rig.
 let radioOwner = 'none';        // 'none' | 'jtcat' | 'mercury'
@@ -4577,7 +4595,18 @@ function disconnectRbn() {
 // lib/radio-owner.js; this holds the single mutable `radioOwner`.
 function acquireRadio(who) {
   const d = radioOwnerLib.decideAcquire(radioOwner, who);
-  if (d.ok) { radioOwner = d.owner; return true; }
+  if (d.ok) {
+    // A preemptive owner (an external app already keying — see radio-owner.js)
+    // displaces whoever held it. Standing the loser down belongs here, at the
+    // one dispatcher, so every caller gets it and nobody has to remember.
+    if (d.preempted) {
+      sendCatLog(`[radio] ${who} is transmitting — ${d.preempted} stands down (it cannot be asked to stop mid-frame)`);
+      if (d.preempted === 'jtcat') haltJtcatForPreemption();
+      else if (d.preempted === 'mercury' && mercuryClient) { try { mercuryClient.abort(); } catch { /* already gone */ } }
+    }
+    radioOwner = d.owner;
+    return true;
+  }
   sendCatLog(`[radio] ${who} could not take the radio — ${d.reason}`);
   return false;
 }
@@ -5017,6 +5046,204 @@ function disconnectMercury() {
   if (mercuryRxFile) { try { mercuryRxFile.ws.end(); } catch {} mercuryRxFile = null; }
   mercuryLastStatus = null;
   sendMercuryStatus({ connected: false });
+}
+
+// ─── JS8Call bridge ──────────────────────────────────────────────────────────
+
+// JS8Call frames run to ~30 s in slow mode; well past that with PTT still
+// asserted means we lost the key-up, not that it is still sending. Without a
+// ceiling a missed event would hold the radio-owner lock forever and POTACAT
+// could never transmit again this session.
+const JS8_TX_FAILSAFE_MS = 90000;
+// Long enough for JS8Call to finish opening its audio device and its API
+// socket, short enough that a real failure doesn't read as a hang.
+const JS8_START_MS = 12000;
+const JS8_TAIL_CAP = 300;
+
+function sendJs8Status(s) {
+  const payload = { ...s, problems: js8Problems, station: js8Station };
+  // Dedupe identical consecutive statuses — a refused socket retrying on
+  // backoff would otherwise narrate every attempt.
+  const key = JSON.stringify(payload);
+  if (key === js8LastStatus) return;
+  js8LastStatus = key;
+  if (win && !win.isDestroyed()) win.webContents.send('js8call-status', payload);
+  if (js8PopoutWin && !js8PopoutWin.isDestroyed()) js8PopoutWin.webContents.send('js8call-status', payload);
+}
+
+/** Read the operator's JS8Call.ini and work out what to expect of it. Returns
+ *  the settings it found, or null when there's no config to read at all. */
+function readJs8Setup() {
+  const rigName = settings.js8RigName || '';
+  const candidates = js8Config.js8ConfigPathCandidates({ rigName });
+  let iniPath = null;
+  for (const p of candidates) { if (fs.existsSync(p)) { iniPath = p; break; } }
+  if (!iniPath) { js8Problems = []; return null; }
+  let ini;
+  try { ini = js8Config.parseJs8Ini(fs.readFileSync(iniPath, 'utf8')); }
+  catch { js8Problems = []; return null; }
+  const found = js8Config.readJs8Settings(ini);
+  js8Problems = js8Config.diagnoseJs8Config({
+    ini,
+    // What POTACAT itself is using, so a collision can be named concretely.
+    potacatSlicePort: (settings.catTarget && settings.catTarget.port) || 0,
+    potacatDaxChannel: _flexDaxChannel || 0,
+  });
+  return { ini, found, iniPath };
+}
+
+function connectJs8Call() {
+  disconnectJs8Call();
+  if (!settings.enableJs8Call) { sendJs8Status({ connected: false }); return; }
+
+  const setup = readJs8Setup();
+  if (!setup) {
+    sendCatLog('[JS8Call] No JS8Call configuration found — install and run JS8Call once, then re-enable this.');
+    sendJs8Status({ connected: false, error: 'JS8Call not found' });
+    return;
+  }
+  // Only a dead API stops us. Auto-reply and heartbeats are reported (JS8Call
+  // may key at any time) but are the operator's business, and refusing to look
+  // would not prevent one transmission — it would only blind us to them.
+  const blocked = js8Config.js8ConnectBlocked(js8Problems);
+  for (const p of js8Problems) {
+    sendCatLog(`[JS8Call] ${p.severity === 'blocker' ? 'Cannot connect' : p.severity}: ${p.message}${p.fix ? ' — ' + p.fix : ''}`);
+  }
+  if (blocked.length) { sendJs8Status({ connected: false, error: blocked[0].message }); return; }
+
+  const host = setup.found.tcpHost || '127.0.0.1';
+  const port = settings.js8Port || setup.found.tcpPort || 2442;
+  js8Station = { call: setup.found.myCall, dial: 0, grid: '' };
+
+  js8Client = new Js8CallClient();
+  js8Client.on('log', (m) => sendCatLog(`[JS8Call] ${m}`));
+  js8Client.on('status', (s) => {
+    if (s.connected) {
+      clearJs8StartWatchdog();
+      sendCatLog(`[JS8Call] Connected to the API on ${host}:${port}`);
+      js8Client.requestStationInfo();
+      js8Client.requestActivity();
+    }
+    sendJs8Status({ ...s, host, port });
+  });
+  js8Client.on('tx', handleJs8Tx);
+  js8Client.on('message', handleJs8Message);
+
+  clearJs8StartWatchdog();
+  _js8StartWatchdog = setTimeout(() => {
+    _js8StartWatchdog = null;
+    if (js8Client && js8Client.connected) return;
+    sendCatLog(`[JS8Call] No answer on ${host}:${port} after ${JS8_START_MS / 1000}s. ` +
+      'Is JS8Call running, and is "Enable TCP Server API" ticked under File > Settings > Reporting > API? ' +
+      'JS8Call also allows only one API client at a time, so another tool may hold it.');
+  }, JS8_START_MS);
+
+  js8Client.connect({ host, port });
+}
+
+function disconnectJs8Call() {
+  clearJs8StartWatchdog();
+  clearJs8TxFailsafe();
+  if (js8TxActive) { js8TxActive = false; releaseRadio('js8call'); }
+  if (js8Client) {
+    js8Client.removeAllListeners();
+    try { js8Client.disconnect(); } catch { /* already down */ }
+    js8Client = null;
+  }
+  js8LastStatus = null;   // so the next status isn't deduped away
+  sendJs8Status({ connected: false });
+}
+
+function clearJs8StartWatchdog() {
+  if (_js8StartWatchdog) { clearTimeout(_js8StartWatchdog); _js8StartWatchdog = null; }
+}
+function clearJs8TxFailsafe() {
+  if (_js8TxFailsafeTimer) { clearTimeout(_js8TxFailsafeTimer); _js8TxFailsafeTimer = null; }
+}
+
+/**
+ * JS8Call started or stopped transmitting. POTACAT cannot stop it — no API
+ * command aborts a frame in flight — so this is an observation, and the only
+ * correct response is to take the radio-owner lock so POTACAT's own engines
+ * stand down. On a Flex, keying while JS8Call transmits re-points `tx=1` and
+ * puts its audio out on POTACAT's slice and frequency.
+ */
+function handleJs8Tx(on) {
+  js8TxActive = !!on;
+  if (on) {
+    acquireRadio('js8call');   // always succeeds; stands the previous owner down
+    clearJs8TxFailsafe();
+    _js8TxFailsafeTimer = setTimeout(() => {
+      _js8TxFailsafeTimer = null;
+      if (!js8TxActive) return;
+      sendCatLog(`[JS8Call] no key-up seen in ${JS8_TX_FAILSAFE_MS / 1000}s — releasing the radio lock so POTACAT can transmit again.`);
+      js8TxActive = false;
+      releaseRadio('js8call');
+      sendJs8Status({ connected: !!(js8Client && js8Client.connected), tx: false });
+    }, JS8_TX_FAILSAFE_MS);
+  } else {
+    clearJs8TxFailsafe();
+    releaseRadio('js8call');
+  }
+  sendJs8Status({ connected: !!(js8Client && js8Client.connected), tx: js8TxActive });
+}
+
+/** Stop JTCAT keying because an external transmitter took the radio. */
+function haltJtcatForPreemption() {
+  try {
+    if (!jtcatManager) return;
+    for (const id of jtcatManager.sliceIds) {
+      const eng = jtcatManager.getEngine(id);
+      if (!eng) continue;
+      eng._txEnabled = false;
+      if (eng._txActive && typeof eng.txComplete === 'function') eng.txComplete();
+    }
+  } catch (err) {
+    sendCatLog('[JS8Call] could not stand JTCAT down: ' + (err.message || err));
+  }
+}
+
+function pushJs8Tail(entry) {
+  js8Tail.push(entry);
+  if (js8Tail.length > JS8_TAIL_CAP) js8Tail.shift();
+  if (js8PopoutWin && !js8PopoutWin.isDestroyed()) js8PopoutWin.webContents.send('js8call-activity', entry);
+}
+
+function handleJs8Message(msg) {
+  const t = String(msg.type || '').toUpperCase();
+  const p = msg.params || {};
+
+  // Station identity + what JS8Call thinks it is tuned to. NOTE: this is
+  // recorded for display ONLY and must never reach sendCatFrequency(). The
+  // WSJT-X bridge does feed its dial through, and is right to — WSJT-X owns the
+  // radio there. JS8Call is on its OWN slice, so doing the same would make
+  // POTACAT's frequency display, spot filtering, band logic and privileges
+  // checker all believe the rig is on JS8Call's band.
+  if (t === 'STATION.CALLSIGN') js8Station.call = String(msg.value || '').toUpperCase();
+  else if (t === 'STATION.GRID') js8Station.grid = String(msg.value || '').toUpperCase();
+  else if (t === 'RIG.FREQ' || t === 'STATION.STATUS') {
+    if (p.DIAL) js8Station.dial = Number(p.DIAL) || js8Station.dial;
+    if (p.SPEED !== undefined) js8Station.speed = p.SPEED;
+  }
+
+  if (t === 'RX.DIRECTED' || t === 'RX.ACTIVITY' || t === 'RX.SPOT') {
+    const mine = isDirectedTo(msg, js8Station.call || settings.myCallsign);
+    const entry = {
+      kind: t === 'RX.DIRECTED' ? (mine ? 'to-me' : 'directed') : 'activity',
+      text: msg.value || '',
+      from: p.FROM || '', to: p.TO || '',
+      snr: p.SNR, offset: p.OFFSET, dial: p.DIAL,
+      utc: p.UTC || Date.now(),
+    };
+    pushJs8Tail(entry);
+    if (entry.kind === 'to-me') {
+      sendCatLog(`[JS8Call] message for you from ${entry.from}: ${entry.text}`);
+    }
+  }
+
+  if (js8PopoutWin && !js8PopoutWin.isDestroyed()) {
+    js8PopoutWin.webContents.send('js8call-message', msg);
+  }
 }
 
 // --- PSKReporter FreeDV integration ---
@@ -20956,6 +21183,7 @@ app.whenReady().then(() => {
   // ever flipped on by the user.
   if (settings.myCallsign) connectRbn();
   if (settings.enableMercury) connectMercury();
+  if (settings.enableJs8Call) connectJs8Call();
   connectSmartSdr(); // connects if smartSdrSpots, CW keyer, or WSJT-X+Flex
   connectTci();
   connectAntennaGenius();
@@ -22973,6 +23201,63 @@ app.whenReady().then(() => {
       if (input.key === 'F12' && input.type === 'keyDown') mercuryPopoutWin.webContents.toggleDevTools();
     });
   }
+  // ─── JS8Call message view ──────────────────────────────────────────────────
+  function openJs8Popout() {
+    if (js8PopoutWin && !js8PopoutWin.isDestroyed()) { js8PopoutWin.focus(); return; }
+    const isMac = process.platform === 'darwin';
+    js8PopoutWin = new BrowserWindow({
+      width: 760, height: 600, title: 'POTACAT — JS8Call',
+      backgroundColor: getThemeWindowBg(), show: false,
+      ...(isMac ? { titleBarStyle: 'hiddenInset' } : { frame: false }),
+      icon: getIconPath(),
+      webPreferences: {
+        preload: path.join(__dirname, 'preload-js8call-popout.js'),
+        contextIsolation: true, nodeIntegration: false,
+      },
+    });
+    const saved = settings.js8PopoutBounds;
+    if (saved && saved.width > 400 && saved.height > 300 && isOnScreen(saved)) js8PopoutWin.setBounds(clampToWorkArea(saved));
+    js8PopoutWin.show();
+    js8PopoutWin.setMenuBarVisibility(false);
+    js8PopoutWin.loadFile(path.join(__dirname, 'renderer', 'js8call-popout.html'), { query: { theme: settings.lightMode ? 'light' : 'dark', variant: settings.darkVariant || 'navy' } });
+    js8PopoutWin.on('close', () => {
+      if (js8PopoutWin && !js8PopoutWin.isDestroyed() && !js8PopoutWin.isMaximized() && !js8PopoutWin.isMinimized()) {
+        settings.js8PopoutBounds = js8PopoutWin.getBounds(); saveSettings(settings);
+      }
+    });
+    js8PopoutWin.on('closed', () => { js8PopoutWin = null; });
+    js8PopoutWin.webContents.on('did-finish-load', () => {
+      if (!js8PopoutWin || js8PopoutWin.isDestroyed()) return;
+      js8PopoutWin.webContents.send('js8call-popout-theme', { theme: settings.lightMode ? 'light' : 'dark', variant: settings.darkVariant || 'navy' });
+      // Reflect state and replay the tail so a reopened window isn't blank
+      // mid-session — the same reason the Mercury popout keeps a transcript.
+      js8LastStatus = null;
+      sendJs8Status(settings.enableJs8Call
+        ? { connected: !!(js8Client && js8Client.connected), tx: js8TxActive }
+        : { connected: false, error: 'The JS8Call bridge is off — enable it in Settings > Station' });
+      for (const e of js8Tail) js8PopoutWin.webContents.send('js8call-activity', { ...e, replay: true });
+    });
+    js8PopoutWin.webContents.on('before-input-event', (_e, input) => {
+      if (input.key === 'F12' && input.type === 'keyDown') js8PopoutWin.webContents.toggleDevTools();
+    });
+  }
+  ipcMain.on('js8call-popout-open', () => openJs8Popout());
+  ipcMain.on('js8call-popout-minimize', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.minimize(); });
+  ipcMain.on('js8call-popout-close', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.close(); });
+  ipcMain.on('js8call-reconnect', () => { if (settings.enableJs8Call) connectJs8Call(); });
+  // Re-read the ini on demand so the Settings panel can show the effect of a
+  // change the operator just made in JS8Call, without restarting anything.
+  ipcMain.handle('js8call-check-setup', () => {
+    const setup = readJs8Setup();
+    return {
+      found: !!setup,
+      iniPath: setup ? setup.iniPath : '',
+      settings: setup ? setup.found : null,
+      problems: js8Problems,
+      connected: !!(js8Client && js8Client.connected),
+    };
+  });
+
   ipcMain.on('mercury-popout-open', () => openMercuryPopout());
   ipcMain.on('mercury-popout-minimize', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.minimize(); });
   ipcMain.on('mercury-popout-maximize', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) { if (w.isMaximized()) w.unmaximize(); else w.maximize(); } });
@@ -24360,6 +24645,10 @@ app.whenReady().then(() => {
       'https://hamlib.github.io/', 'https://github.com/Hamlib/', 'https://discord.gg/',
       // Mercury HF data modem (Rhizomatica) — download + docs links in Settings.
       'https://github.com/Rhizomatica/', 'https://rhizomatica.github.io/',
+      // JS8Call — download + docs links in Settings. The gate is a prefix
+      // match that fails CLOSED with no error, so the scheme matters: the
+      // project site is http-only.
+      'https://github.com/js8call/', 'http://js8call.com/', 'https://js8call.com/',
       'https://potacat.com/', 'https://docs.potacat.com/', 'https://buymeacoffee.com/potacat', 'https://docs.google.com/spreadsheets/',
       'https://pota.app/', 'https://www.sotadata.org.uk/', 'https://wwff.co/', 'https://llota.app/',
       'https://tailscale.com', 'https://worldradioleague.com',
@@ -26873,6 +27162,13 @@ app.whenReady().then(() => {
       (has('myCallsign') && newSettings.myCallsign !== settings.myCallsign) ||
       (has('watchlist') && newSettings.watchlist !== settings.watchlist);
 
+    // JS8Call: same narrow gate as Mercury and WSJT-X below. Both of those have
+    // one because a settings save landing mid-connect double-connects, and this
+    // is not optional — it's just easy to forget until you see it happen.
+    const js8Changed = (has('enableJs8Call') && newSettings.enableJs8Call !== settings.enableJs8Call) ||
+      (has('js8Port') && newSettings.js8Port !== settings.js8Port) ||
+      (has('js8RigName') && newSettings.js8RigName !== settings.js8RigName);
+
     // Mercury: relaunch only when a launch-relevant key actually changed, so
     // an unrelated settings save never kills+respawns the modem (the rigctld
     // respawn-race lesson, N4RDX v1.9.8). Audio-device/gain changes also
@@ -27126,6 +27422,11 @@ app.whenReady().then(() => {
     if (mercuryChanged) {
       if (settings.enableMercury) connectMercury();
       else disconnectMercury();
+    }
+
+    if (js8Changed) {
+      if (settings.enableJs8Call) connectJs8Call();
+      else disconnectJs8Call();
     }
 
     // Reconnect SmartSDR if settings changed (also needed for WSJT-X+Flex and CW keyer).
@@ -29696,6 +29997,9 @@ function gracefulCleanup() {
   } catch {}
   killRigctld();
   try { killMercury(); } catch {}
+  // Drop the JS8Call socket cleanly. We never kill JS8Call itself — it is the
+  // operator's application, not ours, and this phase doesn't launch it.
+  try { disconnectJs8Call(); } catch {}
 }
 
 app.on('before-quit', gracefulCleanup);

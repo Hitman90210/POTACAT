@@ -171,6 +171,7 @@
           <button class="multi-dropdown-btn view-btn" type="button" id="views-btn">More &#x25BE;</button>
           <div class="multi-dropdown-menu" style="min-width:140px;">
             <button class="view-menu-item" id="view-jtcat-btn">JTCAT FT8</button>
+            <button class="view-menu-item hidden" id="view-js8call-btn">JS8Call</button>
             <button class="view-menu-item hidden" id="view-mercury-btn">Mercury HF Data</button>
             <button class="view-menu-item" id="view-sstv-btn">SSTV</button>
             <button class="view-menu-item" id="view-bandspread-btn">Bandspread</button>
@@ -2632,6 +2633,36 @@
         <span class="help-text" style="display:block;">0 = no limit (show all spots)</span>
       </div>
     </fieldset>
+    <!-- 8a1. JS8Call bridge -->
+    <fieldset class="source-toggles collapsible" data-settings-tab="station">
+      <legend>JS8Call (HF messaging)</legend>
+      <label class="checkbox-label">
+        <input type="checkbox" id="set-js8-enable"> Read a running JS8Call
+      </label>
+      <div id="js8-config" class="radio-sub hidden">
+        <span class="help-text" style="display:block;margin-bottom:6px;">Shows what JS8Call is hearing inside POTACAT, and highlights messages addressed to you. Open it from More &rarr; JS8Call. POTACAT does <em>not</em> launch or control JS8Call &mdash; you run it yourself, and it keeps its own radio and audio settings.</span>
+        <label>API port:
+          <input type="number" id="set-js8-port" min="1" max="65535" placeholder="2442" style="width:90px;">
+        </label>
+        <span class="help-text" style="display:block;">Leave blank to use whatever JS8Call has configured (normally 2442).</span>
+        <label style="margin-top:6px;">Instance name:
+          <input type="text" id="set-js8-rig-name" placeholder="(default)" style="width:150px;">
+        </label>
+        <span class="help-text" style="display:block;">Only if you run JS8Call with <code>--rig-name</code> for a second radio or slice. Leave blank otherwise.</span>
+
+        <div style="margin-top:8px;">
+          <button type="button" id="js8-check-btn">Check JS8Call setup</button>
+        </div>
+        <div id="js8-setup-report" class="help-text" style="display:block;margin-top:6px;line-height:1.55;"></div>
+
+        <div class="help-text" style="display:block;margin-top:6px;padding:7px 9px;border:1px solid var(--border-primary);border-radius:4px;line-height:1.55;">
+          <strong>One setting to change in JS8Call.</strong> Its API is off by default: tick <code>Enable TCP Server API</code> under <code>File &gt; Settings &gt; Reporting &gt; API</code>, then restart JS8Call. Everything else POTACAT reads as-is.
+          <br><strong>On a FlexRadio</strong>, give JS8Call its own slice and its own DAX channel so the two don't fight &mdash; the check above tells you if they collide.
+          <br><strong>Don't have it?</strong> Download from <a href="http://js8call.com/" data-external style="color:var(--accent-blue,#4fc3f7);">js8call.com</a>. JS8Call is a separate open-source (GPL-3.0) program by KN4CRD; POTACAT talks to it over a socket and ships none of its code.
+        </div>
+      </div>
+    </fieldset>
+
     <!-- 8a2. Mercury HF data modem -->
     <fieldset class="source-toggles collapsible" data-settings-tab="station">
       <legend>Mercury (HF data)</legend>

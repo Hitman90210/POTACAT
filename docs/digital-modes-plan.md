@@ -290,8 +290,35 @@ Rules of engagement, same as the MMSSTV-informed SSTV rewrite:
 ### PSK31 (and PSK63 / PSK125)
 BPSK at 31.25/62.5/125 baud, 1500 Hz audio center, ±15 Hz wide. Costas/PLL phase tracking per symbol period, threshold the cumulative phase shift, decode through varicode (variable-length self-synchronizing prefix code). ~300–400 LOC. TX synth is cosine-windowed BPSK; ~150 LOC. References: fldigi, jspsk.
 
-### JS8Call
-4-FSK derived from FT8 — Costas-array sync at slot start, payload, CRC, LDPC FEC. Slot length depends on speed (Normal = 15s like FT8, Slow = 30s, Fast = 10s, Turbo = 6s). Native addon for the LDPC + Costas decoder (mirrors `lib/ft8_native`); pure-JS would CPU-spike on busy bands. The directed-message and conversation layer is the bigger UX piece — `@CALLSIGN MSG`, heartbeat, beacon, relay. Source: github.com/js8call/js8call.
+### JS8Call — SUPERSEDED 2026-08-06: bridge, do not implement natively
+
+**The native plan below is withdrawn. It was also a licensing violation waiting
+to happen.** JS8Call is GPLv3, and a `lib/js8_native/` codec derived from its
+sources is exactly the linking `third_party/wsprd/README.md` calls the one rule
+that must never be broken — it would relicense the whole Apache-2.0 app.
+`lib/wspr-decoder.js` states the same doctrine. Nobody noticed because this
+document's GPL discussion is entirely about MMTTY/MMVARI being LGPL.
+
+**What we build instead:** POTACAT bridges a JS8Call the operator runs, over
+that app's TCP API (port 2442, newline-delimited JSON). A separate process
+spoken to over a socket is mere aggregation — the same posture as `wsprd` and
+Mercury. See `lib/js8call-config.js` and `lib/js8call-client.js`.
+
+Bridging is also the *cheaper* answer, and the licensing is the smaller reason.
+Going native means reimplementing not just the modem but the whole
+store-and-forward, relay and heartbeat NETWORK layer — and then having nobody
+on it. Bridging inherits JS8Call's existing on-air population for free, which
+is the entire point: joining a populated net rather than cold-starting one.
+
+Honest tradeoff, recorded so it isn't rediscovered: the bridge needs the
+JS8Call app running, so it is not headless and not self-contained — it does not
+serve the Raspberry Pi story. Revisit a native codec only if the value is
+validated on air AND headless turns out to matter, and even then it must be a
+clean-room implementation from the mode's published description, never a port.
+
+For reference, the mode itself: 4-FSK derived from FT8 — Costas-array sync at
+slot start, payload, CRC, LDPC FEC. Slot length depends on speed (Normal 15 s,
+Slow 30 s, Fast 10 s, Turbo 6 s).
 
 ## Phasing
 
@@ -322,17 +349,27 @@ Estimated: 3 sessions, ~1200 LOC desktop, ~400 LOC iOS handoff spec.
 
 Estimated: 2 sessions, ~700 LOC desktop.
 
-### Phase 3 — JS8Call RX
+### Phase 3 — JS8Call RX — SUPERSEDED (see the JS8Call section above)
 
-- Native codec build (`lib/js8_native/`)
-- `lib/js8-engine.js` (~600 LOC JS shell over native)
-- JS8 added to mode bar
-- Slot list pane (reuses FT8 slot list with mode-aware rendering)
-- Speed picker
-- ECHOCAT: extend `digital-decode` for JS8 slot batches
-- CI: native addon build for JS8 mirrors ft8_native (windows-2022 pin already done)
+~~Native codec build (`lib/js8_native/`), `lib/js8-engine.js`, JS8 in the mode
+bar, CI native addon.~~ Withdrawn 2026-08-06: a native codec from js8call
+sources would link GPLv3 into an Apache-2.0 app, and reimplementing the mode
+would not bring its network with it.
 
-Estimated: 4 sessions, ~400 LOC native, ~600 LOC JS, ~400 LOC popout.
+**Shipped instead (bridge):** `lib/js8call-config.js` reads JS8Call's ini and
+names every setup problem — its API is off by default, and a normally
+configured JS8Call collides with POTACAT on slice, DAX channel and PTT.
+`lib/js8call-client.js` is the TCP API client. `radio-owner.js` gained
+`js8call` as a *preemptive* owner: JS8Call keys on its own schedule (heartbeat
+auto-reply is a feature of the mode) and cannot be stopped mid-frame, so
+POTACAT observes its PTT and stands its own engines down rather than pretending
+it can arbitrate.
+
+Deferred from the bridge: launching JS8Call, idle-mode integration, N instances
+for multiple Flex slices, the ECHOCAT phone inbox, and TX. **TX is gated on
+POTACAT hosting a rigctld-protocol listener that JS8Call points at as its rig**
+— then a key-down arrives as an intent POTACAT can run through `radio-owner`,
+the SWR latch and the band guard, instead of JS8Call keying behind its back.
 
 ### Phase 4 — JS8Call TX + messaging
 

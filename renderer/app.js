@@ -1149,6 +1149,11 @@ const setKiwiLabel3 = document.getElementById('set-kiwi-label-3');
 const setTciSpots = document.getElementById('set-tci-spots');
 const tciConfig = document.getElementById('tci-config');
 const setTciHost = document.getElementById('set-tci-host');
+// JS8Call bridge settings
+const setJs8Enable = document.getElementById('set-js8-enable');
+const js8Config = document.getElementById('js8-config');
+const setJs8Port = document.getElementById('set-js8-port');
+const setJs8RigName = document.getElementById('set-js8-rig-name');
 // Mercury (HF data) settings
 const setMercuryEnable = document.getElementById('set-mercury-enable');
 const mercuryConfig = document.getElementById('mercury-config');
@@ -1713,6 +1718,8 @@ async function loadPrefs() {
   clusterTerminalBtn.classList.toggle('hidden', !settings.enableClusterTerminal);
   var mercuryBtn = document.getElementById('view-mercury-btn');
   if (mercuryBtn) mercuryBtn.classList.toggle('hidden', !settings.enableMercury);
+  var js8Btn = document.getElementById('view-js8call-btn');
+  if (js8Btn) js8Btn.classList.toggle('hidden', !settings.enableJs8Call);
   updateDxccButton();
   // Pi access — JTCAT button visibility on startup
   if (jtcatBtn) jtcatBtn.classList.remove('hidden');
@@ -4460,6 +4467,44 @@ if (setAudioSource) {
 setTciSpots.addEventListener('change', () => {
   tciConfig.classList.toggle('hidden', !setTciSpots.checked);
 });
+if (setJs8Enable) {
+  setJs8Enable.addEventListener('change', () => {
+    js8Config.classList.toggle('hidden', !setJs8Enable.checked);
+  });
+  // "Check JS8Call setup" — reads its ini live and reports every collision, so
+  // the operator sees the problem here instead of discovering an empty window.
+  const js8CheckBtn = document.getElementById('js8-check-btn');
+  const js8Report = document.getElementById('js8-setup-report');
+  if (js8CheckBtn && js8Report) {
+    js8CheckBtn.addEventListener('click', async () => {
+      js8Report.textContent = 'Checking…';
+      let r;
+      try { r = await window.api.js8CheckSetup(); }
+      catch (err) { js8Report.textContent = 'Could not check: ' + (err.message || err); return; }
+      if (!r || !r.found) {
+        js8Report.innerHTML = '<strong>No JS8Call configuration found.</strong> Install JS8Call and run it once, then check again.';
+        return;
+      }
+      const s = r.settings || {};
+      const lines = [];
+      lines.push('<strong>Found JS8Call' + (s.myCall ? ' — ' + esc(s.myCall) : '') + '</strong>');
+      lines.push('API ' + (s.tcpEnabled ? 'on' : '<em>off</em>') + ' on port ' + (s.tcpPort || 2442)
+        + (s.catPort ? ' · radio via port ' + s.catPort : '')
+        + (s.soundIn ? ' · audio in: ' + esc(s.soundIn) : ''));
+      if (!r.problems || !r.problems.length) {
+        lines.push('<span style="color:var(--accent-green-btn,#4ecca3);">Nothing to fix.</span>');
+      } else {
+        for (const p of r.problems) {
+          const color = p.severity === 'blocker' ? 'var(--accent-red,#e94560)'
+            : p.severity === 'conflict' ? 'var(--source-sota,#f0a500)'
+              : 'var(--text-secondary)';
+          lines.push('<span style="color:' + color + ';">• ' + esc(p.message) + '</span><br><span style="opacity:.8;">&nbsp;&nbsp;' + esc(p.fix || "") + '</span>');
+        }
+      }
+      js8Report.innerHTML = lines.join('<br>');
+    });
+  }
+}
 if (setMercuryEnable) {
   setMercuryEnable.addEventListener('change', () => {
     mercuryConfig.classList.toggle('hidden', !setMercuryEnable.checked);
@@ -11431,6 +11476,7 @@ function bindClick(el, handler) {
 }
 bindClick(viewJtcatBtn, () => window.api.jtcatPopoutOpen());
 bindClick(document.getElementById('view-mercury-btn'), () => { if (window.api.mercuryPopoutOpen) window.api.mercuryPopoutOpen(); });
+bindClick(document.getElementById('view-js8call-btn'), () => { if (window.api.js8PopoutOpen) window.api.js8PopoutOpen(); });
 bindClick(document.getElementById('view-sstv-btn'), () => window.api.sstvPopoutOpen());
 bindClick(document.getElementById('view-bandspread-btn'), () => {
   if (window.api.bandspreadPopoutOpen) window.api.bandspreadPopoutOpen();
@@ -14472,6 +14518,12 @@ async function openSettingsDialog(tab) {
   setTciPort.value = s.tciPort || 50001;
   setTciMaxAge.value = s.tciMaxAge != null ? s.tciMaxAge : 15;
   tciConfig.classList.toggle('hidden', !s.tciSpots);
+  if (setJs8Enable) {
+    setJs8Enable.checked = s.enableJs8Call === true;
+    if (setJs8Port) setJs8Port.value = s.js8Port || '';
+    if (setJs8RigName) setJs8RigName.value = s.js8RigName || '';
+    if (js8Config) js8Config.classList.toggle('hidden', !setJs8Enable.checked);
+  }
   if (setMercuryEnable) {
     setMercuryEnable.checked = s.enableMercury === true;
     setMercuryPath.value = s.mercuryPath || '';
@@ -15241,6 +15293,11 @@ settingsSave.addEventListener('click', async () => {
     tciHost: tciHostVal,
     tciPort: tciPortVal,
     tciMaxAge: tciMaxAgeVal,
+    ...(setJs8Enable ? {
+      enableJs8Call: setJs8Enable.checked,
+      js8Port: parseInt(setJs8Port && setJs8Port.value, 10) || 0,
+      js8RigName: (setJs8RigName && setJs8RigName.value.trim()) || '',
+    } : {}),
     ...(setMercuryEnable ? {
       enableMercury: setMercuryEnable.checked,
       mercuryPath: setMercuryPath.value.trim(),
@@ -15293,6 +15350,8 @@ settingsSave.addEventListener('click', async () => {
   // Reflect the Mercury enable state in the More ▾ menu without a reload.
   var mercuryViewBtn = document.getElementById('view-mercury-btn');
   if (mercuryViewBtn && setMercuryEnable) mercuryViewBtn.classList.toggle('hidden', !setMercuryEnable.checked);
+  var js8ViewBtn = document.getElementById('view-js8call-btn');
+  if (js8ViewBtn && setJs8Enable) js8ViewBtn.classList.toggle('hidden', !setJs8Enable.checked);
   grid = setGrid.value.trim();
   distUnit = setDistUnit.value;
   maxAgeMin = maxAgeVal;
