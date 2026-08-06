@@ -5510,6 +5510,16 @@ async function planJs8Setup({ includeRadio = null } = {}) {
         .filter((x) => x.device && x.why)
     : [];
   const deadDevice = devTrouble.length > 0;
+
+  // The same class of problem on the radio side: JS8Call is pointed at a CAT
+  // port with nothing listening on it, so it reports no radio. POTACAT wrote
+  // that port itself before it learned to probe, and there is no honest fix it
+  // can apply alone — the only live port is the one POTACAT is using, and the
+  // alternatives (add a slice port in SmartSDR CAT, or set Rig to None) are
+  // both the operator's call. So this is DIAGNOSED, never silently rewritten.
+  const wantCat = Number(setup.found.catPort) || 0;
+  const catPortDead = setup.rigFamily === 'flex' && wantCat && catPorts !== null
+    && !catPorts.includes(wantCat);
   const collides = js8Problems.some((p) => p.code === 'cat-slice-collision' || p.code === 'dax-rx-collision');
   const wantRadio = includeRadio === null ? (collides || !!deadDevice) : !!includeRadio;
   const radio = wantRadio ? js8RadioPlan(setup, labels, catPorts) : null;
@@ -5552,6 +5562,9 @@ async function planJs8Setup({ includeRadio = null } = {}) {
     // station can have none of them — and JS8Call, which can only speak serial
     // CAT, then has nothing to point at.
     catShimDown: setup.rigFamily === 'flex' && catPorts !== null && catPorts.length === 0,
+    catPortDead: !!catPortDead,
+    catPortWanted: wantCat,
+    catPortsLive: catPorts || [],
     catPorts: catPorts || [],
     deadDevice,
     // Named, and with the REASON — "your audio is wrong" sends the operator

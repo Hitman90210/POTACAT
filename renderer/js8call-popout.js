@@ -409,15 +409,33 @@
     // operator hunting through sample rates for a device that is not there.
     // Name the string.
     var dead = (p.deviceProblems || []).filter(Boolean);
+    // The radio-side twin of a dead audio device, and the only remaining reason
+    // JS8Call still says it has no rig once the audio is right.
+    if (p.catPortDead) {
+      dead = dead.concat([
+        'Radio control is set to port ' + p.catPortWanted + ', and nothing is listening there' +
+        (p.catPortsLive && p.catPortsLive.length
+          ? ' (SmartSDR CAT is only serving ' + p.catPortsLive.join(', ') + ', which POTACAT is using)'
+          : '') + '.',
+      ]);
+    }
     setupNote.hidden = !dead.length;
     if (dead.length) {
       setupNote.innerHTML =
         '<b>JS8Call’s audio devices will not work:</b>' +
         '<ul style="margin:6px 0 0;padding-left:18px;">' +
         dead.map(function (d) { return '<li>' + esc(d) + '</li>'; }).join('') +
-        '</ul><div style="margin-top:6px;">That is what “Requested output audio format is not ' +
-        'supported on device” means — it is reported as a format problem either way. ' +
-        'The change' + (dead.length > 1 ? 's' : '') + ' below point at devices that carry audio.</div>';
+        '</ul><div style="margin-top:6px;">' +
+        'A device that enumerates but carries nothing is still reported as “Requested output ' +
+        'audio format is not supported on device”, which is why it reads like a format problem.' +
+        (p.catPortDead
+          ? '<br><br><b>The radio part POTACAT cannot fix for you:</b> either add a CAT port for a ' +
+            'second slice in the SmartSDR CAT window, or set JS8Call’s ' +
+            '<code>File &gt; Settings &gt; Radio &gt; Rig</code> to <code>None</code> — it then ' +
+            'decodes happily and you tune from POTACAT. Changing your radio setup is not something ' +
+            'POTACAT will do behind your back.'
+          : '') +
+        '</div>';
     }
 
     if (p.running) {
