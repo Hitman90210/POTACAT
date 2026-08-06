@@ -44,6 +44,9 @@ contextBridge.exposeInMainWorld('api', {
   planSetup: (opts) => ipcRenderer.invoke('js8call-plan-setup', opts),
   applySetup: (opts) => ipcRenderer.invoke('js8call-apply-setup', opts),
   launch: () => ipcRenderer.invoke('js8call-launch'),
+  // The SmartSDR DAX control panel. POTACAT does not need it (Flex Direct
+  // streams VITA-49), but JS8Call cannot reach the radio without it.
+  launchDax: () => ipcRenderer.invoke('js8call-launch-dax'),
 
   openExternal: (url) => ipcRenderer.send('open-external', url),
 

@@ -5297,6 +5297,53 @@ function js8Running() {
 }
 
 /**
+ * The SmartSDR DAX control panel, newest version first.
+ *
+ * POTACAT itself does not need DAX — Flex Direct streams VITA-49 straight off
+ * the network — so a station running POTACAT alone has every reason never to
+ * start it. JS8Call is a normal Windows application and can only reach the
+ * radio through DAX's audio endpoints, which stay inert placeholders until the
+ * control panel runs. Nothing POTACAT can write into JS8Call.ini substitutes
+ * for it. (K3SBP 2026-08-06.)
+ */
+function findDaxApp() {
+  if (process.platform !== 'win32') return '';
+  const roots = [process.env['ProgramFiles'], process.env['ProgramFiles(x86)']].filter(Boolean);
+  const found = [];
+  for (const r of roots) {
+    const base = path.join(r, 'FlexRadio Systems');
+    let dirs = [];
+    try { dirs = fs.readdirSync(base); } catch { continue; }
+    for (const d of dirs) {
+      const exe = path.join(base, d, 'DAX', 'DAX.exe');
+      try { fs.accessSync(exe); found.push({ dir: d, exe }); } catch { /* next */ }
+    }
+  }
+  // "SmartSDR v4.1.5" before "SmartSDR v3.10.10" — natural order, not string
+  // order, or v3.10 sorts above v4.1.
+  found.sort((a, b) => b.dir.localeCompare(a.dir, undefined, { numeric: true }));
+  return found.length ? found[0].exe : '';
+}
+
+/** Start the DAX control panel. Never kills one; it is the operator's window. */
+function launchDaxApp() {
+  const exe = findDaxApp();
+  if (!exe) {
+    sendCatLog('[JS8Call] cannot start DAX: no SmartSDR DAX control panel found.');
+    return { ok: false, error: 'Could not find the SmartSDR DAX control panel. Start DAX from your SmartSDR install, then try again.' };
+  }
+  try {
+    sendCatLog('[JS8Call] launching DAX: ' + exe);
+    const p = spawn(exe, [], { stdio: 'ignore', detached: true });
+    p.unref();     // DAX outlives POTACAT; it is the operator's audio plumbing
+    p.on('error', (err) => sendCatLog('[JS8Call] DAX launch failed: ' + (err.message || err)));
+  } catch (err) {
+    return { ok: false, error: 'Could not start DAX: ' + (err.message || err) };
+  }
+  return { ok: true, exe };
+}
+
+/**
  * What one-click setup would do, without doing any of it. The popout shows this
  * before asking — POTACAT is editing another application's configuration, and
  * that should never be a surprise.
@@ -5414,6 +5461,11 @@ async function planJs8Setup({ includeRadio = null } = {}) {
     rigFamily: setup.rigFamily,
     canDoRadio: setup.rigFamily === 'flex',
     radioCollision: collides,
+    // DAX down is its OWN state, not a config problem: no ini change fixes it,
+    // and offering the usual "set up JS8Call" button would just rewrite a name
+    // that still cannot be opened. null = we could not tell.
+    daxDown: setup.rigFamily === 'flex' ? js8Audio.daxProvisioned(labels) === false : false,
+    daxApp: findDaxApp(),
     deadDevice: !!deadDevice,
     // Named so the panel can say WHICH device is missing — "your audio is
     // wrong" sends the operator hunting; naming the string ends it.
@@ -23690,6 +23742,7 @@ app.whenReady().then(() => {
                 : { ...r, launchError: l.error };
   });
   ipcMain.handle('js8call-launch', () => { markUserActive(); return launchJs8Call(); });
+  ipcMain.handle('js8call-launch-dax', () => { markUserActive(); return launchDaxApp(); });
   // Re-read the ini on demand so the Settings panel can show the effect of a
   // change the operator just made in JS8Call, without restarting anything.
   ipcMain.handle('js8call-check-setup', () => {

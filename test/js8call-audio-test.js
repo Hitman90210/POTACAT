@@ -14,6 +14,7 @@
 const assert = require('assert');
 const {
   parseDaxLabel, daxRxChannels, pickDaxRx, pickDaxTx, chooseDaxRxChannel, deviceMissing,
+  isPlaceholderDax, daxProvisioned,
 } = require('../lib/js8call-audio');
 
 let pass = 0, fail = 0;
@@ -73,7 +74,35 @@ test('channel list reports the gap instead of assuming 1..8', () => {
 test('a real label is returned, never reconstructed', () => {
   assert.strictEqual(pickDaxRx(REAL, 2), 'DAX Audio RX 2 (FlexRadio Systems DAX Audio)');
   assert.strictEqual(pickDaxRx(REAL, 4), null, 'RX 4 is absent — say so rather than invent it');
-  assert.strictEqual(pickDaxTx(REAL), 'DAX RESERVED AUDIO TX (FlexRadio Systems DAX TX)');
+});
+
+// ── present is not the same as usable ────────────────────────────────────────
+
+test('the RESERVED endpoint is a placeholder, not the transmit device', () => {
+  // It enumerates, Windows reports it OK, and a name-presence check passes it.
+  // Nothing can open it. Writing it into JS8Call's config just moves the same
+  // "audio format is not supported" error onto a different string.
+  assert.strictEqual(isPlaceholderDax('DAX RESERVED AUDIO TX (FlexRadio Systems DAX TX)'), true);
+  assert.strictEqual(isPlaceholderDax('DAX Audio TX (FlexRadio Systems DAX TX)'), false);
+  assert.strictEqual(pickDaxTx(REAL), null, 'a placeholder must never be offered as the answer');
+});
+
+test('the real transmit device is picked once DAX is provisioned', () => {
+  const up = REAL.concat(['DAX Audio TX (FlexRadio Systems DAX TX)']);
+  assert.strictEqual(pickDaxTx(up), 'DAX Audio TX (FlexRadio Systems DAX TX)');
+});
+
+test('a placeholder-only TX means DAX is not running', () => {
+  assert.strictEqual(daxProvisioned(REAL), false);
+  assert.strictEqual(daxProvisioned(REAL.concat(['DAX Audio TX (FlexRadio Systems DAX TX)'])), true);
+});
+
+test('"could not look" and "DAX is down" are different answers', () => {
+  // Headless, or enumeration blocked. Telling someone to start DAX because we
+  // failed to enumerate would send them after the wrong problem entirely.
+  assert.strictEqual(daxProvisioned([]), null);
+  assert.strictEqual(daxProvisioned(null), null);
+  assert.strictEqual(daxProvisioned(['Speakers (Realtek)']), null, 'no DAX driver is not our story');
 });
 
 test('when both DAX driver generations are installed, the fuller name wins', () => {
@@ -111,9 +140,9 @@ test('every channel taken yields null rather than a collision', () => {
 // ── the check that would have caught this ────────────────────────────────────
 
 test('a configured device that is not present is reported missing', () => {
-  // The exact bug: JS8Call said "Requested output audio format is not
-  // supported on device" for a device that simply was not there.
   assert.strictEqual(deviceMissing('DAX Audio TX (FlexRadio Systems DAX TX)', REAL), true);
+  // NOTE: present, yet unusable — deviceMissing answers "is this string in the
+  // list", which is why it alone was not enough and daxProvisioned exists.
   assert.strictEqual(deviceMissing('DAX RESERVED AUDIO TX (FlexRadio Systems DAX TX)', REAL), false);
 });
 
