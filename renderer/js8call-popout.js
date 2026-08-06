@@ -429,11 +429,16 @@
         'A device that enumerates but carries nothing is still reported as “Requested output ' +
         'audio format is not supported on device”, which is why it reads like a format problem.' +
         (p.catPortDead
-          ? '<br><br><b>The radio part POTACAT cannot fix for you:</b> either add a CAT port for a ' +
-            'second slice in the SmartSDR CAT window, or set JS8Call’s ' +
-            '<code>File &gt; Settings &gt; Radio &gt; Rig</code> to <code>None</code> — it then ' +
-            'decodes happily and you tune from POTACAT. Changing your radio setup is not something ' +
-            'POTACAT will do behind your back.'
+          ? '<br><br><b>The radio part, which POTACAT cannot do for you.</b> In JS8Call, ' +
+            '<code>File &gt; Settings &gt; Radio</code>, set <b>both</b>:<br>' +
+            '&nbsp;&nbsp;• <code>Rig</code> → <code>None</code><br>' +
+            '&nbsp;&nbsp;• <code>PTT Method</code> → <code>VOX</code> ' +
+            '<span style="opacity:.75">(it is set to CAT, which needs the rig you just removed — ' +
+            'leaving it errors again)</span><br>' +
+            'JS8Call then decodes without touching the radio, and you tune from POTACAT. ' +
+            'These two live in Qt binary blobs that POTACAT cannot rewrite safely, which is why ' +
+            'they are yours to click rather than a button here. ' +
+            'The other option is a CAT port for a second slice in the SmartSDR CAT window.'
           : '') +
         '</div>';
     }
