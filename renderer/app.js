@@ -1718,8 +1718,6 @@ async function loadPrefs() {
   clusterTerminalBtn.classList.toggle('hidden', !settings.enableClusterTerminal);
   var mercuryBtn = document.getElementById('view-mercury-btn');
   if (mercuryBtn) mercuryBtn.classList.toggle('hidden', !settings.enableMercury);
-  var js8Btn = document.getElementById('view-js8call-btn');
-  if (js8Btn) js8Btn.classList.toggle('hidden', !settings.enableJs8Call);
   updateDxccButton();
   // Pi access — JTCAT button visibility on startup
   if (jtcatBtn) jtcatBtn.classList.remove('hidden');
@@ -4468,9 +4466,9 @@ setTciSpots.addEventListener('change', () => {
   tciConfig.classList.toggle('hidden', !setTciSpots.checked);
 });
 if (setJs8Enable) {
-  setJs8Enable.addEventListener('change', () => {
-    js8Config.classList.toggle('hidden', !setJs8Enable.checked);
-  });
+  // Checkbox is now an opt-OUT, so it no longer gates the panel below it --
+  // the setup checker stays reachable whether or not you have turned it off.
+  setJs8Enable.addEventListener('change', () => {});
   // "Check JS8Call setup" — reads its ini live and reports every collision, so
   // the operator sees the problem here instead of discovering an empty window.
   const js8CheckBtn = document.getElementById('js8-check-btn');
@@ -14519,10 +14517,10 @@ async function openSettingsDialog(tab) {
   setTciMaxAge.value = s.tciMaxAge != null ? s.tciMaxAge : 15;
   tciConfig.classList.toggle('hidden', !s.tciSpots);
   if (setJs8Enable) {
-    setJs8Enable.checked = s.enableJs8Call === true;
+    setJs8Enable.checked = s.enableJs8Call === false;   // ticked = don't read it
     if (setJs8Port) setJs8Port.value = s.js8Port || '';
     if (setJs8RigName) setJs8RigName.value = s.js8RigName || '';
-    if (js8Config) js8Config.classList.toggle('hidden', !setJs8Enable.checked);
+
   }
   if (setMercuryEnable) {
     setMercuryEnable.checked = s.enableMercury === true;
@@ -15294,7 +15292,9 @@ settingsSave.addEventListener('click', async () => {
     tciPort: tciPortVal,
     tciMaxAge: tciMaxAgeVal,
     ...(setJs8Enable ? {
-      enableJs8Call: setJs8Enable.checked,
+      // Ticked means DON'T. Unticked stores undefined so the bridge stays on
+      // auto-detect rather than being pinned on for a machine without JS8Call.
+      enableJs8Call: setJs8Enable.checked ? false : undefined,
       js8Port: parseInt(setJs8Port && setJs8Port.value, 10) || 0,
       js8RigName: (setJs8RigName && setJs8RigName.value.trim()) || '',
     } : {}),
@@ -15350,8 +15350,6 @@ settingsSave.addEventListener('click', async () => {
   // Reflect the Mercury enable state in the More ▾ menu without a reload.
   var mercuryViewBtn = document.getElementById('view-mercury-btn');
   if (mercuryViewBtn && setMercuryEnable) mercuryViewBtn.classList.toggle('hidden', !setMercuryEnable.checked);
-  var js8ViewBtn = document.getElementById('view-js8call-btn');
-  if (js8ViewBtn && setJs8Enable) js8ViewBtn.classList.toggle('hidden', !setJs8Enable.checked);
   grid = setGrid.value.trim();
   distUnit = setDistUnit.value;
   maxAgeMin = maxAgeVal;

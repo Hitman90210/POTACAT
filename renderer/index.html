@@ -171,7 +171,10 @@
           <button class="multi-dropdown-btn view-btn" type="button" id="views-btn">More &#x25BE;</button>
           <div class="multi-dropdown-menu" style="min-width:140px;">
             <button class="view-menu-item" id="view-jtcat-btn">JTCAT FT8</button>
-            <button class="view-menu-item hidden" id="view-js8call-btn">JS8Call</button>
+            <!-- Always present. A read-only view of what your radio is hearing
+                 is not something to hide behind a settings checkbox; the window
+                 itself explains what it needs if JS8Call isn't set up yet. -->
+            <button class="view-menu-item" id="view-js8call-btn">JS8Call</button>
             <button class="view-menu-item hidden" id="view-mercury-btn">Mercury HF Data</button>
             <button class="view-menu-item" id="view-sstv-btn">SSTV</button>
             <button class="view-menu-item" id="view-bandspread-btn">Bandspread</button>
@@ -2636,11 +2639,11 @@
     <!-- 8a1. JS8Call bridge -->
     <fieldset class="source-toggles collapsible" data-settings-tab="station">
       <legend>JS8Call (HF messaging)</legend>
+      <span class="help-text" style="display:block;margin-bottom:6px;">Shows what JS8Call is hearing inside POTACAT, and highlights messages addressed to you. Always available from More &rarr; JS8Call &mdash; it connects on its own whenever JS8Call is installed, so there is nothing to switch on. POTACAT does <em>not</em> launch JS8Call; you run it yourself.</span>
       <label class="checkbox-label">
-        <input type="checkbox" id="set-js8-enable"> Read a running JS8Call
+        <input type="checkbox" id="set-js8-enable"> Don't read JS8Call on this machine
       </label>
-      <div id="js8-config" class="radio-sub hidden">
-        <span class="help-text" style="display:block;margin-bottom:6px;">Shows what JS8Call is hearing inside POTACAT, and highlights messages addressed to you. Open it from More &rarr; JS8Call. POTACAT does <em>not</em> launch or control JS8Call &mdash; you run it yourself, and it keeps its own radio and audio settings.</span>
+      <div id="js8-config" class="radio-sub">
         <label>API port:
           <input type="number" id="set-js8-port" min="1" max="65535" placeholder="2442" style="width:90px;">
         </label>

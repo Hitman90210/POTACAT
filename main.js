@@ -5097,9 +5097,32 @@ function readJs8Setup() {
   return { ini, found, iniPath };
 }
 
+/**
+ * Should the bridge run? Deliberately opt-OUT, not opt-in (K3SBP 2026-08-06:
+ * "It should be an option that isn't hidden. No enabling should be
+ * necessary."). Reading a JS8Call the operator already runs is not the kind of
+ * thing that warrants a checkbox hunt — Mercury needs one because it spawns a
+ * process and holds PTT; this only listens.
+ *   true  → forced on
+ *   false → explicitly turned off, and stays off
+ *   unset → on when a JS8Call config exists on this machine
+ */
+function js8Enabled() {
+  if (settings.enableJs8Call === true) return true;
+  if (settings.enableJs8Call === false) return false;
+  return js8ConfigPresent();
+}
+
+function js8ConfigPresent() {
+  const rigName = settings.js8RigName || '';
+  return js8Config.js8ConfigPathCandidates({ rigName }).some((p) => {
+    try { return fs.existsSync(p); } catch { return false; }
+  });
+}
+
 function connectJs8Call() {
   disconnectJs8Call();
-  if (!settings.enableJs8Call) { sendJs8Status({ connected: false }); return; }
+  if (!js8Enabled()) { sendJs8Status({ connected: false }); return; }
 
   const setup = readJs8Setup();
   if (!setup) {
@@ -5211,7 +5234,7 @@ function handleJs8Tx(on) {
 function js8Transmit(text) {
   const t = String(text || '').trim();
   if (!t) return { ok: false, error: 'Nothing to send.' };
-  if (!settings.enableJs8Call) return { ok: false, error: 'The JS8Call bridge is off.' };
+  if (!js8Enabled()) return { ok: false, error: 'The JS8Call bridge is off.' };
   if (!js8Client || !js8Client.connected) return { ok: false, error: 'Not connected to JS8Call.' };
 
   // JS8Call silently ignores commands unless "Accept TCP Requests" is ticked —
@@ -21305,7 +21328,7 @@ app.whenReady().then(() => {
   // ever flipped on by the user.
   if (settings.myCallsign) connectRbn();
   if (settings.enableMercury) connectMercury();
-  if (settings.enableJs8Call) connectJs8Call();
+  connectJs8Call();   // decides for itself — see js8Enabled()
   connectSmartSdr(); // connects if smartSdrSpots, CW keyer, or WSJT-X+Flex
   connectTci();
   connectAntennaGenius();
@@ -23354,7 +23377,7 @@ app.whenReady().then(() => {
       // Reflect state and replay the tail so a reopened window isn't blank
       // mid-session — the same reason the Mercury popout keeps a transcript.
       js8LastStatus = null;
-      sendJs8Status(settings.enableJs8Call
+      sendJs8Status(js8Enabled()
         ? { connected: !!(js8Client && js8Client.connected), tx: js8TxActive }
         : { connected: false, error: 'The JS8Call bridge is off — enable it in Settings > Station' });
       for (const e of js8Tail) js8PopoutWin.webContents.send('js8call-activity', { ...e, replay: true });
@@ -23368,7 +23391,7 @@ app.whenReady().then(() => {
   ipcMain.on('js8call-popout-open', () => openJs8Popout());
   ipcMain.on('js8call-popout-minimize', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.minimize(); });
   ipcMain.on('js8call-popout-close', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.close(); });
-  ipcMain.on('js8call-reconnect', () => { if (settings.enableJs8Call) connectJs8Call(); });
+  ipcMain.on('js8call-reconnect', () => connectJs8Call());
   // Transmit. Always operator-initiated — there is no automatic path here, and
   // the reply carries the refusal reason so the popout can show it rather than
   // appearing to have done nothing.
@@ -27571,7 +27594,7 @@ app.whenReady().then(() => {
     }
 
     if (js8Changed) {
-      if (settings.enableJs8Call) connectJs8Call();
+      if (js8Enabled()) connectJs8Call();
       else disconnectJs8Call();
     }
 
