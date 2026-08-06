@@ -110,6 +110,29 @@
       font-size: 12px; line-height: 1.65; }
     .jc-empty code { background: var(--bg-tertiary); padding: 1px 5px; border-radius: 3px; }
 
+    /* setup panel */
+    /* Takes the transcript's place, so it owns the same slot in the column. */
+    .jc-setup { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 20px;
+      max-width: 60ch; width: 100%; margin: 0 auto; }
+    .jc-setup[hidden] { display: none; }
+    .jc-setup h2 { font-size: 15px; margin: 0 0 6px; color: var(--text-primary); font-weight: 600; }
+    .jc-setup p { margin: 0 0 12px; font-size: 12.5px; color: var(--text-secondary); line-height: 1.6; }
+    .jc-setup ul { margin: 0 0 14px; padding: 0; list-style: none; font-size: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .jc-setup li { padding: 4px 0 4px 16px; position: relative; color: var(--text-primary);
+      border-bottom: 1px solid var(--border-secondary, #1f1f2e); }
+    .jc-setup li::before { content: '→'; position: absolute; left: 0; color: var(--accent-blue, #4fc3f7); }
+    .jc-setup-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .jc-setup-actions label { font-size: 11.5px; color: var(--text-secondary); display: flex;
+      align-items: center; gap: 5px; cursor: pointer; }
+    .jc-setup-manual { margin-top: 14px !important; font-size: 11.5px; line-height: 1.7;
+      border-top: 1px solid var(--border-secondary, #1f1f2e); padding-top: 12px; }
+    .jc-setup-manual code { background: var(--bg-tertiary); padding: 1px 5px; border-radius: 3px;
+      color: var(--text-primary); font-family: ui-monospace, monospace; }
+    .jc-setup-manual b { color: var(--text-primary); }
+    .jc-link { color: var(--accent-blue, #4fc3f7); cursor: pointer; text-decoration: underline; }
+    .jc-link:hover { filter: brightness(1.15); }
+
     /* --- compose ----------------------------------------------------------- */
     .jc-compose { border-top: 1px solid var(--border-secondary, #1f1f2e); padding: 8px 12px;
       background: var(--bg-secondary); flex-shrink: 0; }
@@ -180,14 +203,26 @@
 
     <div class="jc-thread">
       <div class="jc-threadhead" id="jc-threadhead" hidden></div>
-      <div class="jc-msgs" id="jc-msgs">
-        <div class="jc-empty" id="jc-empty">
-          Waiting for JS8Call&hellip;<br><br>
-          POTACAT reads a JS8Call you run yourself. It needs
-          <code>Enable TCP Server API</code> under
-          <code>File &gt; Settings &gt; Reporting &gt; API</code>.
+      <!-- Shown INSTEAD of the transcript until the bridge is live. Deliberately
+           a sibling of #jc-msgs, not a child: renderThread() clears #jc-msgs, so
+           living inside it would delete this panel and orphan every cached
+           reference to it the first time a conversation was opened.
+           Setting JS8Call up by hand is six steps across three of its settings
+           pages, so POTACAT offers to do it — but shows every change first,
+           because this edits another application's configuration. -->
+      <div class="jc-setup" id="jc-setup">
+        <h2 id="jc-setup-title">Setting up JS8Call</h2>
+        <p id="jc-setup-lede">Checking&hellip;</p>
+        <ul id="jc-setup-changes"></ul>
+        <div class="jc-setup-actions">
+          <button class="jc-btn go" id="jc-setup-go" hidden>Set up and start JS8Call</button>
+          <button class="jc-btn" id="jc-setup-launch" hidden>Start JS8Call</button>
+          <label id="jc-setup-radio-wrap" hidden><input type="checkbox" id="jc-setup-radio"> also move it to its own slice and DAX channel</label>
         </div>
+        <p class="jc-setup-manual" id="jc-setup-manual"></p>
       </div>
+
+      <div class="jc-msgs" id="jc-msgs"></div>
 
       <div class="jc-compose">
         <div class="jc-chips" id="jc-chips"></div>

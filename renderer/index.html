@@ -2639,12 +2639,17 @@
     <!-- 8a1. JS8Call bridge -->
     <fieldset class="source-toggles collapsible" data-settings-tab="station">
       <legend>JS8Call (HF messaging)</legend>
-      <span class="help-text" style="display:block;margin-bottom:6px;">Shows what JS8Call is hearing inside POTACAT, and highlights messages addressed to you. Always available from More &rarr; JS8Call &mdash; it connects on its own whenever JS8Call is installed, so there is nothing to switch on. POTACAT does <em>not</em> launch JS8Call; you run it yourself.</span>
+      <span class="help-text" style="display:block;margin-bottom:6px;">Shows what JS8Call is hearing inside POTACAT, and highlights messages addressed to you. Always available from More &rarr; JS8Call &mdash; it connects on its own whenever JS8Call is installed, so there is nothing to switch on. That window will also offer to set JS8Call up for you and start it; everything below is for the cases where it can't guess right.</span>
       <label class="checkbox-label">
         <input type="checkbox" id="set-js8-enable"> Don't read JS8Call on this machine
       </label>
       <div id="js8-config" class="radio-sub">
-        <label>API port:
+        <label>JS8Call program:
+          <input type="text" id="set-js8-path" placeholder="auto-detect / leave blank" style="width:230px;">
+          <button type="button" id="js8-path-browse">Browse&hellip;</button>
+        </label>
+        <span class="help-text" style="display:block;">Only needed so More &rarr; JS8Call can start it for you. Leave blank to auto-detect &mdash; POTACAT knows the usual install locations and the <code>JS8Call-improved</code> fork.</span>
+        <label style="margin-top:6px;">API port:
           <input type="number" id="set-js8-port" min="1" max="65535" placeholder="2442" style="width:90px;">
         </label>
         <span class="help-text" style="display:block;">Leave blank to use whatever JS8Call has configured (normally 2442).</span>

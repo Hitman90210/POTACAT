@@ -15,9 +15,14 @@
   var dotEl = el('jc-dot'), stateEl = el('jc-state'), stationEl = el('jc-station'),
       dialEl = el('jc-dial'), txEl = el('jc-tx'), problemsEl = el('jc-problems'),
       convsEl = el('jc-convs'), unreadEl = el('jc-unread'), headEl = el('jc-threadhead'),
-      msgsEl = el('jc-msgs'), emptyEl = el('jc-empty'), chipsEl = el('jc-chips'),
+      msgsEl = el('jc-msgs'), chipsEl = el('jc-chips'),
       textEl = el('jc-text'), sendBtn = el('jc-send'), onairEl = el('jc-onair'),
       heardEl = el('jc-heard');
+
+  var setupEl = el('jc-setup'), setupTitle = el('jc-setup-title'), setupLede = el('jc-setup-lede'),
+      setupChanges = el('jc-setup-changes'), setupGo = el('jc-setup-go'),
+      setupLaunch = el('jc-setup-launch'), setupRadioWrap = el('jc-setup-radio-wrap'),
+      setupRadio = el('jc-setup-radio'), setupManual = el('jc-setup-manual');
 
   var connected = false;
   var openId = null;
@@ -91,6 +96,9 @@
     var r;
     try { r = await window.api.thread(id); } catch (e) { return; }
     openId = id;
+    // Stored conversations are readable offline, so opening one takes the
+    // column back from the setup panel. The status chip puts it back.
+    showSetup(false);
     renderThread(r && r.thread);
     renderConvs(r && r.list);
     setUnreadTotal(r ? r.unread : 0);
@@ -240,10 +248,154 @@
     refreshCompose();
   });
 
+  // Reading an old conversation shouldn't strand you away from setup.
+  stateEl.addEventListener('click', function () { if (!connected) refreshSetup(); });
+
   el('jc-min').addEventListener('click', function () { window.api.minimizeWindow(); });
   el('jc-close').addEventListener('click', function () { window.api.closeWindow(); });
   el('jc-retry').addEventListener('click', function () { window.api.reconnect(); });
   el('jc-refresh').addEventListener('click', function () { window.api.refreshHeard(); });
+
+  // ── setup ──────────────────────────────────────────────────────────────────
+  // Doing this by hand is six steps across three JS8Call settings pages. POTACAT
+  // offers to do it instead — but always lists exactly what it will change
+  // first, because this edits another application's config file.
+
+  // Written out so someone who would rather not have POTACAT touch their config
+  // (or whose JS8Call is running) can still just follow it.
+  var MANUAL = '<b>Or do it yourself in JS8Call:</b><br>' +
+    '1. <code>File &gt; Settings &gt; Reporting &gt; API</code> — tick <code>Enable TCP Server API</code> ' +
+    'and <code>Accept TCP Requests</code>, and set max connections to 2 or more.<br>' +
+    '2. Restart JS8Call.';
+
+  // "I tried opening JS8Call-Improved and it gave me grief for not having my
+  // radio connected" (K3SBP 2026-08-06). That complaint is about the RADIO, not
+  // the API, and the honest answer depends on what the radio can do — so say
+  // which one applies rather than one paragraph that is half wrong either way.
+  function radioAdvice(canDoRadio) {
+    if (canDoRadio) {
+      return '<b>About the radio:</b> JS8Call will complain it has no radio until it has its ' +
+        'own slice. Tick the box above and POTACAT will point it at a free slice and DAX ' +
+        'channel — both apps then receive at once, on different bands if you like. ' +
+        'POTACAT keeps the transmitter.';
+    }
+    return '<b>About the radio:</b> JS8Call will complain it has no radio, because POTACAT ' +
+      'is holding the one CAT connection your rig has. That is expected, and JS8Call still ' +
+      'decodes fine without it. Set <code>File &gt; Settings &gt; Radio &gt; Rig</code> to ' +
+      '<code>None</code> to stop it asking; tune and transmit from POTACAT.';
+  }
+
+  // The setup panel and the transcript share one slot in the column — exactly
+  // one of them is up at a time, so the window always answers the question the
+  // operator actually has right now ("why is nothing here" vs "what was said").
+  function showSetup(on) {
+    setupEl.hidden = !on;
+    msgsEl.hidden = on;
+    headEl.hidden = on || !openCall;
+  }
+
+  var setupBusy = false;
+
+  async function refreshSetup() {
+    if (connected) { showSetup(false); return; }
+    if (setupBusy) return;
+    setupBusy = true;
+    try { await refreshSetupInner(); } finally { setupBusy = false; }
+  }
+
+  async function refreshSetupInner() {
+    showSetup(true);
+    setupChanges.innerHTML = '';
+    setupGo.hidden = setupLaunch.hidden = setupRadioWrap.hidden = true;
+
+    var p;
+    try { p = await window.api.planSetup({ includeRadio: !!(setupRadio && setupRadio.checked) }); }
+    catch (e) { setupLede.textContent = 'Could not check JS8Call: ' + (e && e.message); return; }
+
+    if (!p || !p.ok) {
+      setupTitle.textContent = 'JS8Call not found';
+      setupLede.textContent = (p && p.error) || 'No JS8Call configuration found.';
+      setupManual.innerHTML = 'Install JS8Call from <span class="jc-link" data-ext="http://js8call.com/">js8call.com</span>, ' +
+        'run it once so it writes its settings, then reopen this window.';
+      wireExternal();
+      return;
+    }
+
+    setupRadioWrap.hidden = !p.canDoRadio;
+
+    if (p.running) {
+      // Qt rewrites the whole ini on exit, so patching under a live instance
+      // would be silently undone. Say that rather than failing later.
+      setupTitle.textContent = 'JS8Call is running';
+      setupLede.textContent = 'POTACAT can set it up for you, but only while JS8Call is closed — it rewrites its settings file when it exits, so changes made now would be undone. Close JS8Call and this will offer to do it.';
+      setupManual.innerHTML = MANUAL + '<br><br>' + radioAdvice(p.canDoRadio);
+      return;
+    }
+
+    if (!p.changes.length) {
+      setupTitle.textContent = 'JS8Call is ready';
+      setupLede.textContent = 'Its settings are already right for POTACAT. Start it and traffic will appear here.';
+      setupLaunch.hidden = !p.binary;
+      setupManual.innerHTML = (p.binary ? '' :
+        'POTACAT could not find the JS8Call program to start it — open it yourself, or set its ' +
+        'location in Settings &gt; Station &gt; JS8Call.<br><br>') + radioAdvice(p.canDoRadio);
+      return;
+    }
+
+    setupTitle.textContent = 'One click and JS8Call is ready';
+    setupLede.textContent = p.binary
+      ? 'POTACAT will change these settings in JS8Call, then start it:'
+      : 'POTACAT will change these settings in JS8Call (it could not find the program to start it, so open JS8Call yourself afterwards):';
+    p.changes.forEach(function (c) {
+      var li = document.createElement('li');
+      li.textContent = c.label;
+      setupChanges.appendChild(li);
+    });
+    setupGo.hidden = false;
+    setupGo.textContent = p.binary ? 'Set up and start JS8Call' : 'Set up JS8Call';
+    setupManual.innerHTML = MANUAL + '<br><br>' + radioAdvice(p.canDoRadio) +
+      '<br><br>A timestamped backup of JS8Call.ini is kept either way.';
+  }
+
+  function wireExternal() {
+    Array.prototype.forEach.call(setupManual.querySelectorAll('[data-ext]'), function (a) {
+      a.addEventListener('click', function () { window.api.openExternal(a.dataset.ext); });
+    });
+  }
+
+  setupGo.addEventListener('click', async function () {
+    setupGo.disabled = true;
+    setupGo.textContent = 'Setting up…';
+    var r;
+    try { r = await window.api.applySetup({ includeRadio: !!setupRadio.checked }); }
+    catch (e) { r = { ok: false, error: e && e.message }; }
+    setupGo.disabled = false;
+    if (!r || !r.ok) {
+      setupTitle.textContent = 'Could not set JS8Call up';
+      setupLede.textContent = (r && r.error) || 'Unknown error.';
+      setupChanges.innerHTML = '';
+      setupGo.hidden = true;
+      setupManual.innerHTML = MANUAL + '<br><br>' + radioAdvice(p.canDoRadio);
+      return;
+    }
+    setupTitle.textContent = 'Starting JS8Call…';
+    setupLede.textContent = r.launchError
+      ? r.launchError
+      : 'Settings applied. JS8Call is starting — it takes a few seconds to open its audio device before POTACAT can connect.';
+    setupChanges.innerHTML = '';
+    setupGo.hidden = true;
+  });
+
+  setupLaunch.addEventListener('click', async function () {
+    setupLaunch.disabled = true;
+    var r;
+    try { r = await window.api.launch(); } catch (e) { r = { ok: false, error: e && e.message }; }
+    setupLaunch.disabled = false;
+    if (!r || !r.ok) setupLede.textContent = (r && r.error) || 'Could not start JS8Call.';
+    else { setupTitle.textContent = 'Starting JS8Call…'; setupLede.textContent = 'Give it a few seconds.'; setupLaunch.hidden = true; }
+  });
+
+  if (setupRadio) setupRadio.addEventListener('change', refreshSetup);
 
   // ── wire-up ────────────────────────────────────────────────────────────────
 
@@ -265,6 +417,8 @@
     connected = up;
     dotEl.className = 'jc-dot ' + (up ? 'up' : 'down');
     stateEl.textContent = up ? 'Connected' : ((s && s.error) ? s.error : 'Not connected');
+    stateEl.style.cursor = up ? '' : 'pointer';
+    stateEl.title = up ? '' : 'Show setup';
 
     var st = (s && s.station) || {};
     stationEl.textContent = st.call || '';
@@ -278,8 +432,9 @@
       : 'JS8Call is receiving.';
 
     renderProblems(s && s.problems);
-    if (up && emptyEl && emptyEl.parentNode && !openId) emptyEl.textContent = 'Select a conversation.';
     if (up && !was) loadHeartbeat();
+    // The setup panel is the whole middle column until the bridge is live.
+    if (up !== was || !up) refreshSetup();
     refreshCompose();
   });
 
@@ -326,6 +481,9 @@
       }
     } catch (e) { /* main not ready yet; the status push will follow */ }
     refreshCompose();
+    // Don't wait on a status push to answer "why is nothing here" — that is the
+    // first question this window exists to answer.
+    refreshSetup();
   })();
   setInterval(function () { if (connected) window.api.refreshHeard(); }, 60000);
   // Relative times drift; re-render the rails once a minute so "4m" stays true.

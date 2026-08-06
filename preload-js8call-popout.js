@@ -37,6 +37,14 @@ contextBridge.exposeInMainWorld('api', {
   onHeard: (cb) => ipcRenderer.on('js8call-heard', (_e, list) => cb(list)),
   refreshHeard: () => ipcRenderer.send('js8call-refresh-heard'),
   checkSetup: () => ipcRenderer.invoke('js8call-check-setup'),
+
+  // One-click setup: what would change, then do it, then start JS8Call.
+  // planSetup is read-only; applySetup writes JS8Call.ini (backed up first, and
+  // refused while JS8Call runs, because Qt rewrites the file on exit).
+  planSetup: (opts) => ipcRenderer.invoke('js8call-plan-setup', opts),
+  applySetup: (opts) => ipcRenderer.invoke('js8call-apply-setup', opts),
+  launch: () => ipcRenderer.invoke('js8call-launch'),
+
   openExternal: (url) => ipcRenderer.send('open-external', url),
 
   // Per-window zoom, same convention as the other popouts.

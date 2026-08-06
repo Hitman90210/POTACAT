@@ -276,6 +276,7 @@ const { MercuryClient } = require('./lib/mercury-client');
 const js8Config = require('./lib/js8call-config');
 const { Js8CallClient, isDirectedTo } = require('./lib/js8call-client');
 const { Js8Threads } = require('./lib/js8call-threads');
+const js8Process = require('./lib/js8call-process');
 const radioOwnerLib = require('./lib/radio-owner');
 const { attachMercuryRadioBridge } = require('./lib/mercury-radio-bridge');
 const mercuryAudioBridge = require('./lib/mercury-audio-bridge');
@@ -1208,6 +1209,7 @@ let _js8StartWatchdog = null;   // "it never connected, and here is why"
 // accumulating while the window is closed — the whole point of an inbox.
 let js8Threads = new Js8Threads({});
 let js8Heard = [];              // stations audible now, for the right rail
+let js8Proc = null;             // JS8Call we launched (never one we didn't)
 // The exclusive radio TX/audio path can be held by at most one mode engine at a
 // time (lib/radio-owner.js). JTCAT and Mercury must never both key the rig.
 let radioOwner = 'none';        // 'none' | 'jtcat' | 'mercury'
@@ -5275,6 +5277,167 @@ function js8HeartbeatText() {
   const setup = readJs8Setup();
   if (!setup) return '';
   return js8Config.js8HeartbeatText(setup.ini);
+}
+
+// ─── one-click setup ─────────────────────────────────────────────────────────
+// "Open POTACAT, click More > JS8Call, then have JS8Call open and configure
+// itself to work with POTACAT" (K3SBP 2026-08-06). Three steps, in order:
+// work out what needs changing, change it while JS8Call is CLOSED, launch it.
+
+function findJs8Call() {
+  for (const p of js8Process.js8PathCandidates({ settings })) {
+    try { fs.accessSync(p, fs.constants.X_OK); return p; } catch { /* keep looking */ }
+  }
+  return '';
+}
+
+function js8Running() {
+  return !!(js8Proc && js8Proc.exitCode === null);
+}
+
+/**
+ * What one-click setup would do, without doing any of it. The popout shows this
+ * before asking — POTACAT is editing another application's configuration, and
+ * that should never be a surprise.
+ */
+/**
+ * Where to move JS8Call's radio and audio so it stops fighting POTACAT.
+ * Flex only — it is the one rig that can host both apps at once, on separate
+ * slices. Anywhere else there is no second receiver to move to, so there is
+ * nothing honest to propose and this returns null.
+ */
+function js8RadioPlan(setup) {
+  if (!setup || setup.rigFamily !== 'flex') return null;
+  const ours = (settings.catTarget && settings.catTarget.port) || 5002;
+  const port = [5002, 5003, 5004, 5005].find((p) => p !== ours) || 5003;
+  // Match the DAX channel to the slice, stepping past whatever POTACAT holds.
+  let ch = (port - 5002) + 1;
+  if (ch === (_flexDaxChannel || 1)) ch++;
+  return {
+    catPort: port,
+    soundIn: `DAX Audio RX ${ch} (FlexRadio Systems DAX Audio)`,
+    soundOut: 'DAX Audio TX (FlexRadio Systems DAX TX)',
+  };
+}
+
+function planJs8Setup({ includeRadio = false } = {}) {
+  const setup = readJs8Setup();
+  if (!setup) return { ok: false, error: 'No JS8Call configuration found. Install JS8Call and run it once.' };
+
+  const radio = includeRadio ? js8RadioPlan(setup) : null;
+
+  const want = js8Process.desiredJs8Settings({
+    tcpPort: settings.js8Port || setup.found.tcpPort || 2442,
+    radio,
+  });
+  let raw = '';
+  try { raw = fs.readFileSync(setup.iniPath, 'utf8'); } catch (err) {
+    return { ok: false, error: 'Could not read JS8Call.ini: ' + (err.message || err) };
+  }
+  const plan = js8Process.planJs8IniPatch(raw, want);
+  return {
+    ok: true,
+    iniPath: setup.iniPath,
+    changes: plan.changes.map((c) => ({ ...c, label: js8Process.describeJs8Change(c) })),
+    missingSection: plan.missingSection,
+    running: js8Running(),
+    binary: findJs8Call(),
+    rigFamily: setup.rigFamily,
+    canDoRadio: setup.rigFamily === 'flex',
+  };
+}
+
+/**
+ * Apply the plan. Refuses while JS8Call is running: Qt rewrites the whole ini
+ * on exit, so anything written underneath a live instance is silently reverted
+ * — the operator would see us claim success and nothing change.
+ */
+function applyJs8Setup({ includeRadio = false } = {}) {
+  const plan = planJs8Setup({ includeRadio });
+  if (!plan.ok) return plan;
+  if (plan.missingSection) {
+    return { ok: false, error: 'That JS8Call.ini has no [Configuration] section — run JS8Call once so it writes a full config.' };
+  }
+  if (js8ExternalJs8CallRunning()) {
+    return { ok: false, error: 'Close JS8Call first. It rewrites its settings file when it exits, so changes made while it is running would be undone.' };
+  }
+  if (!plan.changes.length) return { ok: true, changes: [], already: true };
+
+  const setup = readJs8Setup();
+  let raw;
+  try { raw = fs.readFileSync(setup.iniPath, 'utf8'); } catch (err) {
+    return { ok: false, error: 'Could not read JS8Call.ini: ' + (err.message || err) };
+  }
+  const want = js8Process.desiredJs8Settings({
+    tcpPort: settings.js8Port || setup.found.tcpPort || 2442,
+    radio: includeRadio ? js8RadioPlan(setup) : null,
+  });
+  const patched = js8Process.planJs8IniPatch(raw, want);
+
+  // Keep a copy. We are editing someone else's application config; a way back
+  // is not optional.
+  try {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    fs.writeFileSync(setup.iniPath + '.potacat-' + stamp + '.bak', raw, 'utf8');
+    fs.writeFileSync(setup.iniPath, patched.text, 'utf8');
+  } catch (err) {
+    return { ok: false, error: 'Could not write JS8Call.ini: ' + (err.message || err) };
+  }
+  for (const c of patched.changes) sendCatLog(`[JS8Call] setup: ${js8Process.describeJs8Change(c)}`);
+  return { ok: true, changes: patched.changes.map((c) => ({ ...c, label: js8Process.describeJs8Change(c) })) };
+}
+
+/** Is a JS8Call running that POTACAT did not start? Best-effort: if its API
+ *  answers, it is up. Used to refuse patching under a live instance. */
+function js8ExternalJs8CallRunning() {
+  if (js8Running()) return true;
+  return !!(js8Client && js8Client.connected);
+}
+
+/**
+ * Start JS8Call. Never touches one POTACAT did not start.
+ *
+ * And deliberately NOT killed in gracefulCleanup, unlike Mercury. Mercury is a
+ * headless modem POTACAT owns; JS8Call is a window the operator is looking at,
+ * possibly mid-QSO. Killing it would also skip QSettings' shutdown write and
+ * roll back the ini we just patched — so quitting POTACAT leaves it running,
+ * which is what closing one of two open applications should do.
+ */
+function launchJs8Call() {
+  if (js8ExternalJs8CallRunning()) return { ok: true, already: true };
+  const bin = findJs8Call();
+  if (!bin) {
+    return { ok: false, error: 'Could not find JS8Call. Set its location in Settings > Station > JS8Call, or download it from js8call.com.' };
+  }
+  try {
+    const args = js8Process.js8LaunchArgs(settings);
+    sendCatLog(`[JS8Call] launching: ${bin}${args.length ? ' ' + args.join(' ') : ''}`);
+    // Pipe BOTH streams. Mercury's real failure message went to stdout and was
+    // discarded for weeks; a Qt app that dies on a missing library says so the
+    // same way, and "nothing happened" is the worst thing this can report.
+    js8Proc = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'], detached: false });
+    const startedAt = Date.now();
+    const relay = (buf) => {
+      String(buf).split(/\r?\n/).forEach((l) => { if (l.trim()) sendCatLog('[JS8Call] ' + l.trim()); });
+    };
+    if (js8Proc.stdout) js8Proc.stdout.on('data', relay);
+    if (js8Proc.stderr) js8Proc.stderr.on('data', relay);
+    js8Proc.on('exit', (code) => {
+      js8Proc = null;
+      // Quitting a second later means it never opened a window — say that,
+      // rather than leaving the operator watching a spinner.
+      if (Date.now() - startedAt < 5000) {
+        sendCatLog(`[JS8Call] exited immediately (code ${code}) — it did not start. Try launching it yourself to see the error it shows.`);
+      }
+    });
+    js8Proc.on('error', (err) => { js8Proc = null; sendCatLog('[JS8Call] launch failed: ' + (err.message || err)); });
+  } catch (err) {
+    return { ok: false, error: 'Could not start JS8Call: ' + (err.message || err) };
+  }
+  // It has a splash and an audio device to open before the API listens; the
+  // connect retries on its own backoff, so just nudge it after a moment.
+  setTimeout(() => { connectJs8Call(); }, 4000);
+  return { ok: true };
 }
 
 /** Stop JTCAT keying because an external transmitter took the radio. */
@@ -23421,6 +23584,15 @@ app.whenReady().then(() => {
   ipcMain.on('js8call-refresh-heard', () => {
     if (js8Client && js8Client.connected) js8Client.send({ type: 'RX.GET_CALL_ACTIVITY' });
   });
+  // One-click setup: show the plan, apply it, start JS8Call.
+  ipcMain.handle('js8call-plan-setup', (_e, opts) => planJs8Setup(opts || {}));
+  ipcMain.handle('js8call-apply-setup', (_e, opts) => {
+    markUserActive();
+    const r = applyJs8Setup(opts || {});
+    if (r.ok) { const l = launchJs8Call(); if (!l.ok) return { ...r, launchError: l.error }; }
+    return r;
+  });
+  ipcMain.handle('js8call-launch', () => { markUserActive(); return launchJs8Call(); });
   // Re-read the ini on demand so the Settings panel can show the effect of a
   // change the operator just made in JS8Call, without restarting anything.
   ipcMain.handle('js8call-check-setup', () => {
@@ -27344,6 +27516,9 @@ app.whenReady().then(() => {
     const js8Changed = (has('enableJs8Call') && newSettings.enableJs8Call !== settings.enableJs8Call) ||
       (has('js8Port') && newSettings.js8Port !== settings.js8Port) ||
       (has('js8RigName') && newSettings.js8RigName !== settings.js8RigName);
+    // js8Path is deliberately NOT here: it only says where the program lives so
+    // we can start it, and reconnecting the socket over that would drop a live
+    // bridge for a setting the bridge never reads.
 
     // Mercury: relaunch only when a launch-relevant key actually changed, so
     // an unrelated settings save never kills+respawns the modem (the rigctld

@@ -1,0 +1,193 @@
+#!/usr/bin/env node
+'use strict';
+/**
+ * Finding and configuring JS8Call.
+ *
+ * The patcher is the dangerous part: it edits another application's live config
+ * file. JS8Call.ini is Qt QSettings — escaped `@Variant` binary, `@Invalid()`
+ * markers, values containing '=', quoted values — and a generic INI library
+ * mangles all of it on round-trip. So the contract these tests enforce is
+ * narrow and absolute: change the value on the lines we name, append lines we
+ * must add, and leave every other byte exactly as it was.
+ *
+ * Run: node test/js8call-process-test.js
+ */
+
+const assert = require('assert');
+const {
+  js8BinaryNames, js8PathCandidates, js8LaunchArgs,
+  desiredJs8Settings, planJs8IniPatch, describeJs8Change,
+} = require('../lib/js8call-process');
+
+let pass = 0, fail = 0;
+function test(name, fn) {
+  try { fn(); pass++; console.log('  ok  ' + name); }
+  catch (e) { fail++; console.log('  FAIL ' + name + '\n       ' + e.message); }
+}
+
+// Shaped on the real file, hazards included.
+const INI = [
+  '[MultiSettings]',
+  'CurrentName=Default',
+  '',
+  '[Configuration]',
+  'MyCall=K3SBP',
+  'PTTMethod=@Variant(\\0\\0\\0\\x7f\\0\\0\\0\\vPTTMethod\\0\\0\\0\\0\\x2)',
+  'DataMode=@Invalid()',
+  'FrequenciesForRegionModes_01=AAAD=aGVsbG8=',
+  'CQMessage="CQ CQ CQ <MYGRID4>"',
+  'CATNetworkPort=127.0.0.1:5002',
+  'TCPServerPort=2442',
+  'TCPEnabled=false',
+  'AcceptTCPRequests=false',
+  'TCPMaxConnections=1',
+  '',
+  '[MainWindow]',
+  'geometry=@Variant(\\0\\0\\0\\xff)',
+  '',
+].join('\n');
+
+// ── discovery ────────────────────────────────────────────────────────────────
+
+test('binary discovery knows the forks, not just the stock name', () => {
+  const win = js8BinaryNames('win32');
+  assert.ok(win.includes('JS8Call.exe'));
+  assert.ok(win.includes('JS8Call-improved.exe'),
+    'the build installed in the wild here is the improved fork');
+  assert.ok(js8BinaryNames('linux').includes('js8call'));
+});
+
+test('an explicit path always wins over discovery', () => {
+  const c = js8PathCandidates({ settings: { js8Path: 'D:\\Ham\\my.exe' }, platform: 'win32', env: {} });
+  assert.strictEqual(c[0], 'D:\\Ham\\my.exe');
+});
+
+test('windows candidates cover the fork directory names', () => {
+  const c = js8PathCandidates({ platform: 'win32', env: { 'ProgramFiles': 'C:\\PF' } });
+  assert.ok(c.some((p) => /JS8Call-improved[\\/]JS8Call-improved\.exe$/.test(p)), c.slice(0, 6).join('|'));
+  assert.ok(c.some((p) => /JS8Call[\\/]JS8Call\.exe$/.test(p)));
+});
+
+test('no environment produces no guesses, not a crash', () => {
+  assert.deepStrictEqual(js8PathCandidates({ platform: 'win32', env: {} }), []);
+});
+
+test('rig-name only appears when one is set', () => {
+  assert.deepStrictEqual(js8LaunchArgs({}), []);
+  assert.deepStrictEqual(js8LaunchArgs({ js8RigName: 'sliceB' }), ['--rig-name', 'sliceB']);
+  assert.deepStrictEqual(js8LaunchArgs({ js8RigName: '   ' }), [], 'blank is not a rig name');
+});
+
+// ── what we ask for ──────────────────────────────────────────────────────────
+
+test('the default wants only what the link needs — never the radio', () => {
+  const w = desiredJs8Settings({});
+  assert.strictEqual(w.TCPEnabled, 'true');
+  assert.strictEqual(w.AcceptTCPRequests, 'true');
+  assert.ok(!('CATNetworkPort' in w), 'the operator\'s radio setup is not ours to change unasked');
+  assert.ok(!('SoundInName' in w));
+});
+
+test('max connections is raised, never lowered', () => {
+  // JS8Call ships with 1, so connecting would evict JS8Spotter/JS8Net.
+  assert.strictEqual(desiredJs8Settings({}).TCPMaxConnections, '4');
+  assert.strictEqual(desiredJs8Settings({ maxConnections: 1 }).TCPMaxConnections, '2');
+  assert.strictEqual(desiredJs8Settings({ maxConnections: 8 }).TCPMaxConnections, '8');
+});
+
+test('radio keys appear only when explicitly requested', () => {
+  const w = desiredJs8Settings({ radio: { catPort: 5003, soundIn: 'DAX Audio RX 2', soundOut: 'DAX Audio TX' } });
+  assert.strictEqual(w.CATNetworkPort, '127.0.0.1:5003');
+  assert.strictEqual(w.PTTport, '127.0.0.1:5003', 'PTT follows CAT or JS8Call keys the wrong slice');
+  assert.strictEqual(w.SoundInName, 'DAX Audio RX 2');
+});
+
+test('read-only setup omits the command permission', () => {
+  assert.ok(!('AcceptTCPRequests' in desiredJs8Settings({ allowTx: false })));
+});
+
+// ── the patcher: byte preservation ───────────────────────────────────────────
+
+test('changes only the values named, and reports each one', () => {
+  const r = planJs8IniPatch(INI, { TCPEnabled: 'true', AcceptTCPRequests: 'true' });
+  assert.deepStrictEqual(r.changes.map((c) => c.key).sort(), ['AcceptTCPRequests', 'TCPEnabled']);
+  assert.ok(/^TCPEnabled=true$/m.test(r.text));
+  assert.ok(/^AcceptTCPRequests=true$/m.test(r.text));
+});
+
+test('every other byte survives — @Variant, @Invalid, quotes, embedded =', () => {
+  const r = planJs8IniPatch(INI, { TCPEnabled: 'true' });
+  for (const line of [
+    'PTTMethod=@Variant(\\0\\0\\0\\x7f\\0\\0\\0\\vPTTMethod\\0\\0\\0\\0\\x2)',
+    'DataMode=@Invalid()',
+    'FrequenciesForRegionModes_01=AAAD=aGVsbG8=',
+    'CQMessage="CQ CQ CQ <MYGRID4>"',
+    'geometry=@Variant(\\0\\0\\0\\xff)',
+  ]) {
+    assert.ok(r.text.includes(line), 'mangled: ' + line);
+  }
+});
+
+test('a value already correct is not counted as a change', () => {
+  const once = planJs8IniPatch(INI, { TCPEnabled: 'true' });
+  const twice = planJs8IniPatch(once.text, { TCPEnabled: 'true' });
+  assert.strictEqual(twice.changes.length, 0, 'patching is idempotent');
+  assert.strictEqual(twice.text, once.text);
+});
+
+test('a missing key is appended inside [Configuration], not at the end of file', () => {
+  const r = planJs8IniPatch(INI, { HBMessage: 'HB <MYGRID4>' });
+  assert.deepStrictEqual(r.changes, [{ key: 'HBMessage', from: '', to: 'HB <MYGRID4>' }]);
+  const cfg = r.text.indexOf('[Configuration]');
+  const win = r.text.indexOf('[MainWindow]');
+  const added = r.text.indexOf('HBMessage=');
+  assert.ok(added > cfg && added < win, 'landed in the wrong section');
+});
+
+test('only [Configuration] is touched — a same-named key elsewhere is left alone', () => {
+  const ini = INI.replace('geometry=@Variant(\\0\\0\\0\\xff)', 'TCPEnabled=false');
+  const r = planJs8IniPatch(ini, { TCPEnabled: 'true' });
+  var tail = r.text.slice(r.text.indexOf('[MainWindow]'));
+  assert.ok(/TCPEnabled=false/.test(tail), 'the MainWindow copy must not be rewritten');
+  assert.strictEqual(r.changes.length, 1);
+});
+
+test('CRLF files stay CRLF', () => {
+  const r = planJs8IniPatch(INI.replace(/\n/g, '\r\n'), { TCPEnabled: 'true' });
+  assert.ok(r.text.includes('\r\n'), 'line endings changed');
+  assert.ok(!/[^\r]\n/.test(r.text), 'mixed line endings introduced');
+});
+
+test('a file with no [Configuration] is reported, not guessed at', () => {
+  const r = planJs8IniPatch('[MainWindow]\ngeometry=x\n', { TCPEnabled: 'true' });
+  assert.strictEqual(r.missingSection, true);
+  assert.deepStrictEqual(r.changes, [], 'nothing invented');
+  assert.ok(r.text.includes('geometry=x'));
+});
+
+test('empty input is survivable', () => {
+  const r = planJs8IniPatch('', { TCPEnabled: 'true' });
+  assert.strictEqual(r.missingSection, true);
+  assert.deepStrictEqual(r.changes, []);
+});
+
+test('the radio move rewrites CAT and PTT together', () => {
+  const want = desiredJs8Settings({ radio: { catPort: 5003 } });
+  const r = planJs8IniPatch(INI, want);
+  assert.ok(/^CATNetworkPort=127\.0\.0\.1:5003$/m.test(r.text));
+  assert.ok(/^PTTport=127\.0\.0\.1:5003$/m.test(r.text), 'PTT left on the old slice would key the wrong one');
+});
+
+// ── the confirmation the operator reads ──────────────────────────────────────
+
+test('every change describes itself in plain words', () => {
+  assert.strictEqual(describeJs8Change({ key: 'TCPEnabled', from: 'false', to: 'true' }),
+    'Turn the TCP API on: false → true');
+  assert.strictEqual(describeJs8Change({ key: 'HBMessage', from: '', to: 'HB FN20' }),
+    'HBMessage → HB FN20');
+  assert.ok(/Radio control port/.test(
+    describeJs8Change({ key: 'CATNetworkPort', from: '127.0.0.1:5002', to: '127.0.0.1:5003' })));
+});
+
+console.log(`\nJS8Call process: ${pass} passed, ${fail} failed`);
+process.exit(fail === 0 ? 0 : 1);
