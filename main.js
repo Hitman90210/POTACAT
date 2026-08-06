@@ -4774,7 +4774,11 @@ function spawnMercury() {
 
     let proc;
     try {
-      proc = spawn(mercuryPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+      // stdout was 'ignore' until 2026-08-05, and Mercury prints its banner AND
+      // its audio-open failures there — so the one message that would have
+      // explained a silent non-start was being thrown away. Both streams now
+      // run through the same flood guard below.
+      proc = spawn(mercuryPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (err) {
       return reject(err);
     }
@@ -4792,7 +4796,7 @@ function spawnMercury() {
     let _mRepeat = 0;
     let _mLastFlushMs = 0;
     let _mDeviceDead = false;
-    proc.stderr.on('data', (chunk) => {
+    const relayMercuryOutput = (chunk) => {
       const text = chunk.toString();
       mercuryStderr += text;
       if (mercuryStderr.length > 4096) mercuryStderr = mercuryStderr.slice(-4096);
@@ -4825,7 +4829,9 @@ function spawnMercury() {
         _mLastFlushMs = Date.now();
         sendCatLog(`[Mercury] ${line}`);
       }
-    });
+    };
+    proc.stderr.on('data', relayMercuryOutput);
+    proc.stdout.on('data', relayMercuryOutput);
 
     let settled = false;
     proc.on('error', (err) => {
@@ -4845,6 +4851,54 @@ function spawnMercury() {
   });
 }
 
+// How long to give Mercury to open its ARQ control socket before saying so.
+// It opens the broadcast port almost immediately but the ARQ listener waits on
+// audio init, so this has to clear a slow device open without making a real
+// failure feel like a hang.
+const MERCURY_TNC_START_MS = 12000;
+let _mercuryStartWatchdog = null;
+
+function clearMercuryStartWatchdog() {
+  if (_mercuryStartWatchdog) { clearTimeout(_mercuryStartWatchdog); _mercuryStartWatchdog = null; }
+}
+
+/**
+ * Mercury is running but its TNC never answered. Work out why and say so in
+ * one actionable line, instead of leaving the operator with a silent modem.
+ */
+function diagnoseMercuryNoTnc(control) {
+  const alive = !!(mercuryProc && mercuryProc.exitCode === null);
+  if (!alive) return; // the exit handler already reported this
+  sendCatLog(`[Mercury] running, but its ARQ port ${control} never opened after ${MERCURY_TNC_START_MS / 1000}s — the modem can't be used yet.`);
+
+  const audio = resolveMercuryAudioStrategy();
+  if (audio.useFifo || (!audio.inputDevice && !audio.outputDevice)) {
+    sendCatLog('[Mercury] Check the CAT log above for Mercury\'s own startup output, and its audio settings in Settings > Station > Mercury.');
+    return;
+  }
+  // Ask Mercury itself what devices exist and compare. A device picked once and
+  // since removed (DAX endpoints vanish with the DAX app) is the usual answer.
+  const bin = findMercury();
+  const soundSystem = mercuryProcess.mercuryDiscoverySoundSystem(settings, process.platform);
+  execFile(bin, ['-x', soundSystem, '-z'], { timeout: 8000, windowsHide: true }, (err, stdout) => {
+    const devices = mercuryProcess.parseSoundcardList(stdout || '');
+    const { missing, checked } = mercuryProcess.findMissingMercuryDevices({
+      inputDevice: audio.inputDevice, outputDevice: audio.outputDevice, devices,
+    });
+    if (!checked) {
+      sendCatLog('[Mercury] Could not list Mercury\'s audio devices to check the configured ones' + (err ? ` (${err.message || err})` : '') + '.');
+      return;
+    }
+    if (!missing.length) {
+      sendCatLog('[Mercury] Its configured audio devices do exist, so the cause is something else — see Mercury\'s own output in the log above.');
+      return;
+    }
+    for (const m of missing) {
+      sendCatLog(`[Mercury] The configured ${m.role} device no longer exists (${m.id}). Re-pick it in Settings > Station > Mercury ("Discover devices"). DAX endpoints disappear when the DAX app closes.`);
+    }
+  });
+}
+
 /**
  * Open the persistent TNC connection to a running Mercury. The MercuryClient
  * owns its own reconnect backoff, so it tolerates Mercury not yet listening in
@@ -4857,7 +4911,21 @@ function openMercuryClient() {
   const host = '127.0.0.1';
   mercuryClient = new MercuryClient();
 
+  // The client retries the control socket forever, which is right — but it did
+  // so in complete silence, so a Mercury that never opened its ARQ listener
+  // looked identical to one that was working. The log's last word on Mercury
+  // was the spawn line, for the life of the session. Say something once, and
+  // say something USEFUL: the overwhelmingly common cause is a configured
+  // audio device that no longer exists, which we can check for.
+  clearMercuryStartWatchdog();
+  _mercuryStartWatchdog = setTimeout(() => {
+    _mercuryStartWatchdog = null;
+    if (mercuryClient && mercuryClient.connected) return;
+    diagnoseMercuryNoTnc(control);
+  }, MERCURY_TNC_START_MS);
+
   mercuryClient.on('status', (s) => {
+    if (s.connected) clearMercuryStartWatchdog();
     sendMercuryStatus({ ...s, host, port: control });
     if (s.connected) onMercuryReady();
   });
@@ -4940,6 +5008,7 @@ async function connectMercury() {
 }
 
 function disconnectMercury() {
+  clearMercuryStartWatchdog();
   clearMercuryTxFailsafe();
   if (mercuryTxActive) { mercuryTxActive = false; try { handleRemotePtt(false); } catch {} }
   releaseRadio('mercury');

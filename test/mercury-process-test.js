@@ -13,6 +13,7 @@ const {
   buildMercuryIni,
   parseSoundcardList,
   mercuryDiscoverySoundSystem,
+  findMissingMercuryDevices,
 } = require('../lib/mercury-process');
 
 let pass = 0, fail = 0;
@@ -168,6 +169,61 @@ test('discovery sound system resolves auto/no-device backends to the platform de
   assert.strictEqual(mercuryDiscoverySoundSystem({ mercurySoundSystem: 'auto' }, 'linux'), 'alsa');
   assert.strictEqual(mercuryDiscoverySoundSystem({ mercurySoundSystem: 'fifo' }, 'darwin'), 'coreaudio');
   assert.strictEqual(mercuryDiscoverySoundSystem({ mercurySoundSystem: 'dsound' }, 'win32'), 'dsound');
+});
+
+// Why Mercury's TNC never came up. K3SBP's station, 2026-08-05: mercury.exe
+// alive, only the broadcast port open, and BOTH configured device ids absent
+// from Mercury's own list of 37 — while the launch line in the log looked
+// perfectly normal. This is the check that turns that into one clear sentence.
+const DEVS = {
+  capture: [{ name: 'DAX Audio RX 1', id: 'cap-1' }, { name: 'USB Audio CODEC', id: 'cap-2' }],
+  playback: [{ name: 'DAX Audio TX', id: 'play-1' }],
+};
+
+test('findMissingMercuryDevices: both present -> nothing missing', () => {
+  const r = findMissingMercuryDevices({ inputDevice: 'cap-1', outputDevice: 'play-1', devices: DEVS });
+  assert.deepStrictEqual(r, { missing: [], checked: true });
+});
+
+test('findMissingMercuryDevices: a vanished capture device is named', () => {
+  const r = findMissingMercuryDevices({ inputDevice: 'gone', outputDevice: 'play-1', devices: DEVS });
+  assert.strictEqual(r.checked, true);
+  assert.deepStrictEqual(r.missing, [{ role: 'input', id: 'gone' }]);
+});
+
+test('findMissingMercuryDevices: both vanished (the real K3SBP case)', () => {
+  const r = findMissingMercuryDevices({ inputDevice: 'gone-in', outputDevice: 'gone-out', devices: DEVS });
+  assert.deepStrictEqual(r.missing, [{ role: 'input', id: 'gone-in' }, { role: 'output', id: 'gone-out' }]);
+});
+
+test('findMissingMercuryDevices: blank settings mean "Mercury chooses", never missing', () => {
+  const r = findMissingMercuryDevices({ inputDevice: '', outputDevice: '', devices: DEVS });
+  assert.deepStrictEqual(r.missing, []);
+});
+
+test('findMissingMercuryDevices: an empty enumeration reports checked=false, not "missing"', () => {
+  // A failed `mercury -z` must never be reported to the user as a dead device.
+  const r = findMissingMercuryDevices({ inputDevice: 'cap-1', devices: { capture: [], playback: [] } });
+  assert.deepStrictEqual(r, { missing: [], checked: false });
+  assert.deepStrictEqual(findMissingMercuryDevices({ inputDevice: 'x' }), { missing: [], checked: false });
+});
+
+test('findMissingMercuryDevices: one-sided enumeration only judges the side it has', () => {
+  const halfway = { capture: DEVS.capture, playback: [] };
+  const r = findMissingMercuryDevices({ inputDevice: 'cap-1', outputDevice: 'unknowable', devices: halfway });
+  assert.deepStrictEqual(r.missing, [], 'no playback list means no playback verdict');
+});
+
+test('findMissingMercuryDevices: real parseSoundcardList output feeds straight in', () => {
+  const parsed = parseSoundcardList(
+    "playback devices:\ndevice: name: 'Spk'  id: '{0.0.0.0}.{aaa}'  default: 1\n" +
+    "capture devices:\ndevice: name: 'Mic'  id: '{0.0.1.0}.{bbb}'  default: (null)\n");
+  assert.deepStrictEqual(
+    findMissingMercuryDevices({ inputDevice: '{0.0.1.0}.{bbb}', outputDevice: '{0.0.0.0}.{aaa}', devices: parsed }).missing,
+    []);
+  assert.deepStrictEqual(
+    findMissingMercuryDevices({ inputDevice: '{0.0.1.0}.{stale}', devices: parsed }).missing,
+    [{ role: 'input', id: '{0.0.1.0}.{stale}' }]);
 });
 
 console.log(`\nMercury process helpers: ${pass} passed, ${fail} failed`);
