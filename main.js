@@ -5331,8 +5331,6 @@ function findSmartSdrApp(exeName) {
 }
 
 function findDaxApp() { return findSmartSdrApp('DAX.exe'); }
-/** SmartSDR CAT — the shim that publishes the 5002-5005 slice serial ports. */
-function findCatApp() { return findSmartSdrApp('CAT.exe'); }
 
 /**
  * Is anything actually listening on a SmartSDR CAT slice port?
@@ -5385,8 +5383,21 @@ function launchSmartSdrApp(exe, label) {
   return { ok: true, exe };
 }
 
-function launchDaxApp() { return launchSmartSdrApp(findDaxApp(), 'SmartSDR DAX'); }
-function launchCatApp() { return launchSmartSdrApp(findCatApp(), 'SmartSDR CAT'); }
+/**
+ * Start SmartSDR itself — NOT its helpers individually.
+ *
+ * "Opening SmartSDR tends to open DAX and CAT" (K3SBP 2026-08-06), and that is
+ * the only order that is safe. POTACAT infers "SmartSDR is running" from the
+ * CAT shim answering on 5002 (checkFlexHandoff), because in real life CAT.exe
+ * exists only because SmartSDR started it. A button that launched CAT.exe alone
+ * broke that invariant: the port opened, POTACAT concluded SmartSDR had
+ * launched, released its GUI slot with multiFlex off, waited out the full
+ * yield timeout for a SmartSDR that was never coming, and left rig control down
+ * for twelve seconds — then polled a shim with no slice port, which answers
+ * every command with '?'. Launching the real thing makes the inference true.
+ */
+function launchSmartSdrMain() { return launchSmartSdrApp(findSmartSdrMain(), 'SmartSDR'); }
+function findSmartSdrMain() { return findSmartSdrApp('SmartSDR.exe'); }
 
 /**
  * What one-click setup would do, without doing any of it. The popout shows this
@@ -5516,13 +5527,18 @@ async function planJs8Setup({ includeRadio = null } = {}) {
     // and offering the usual "set up JS8Call" button would just rewrite a name
     // that still cannot be opened. null = we could not tell.
     daxDown: setup.rigFamily === 'flex' ? js8Audio.daxProvisioned(labels) === false : false,
-    daxApp: findDaxApp(),
+    // One app, not three: SmartSDR brings DAX and CAT up with it, and starting
+    // either helper alone is what broke this station.
+    smartSdrApp: findSmartSdrMain(),
+    // multiFlex off means POTACAT hands the single GUI slot to SmartSDR and
+    // rides along. That is a real change to how the station runs, so the panel
+    // says it rather than letting it be discovered.
+    yieldsGuiSlot: settings.flexMultiflex === false,
     // The other half of the same story. POTACAT drives a Flex over the native
     // API on 4992 and never needs these slice ports, so a perfectly working
     // station can have none of them — and JS8Call, which can only speak serial
     // CAT, then has nothing to point at.
     catShimDown: setup.rigFamily === 'flex' && catPorts !== null && catPorts.length === 0,
-    catApp: findCatApp(),
     catPorts: catPorts || [],
     deadDevice: !!deadDevice,
     // Named so the panel can say WHICH device is missing — "your audio is
@@ -23802,8 +23818,7 @@ app.whenReady().then(() => {
                 : { ...r, launchError: l.error };
   });
   ipcMain.handle('js8call-launch', () => { markUserActive(); return launchJs8Call(); });
-  ipcMain.handle('js8call-launch-dax', () => { markUserActive(); return launchDaxApp(); });
-  ipcMain.handle('js8call-launch-cat', () => { markUserActive(); return launchCatApp(); });
+  ipcMain.handle('js8call-launch-smartsdr', () => { markUserActive(); return launchSmartSdrMain(); });
   // Re-read the ini on demand so the Settings panel can show the effect of a
   // change the operator just made in JS8Call, without restarting anything.
   ipcMain.handle('js8call-check-setup', () => {

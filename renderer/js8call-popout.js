@@ -24,7 +24,6 @@
       setupLaunch = el('jc-setup-launch'), setupRadioWrap = el('jc-setup-radio-wrap'),
       setupRadio = el('jc-setup-radio'), setupRadioWhy = el('jc-setup-radio-why'),
       setupNote = el('jc-setup-note'), setupDax = el('jc-setup-dax'),
-      setupCat = el('jc-setup-cat'),
       setupManual = el('jc-setup-manual');
 
   var connected = false;
@@ -328,7 +327,7 @@
     setupChanges.innerHTML = '';
     setupNote.hidden = true;
     setupGo.hidden = setupLaunch.hidden = setupRadioWrap.hidden = true;
-    setupDax.hidden = setupCat.hidden = true;
+    setupDax.hidden = true;
 
     var p;
     // includeRadio deliberately unsent on the first pass: main decides it from
@@ -374,13 +373,20 @@
           'so JS8Call has no port to point at and reports no radio.';
         setupChanges.appendChild(li2);
       }
-      setupDax.hidden = !(p.daxDown && p.daxApp);
-      setupCat.hidden = !(p.catShimDown && p.catApp);
+      // ONE button, and it starts SmartSDR — not the helpers. SmartSDR brings
+      // DAX and CAT up with it, and starting CAT alone makes POTACAT believe
+      // SmartSDR launched (it infers that from port 5002 answering), drop its
+      // GUI slot, and sit through the yield timeout for nothing.
+      setupDax.hidden = !p.smartSdrApp;
       setupManual.innerHTML =
-        foldout('<b>After starting them:</b> in DAX tick a <code>DAX RX</code> channel and <code>DAX TX</code>; ' +
+        (p.yieldsGuiSlot
+          ? '<p class="jc-quiet">Note: multiFlex is off, so POTACAT will hand the radio’s GUI slot to ' +
+            'SmartSDR and follow it. Rig control keeps working; SmartSDR becomes the one in charge.</p>'
+          : '') +
+        foldout('<b>Once SmartSDR is up:</b> in DAX tick a <code>DAX RX</code> channel and <code>DAX TX</code>; ' +
           'in SmartSDR CAT create a port for a slice. Then press Retry above and POTACAT will finish the setup.' +
-          '<br><br><b>Or skip both.</b> Set JS8Call’s <code>Radio &gt; Rig</code> to <code>None</code> and give it ' +
-          'audio from any virtual cable — it will decode without touching the radio, and you tune from POTACAT.');
+          '<br><br><b>Or skip all of it.</b> Set JS8Call’s <code>Radio &gt; Rig</code> to <code>None</code> and give ' +
+          'it audio from a virtual cable — it decodes without touching the radio, and you tune from POTACAT.');
       return;
     }
 
@@ -513,10 +519,8 @@
       setupLede.textContent = 'Started ' + name + '. ' + thenDo + ' Then press Retry above.';
     });
   }
-  wireHelperLaunch(setupDax, function () { return window.api.launchDax(); }, 'DAX',
-    'Tick a DAX RX channel and DAX TX in its window.');
-  wireHelperLaunch(setupCat, function () { return window.api.launchCat(); }, 'SmartSDR CAT',
-    'Create a serial port for a slice in its window.');
+  wireHelperLaunch(setupDax, function () { return window.api.launchSmartSdr(); }, 'SmartSDR',
+    'It brings DAX and SmartSDR CAT up with it — tick a DAX RX channel and DAX TX, and make a CAT port for a slice.');
 
   if (setupRadio) setupRadio.addEventListener('change', function () {
     radioTouched = true;
