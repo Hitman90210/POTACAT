@@ -14,7 +14,7 @@
 const assert = require('assert');
 const {
   parseDaxLabel, daxRxChannels, pickDaxRx, pickDaxTx, chooseDaxRxChannel, deviceMissing,
-  isPlaceholderDax, daxProvisioned,
+  isPlaceholderDax, daxProvisioned, daxFamilyKind, resolveDaxPair,
 } = require('../lib/js8call-audio');
 
 let pass = 0, fail = 0;
@@ -105,9 +105,52 @@ test('"could not look" and "DAX is down" are different answers', () => {
   assert.strictEqual(daxProvisioned(['Speakers (Realtek)']), null, 'no DAX driver is not our story');
 });
 
-test('when both DAX driver generations are installed, the fuller name wins', () => {
-  const both = ['DAX RX 2 (FlexRadio DAX)', 'DAX Audio RX 2 (FlexRadio Systems DAX Audio)'];
-  assert.strictEqual(pickDaxRx(both, 2), 'DAX Audio RX 2 (FlexRadio Systems DAX Audio)');
+// ── two driver generations at once ─────────────────────────────────────
+
+// The same station with DAX RUNNING. Both driver families enumerate. The live
+// one is the legacy-named `(FlexRadio DAX)` set that SmartSDR v4.2 drives; the
+// `(FlexRadio Systems …)` set is a stale leftover whose TX is only the
+// placeholder and whose RX 4 does not exist.
+const BOTH_FAMILIES = REAL.concat([
+  'DAX RX 1 (FlexRadio DAX)', 'DAX RX 2 (FlexRadio DAX)', 'DAX RX 3 (FlexRadio DAX)',
+  'DAX RX 4 (FlexRadio DAX)', 'DAX RX 5 (FlexRadio DAX)',
+  'DAX TX (FlexRadio DAX)', 'DAX Mic (FlexRadio DAX)', 'DAX IQ 1 (FlexRadio DAX)',
+]);
+
+test('the two driver generations are told apart', () => {
+  assert.strictEqual(daxFamilyKind('DAX TX (FlexRadio DAX)'), 'legacy');
+  assert.strictEqual(daxFamilyKind('DAX RESERVED AUDIO TX (FlexRadio Systems DAX TX)'), 'systems');
+  assert.strictEqual(daxFamilyKind('Speakers'), '');
+});
+
+test('RX follows the family whose TX actually works', () => {
+  // The trap: the dead family has the LONGER, more official-looking names, so
+  // any longest-wins tiebreak picks it. The live family is the one with a real
+  // transmit endpoint.
+  const r = resolveDaxPair(BOTH_FAMILIES, { taken: [1], preferred: 2 });
+  assert.strictEqual(r.tx, 'DAX TX (FlexRadio DAX)');
+  assert.strictEqual(r.rx, 'DAX RX 2 (FlexRadio DAX)');
+  assert.strictEqual(r.channel, 2);
+  assert.strictEqual(r.family, 'FlexRadio DAX');
+});
+
+test('RX and TX always come from one family, never mixed', () => {
+  const r = resolveDaxPair(BOTH_FAMILIES, { taken: [1, 2, 3], preferred: 2 });
+  // Channel 4 exists ONLY in the live family — the stale one skips it.
+  assert.strictEqual(r.channel, 4);
+  assert.strictEqual(r.rx, 'DAX RX 4 (FlexRadio DAX)');
+});
+
+test('no usable TX means no answer at all, not a half one', () => {
+  // DAX down: RX endpoints still enumerate and still carry nothing. Returning
+  // an RX device here would look like success and decode silence.
+  const r = resolveDaxPair(REAL, { taken: [1], preferred: 2 });
+  assert.deepStrictEqual(r, { tx: null, rx: null, channel: null, family: '' });
+});
+
+test('within one family the fuller name still wins', () => {
+  const one = ['DAX Audio RX 2 (FlexRadio Systems DAX Audio)'];
+  assert.strictEqual(pickDaxRx(one, 2), 'DAX Audio RX 2 (FlexRadio Systems DAX Audio)');
 });
 
 test('no DAX at all returns nothing, not a guess', () => {

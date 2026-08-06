@@ -5425,11 +5425,17 @@ function js8RadioPlan(setup, labels = [], catPorts = null) {
   // so the template this used to build named devices that did not exist and
   // JS8Call reported it as an unsupported audio format (2026-08-06).
   const preferred = port ? (port - 5002) + 1 : 0;
-  const ch = js8Audio.chooseDaxRxChannel(labels, [_flexDaxChannel || 1], preferred);
-  const soundIn = ch ? js8Audio.pickDaxRx(labels, ch) : null;
-  const soundOut = js8Audio.pickDaxTx(labels);
+  // RX and TX resolved TOGETHER from one driver family. Two DAX generations can
+  // be installed at once and both enumerate; the stale one has the longer,
+  // more official-looking names, so picking each device independently lands
+  // JS8Call on a receive channel from the dead family and a transmit device
+  // from the live one.
+  const dax = js8Audio.resolveDaxPair(labels, { taken: [_flexDaxChannel || 1], preferred });
+  const ch = dax.channel;
+  const soundIn = dax.rx;
+  const soundOut = dax.tx;
 
-  const plan = {};
+  const plan = { daxFamily: dax.family };
   if (port) plan.catPort = port;
   // Omit what we could not verify rather than writing a guess. desiredJs8Settings
   // skips absent keys, so JS8Call keeps whatever it already had and the operator
