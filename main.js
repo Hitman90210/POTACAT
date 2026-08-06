@@ -277,6 +277,7 @@ const js8Config = require('./lib/js8call-config');
 const { Js8CallClient, isDirectedTo } = require('./lib/js8call-client');
 const { Js8Threads } = require('./lib/js8call-threads');
 const js8Process = require('./lib/js8call-process');
+const js8Audio = require('./lib/js8call-audio');
 const radioOwnerLib = require('./lib/radio-owner');
 const { attachMercuryRadioBridge } = require('./lib/mercury-radio-bridge');
 const mercuryAudioBridge = require('./lib/mercury-audio-bridge');
@@ -5306,30 +5307,90 @@ function js8Running() {
  * slices. Anywhere else there is no second receiver to move to, so there is
  * nothing honest to propose and this returns null.
  */
-function js8RadioPlan(setup) {
+function js8RadioPlan(setup, labels = []) {
   if (!setup || setup.rigFamily !== 'flex') return null;
   const ours = (settings.catTarget && settings.catTarget.port) || 5002;
   const port = [5002, 5003, 5004, 5005].find((p) => p !== ours) || 5003;
-  // Match the DAX channel to the slice, stepping past whatever POTACAT holds.
-  let ch = (port - 5002) + 1;
-  if (ch === (_flexDaxChannel || 1)) ch++;
-  return {
-    catPort: port,
-    soundIn: `DAX Audio RX ${ch} (FlexRadio Systems DAX Audio)`,
-    soundOut: 'DAX Audio TX (FlexRadio Systems DAX TX)',
-  };
+
+  // Slice-to-DAX-channel is a CONVENTION; which channels the machine presents
+  // is a fact, and only the fact can go into a config file. K3SBP's station
+  // has no DAX RX 4 and calls its transmit endpoint "DAX RESERVED AUDIO TX",
+  // so the template this used to build named devices that did not exist and
+  // JS8Call reported it as an unsupported audio format (2026-08-06).
+  const preferred = (port - 5002) + 1;
+  const ch = js8Audio.chooseDaxRxChannel(labels, [_flexDaxChannel || 1], preferred);
+  const soundIn = ch ? js8Audio.pickDaxRx(labels, ch) : null;
+  const soundOut = js8Audio.pickDaxTx(labels);
+
+  const plan = { catPort: port };
+  // Omit what we could not verify rather than writing a guess. desiredJs8Settings
+  // skips absent keys, so JS8Call keeps whatever it already had and the operator
+  // is told which part POTACAT could not do.
+  if (soundIn) plan.soundIn = soundIn;
+  if (soundOut) plan.soundOut = soundOut;
+  plan.daxChannel = ch || 0;
+  plan.audioUnknown = !labels.length;
+  return plan;
 }
 
-function planJs8Setup({ includeRadio = null } = {}) {
+/**
+ * The audio endpoints this machine actually presents.
+ *
+ * Chromium is the only enumerator available here, so this borrows the main
+ * window the same way the ECHOCAT device list does. Headless (or before the
+ * window exists) it returns [] — and every caller treats [] as "unknown",
+ * never as "no devices", because those two mean opposite things.
+ */
+async function js8AudioLabels() {
+  try {
+    if (!win || win.isDestroyed()) return [];
+    // Chromium blanks every label until microphone permission has been granted,
+    // so a naive enumerate returns a list of empty strings and this whole check
+    // silently does nothing. Enumerate FIRST and only open a stream if the
+    // labels really are blank — POTACAT usually unlocked them earlier in the
+    // session, and opening the default input unasked can contend with a JTCAT
+    // or SSTV capture already running on it.
+    const list = await win.webContents.executeJavaScript(`
+      (async () => {
+        const grab = async () => (await navigator.mediaDevices.enumerateDevices())
+          .filter(x => x.kind === 'audioinput' || x.kind === 'audiooutput')
+          .map(x => x.label).filter(Boolean);
+        let out = await grab();
+        if (!out.length) {
+          try {
+            const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+            s.getTracks().forEach(t => t.stop());
+            out = await grab();
+          } catch (e) { /* denied: [] means "unknown", never "no devices" */ }
+        }
+        return out;
+      })()
+    `);
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+async function planJs8Setup({ includeRadio = null } = {}) {
   const setup = readJs8Setup();
   if (!setup) return { ok: false, error: 'No JS8Call configuration found. Install JS8Call and run it once.' };
+  const labels = await js8AudioLabels();
 
   // A real, detected collision decides the default — offering an unticked box
   // beside a warning that the two apps will fight over the same slice makes the
   // operator do the diagnosis POTACAT has already done.
+  //
+  // A device JS8Call is told to open that is not there counts too: that is
+  // exactly the state that produces "Requested output audio format is not
+  // supported on device", a message about formats that is really about a
+  // missing device, and nothing else on this screen would have explained it.
+  const deadDevice = labels.length && (
+    js8Audio.deviceMissing(setup.found.soundIn, labels) ||
+    js8Audio.deviceMissing(setup.found.soundOut, labels));
   const collides = js8Problems.some((p) => p.code === 'cat-slice-collision' || p.code === 'dax-rx-collision');
-  const wantRadio = includeRadio === null ? collides : !!includeRadio;
-  const radio = wantRadio ? js8RadioPlan(setup) : null;
+  const wantRadio = includeRadio === null ? (collides || !!deadDevice) : !!includeRadio;
+  const radio = wantRadio ? js8RadioPlan(setup, labels) : null;
 
   const want = js8Process.desiredJs8Settings({
     tcpPort: settings.js8Port || setup.found.tcpPort || 2442,
@@ -5353,6 +5414,11 @@ function planJs8Setup({ includeRadio = null } = {}) {
     rigFamily: setup.rigFamily,
     canDoRadio: setup.rigFamily === 'flex',
     radioCollision: collides,
+    deadDevice: !!deadDevice,
+    // Named so the panel can say WHICH device is missing — "your audio is
+    // wrong" sends the operator hunting; naming the string ends it.
+    deadDeviceNames: labels.length ? [setup.found.soundIn, setup.found.soundOut]
+      .filter((d) => js8Audio.deviceMissing(d, labels)) : [],
     includeRadio: wantRadio,
   };
 }
@@ -5362,8 +5428,8 @@ function planJs8Setup({ includeRadio = null } = {}) {
  * on exit, so anything written underneath a live instance is silently reverted
  * — the operator would see us claim success and nothing change.
  */
-function applyJs8Setup({ includeRadio = null } = {}) {
-  const plan = planJs8Setup({ includeRadio });
+async function applyJs8Setup({ includeRadio = null } = {}) {
+  const plan = await planJs8Setup({ includeRadio });
   if (!plan.ok) return plan;
   if (plan.missingSection) {
     return { ok: false, error: 'That JS8Call.ini has no [Configuration] section — run JS8Call once so it writes a full config.' };
@@ -5383,7 +5449,7 @@ function applyJs8Setup({ includeRadio = null } = {}) {
   // is the one failure this whole confirm-first design exists to prevent.
   const want = js8Process.desiredJs8Settings({
     tcpPort: settings.js8Port || setup.found.tcpPort || 2442,
-    radio: plan.includeRadio ? js8RadioPlan(setup) : null,
+    radio: plan.includeRadio ? js8RadioPlan(setup, await js8AudioLabels()) : null,
   });
   const patched = js8Process.planJs8IniPatch(raw, want);
 

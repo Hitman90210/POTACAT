@@ -218,6 +218,17 @@ test('the reason nothing works leads, whatever order the ini was in', () => {
     'Give it its own slice: radio control and PTT to 127.0.0.1:5003, receive audio to DAX Audio RX 2');
 });
 
+test('repointing audio alone is not described as a slice move', () => {
+  // The dead-device case: nothing about the radio changes, only a device name
+  // that named nothing. Claiming a slice move would describe an action POTACAT
+  // is not taking.
+  const lines = summarizeJs8Changes([
+    { key: 'SoundOutName', from: 'DAX Audio TX (FlexRadio Systems DAX TX)', to: 'DAX RESERVED AUDIO TX (FlexRadio Systems DAX TX)' },
+  ]);
+  assert.deepStrictEqual(lines,
+    ['Point its audio at devices this PC has: transmit audio to DAX RESERVED AUDIO TX']);
+});
+
 test('a change we did not anticipate is still shown, never dropped', () => {
   const lines = summarizeJs8Changes([{ key: 'HBMessage', from: '', to: 'HB FN20' }]);
   assert.deepStrictEqual(lines, ['HBMessage → HB FN20']);

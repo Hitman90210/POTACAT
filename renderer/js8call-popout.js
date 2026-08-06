@@ -23,7 +23,7 @@
       setupChanges = el('jc-setup-changes'), setupGo = el('jc-setup-go'),
       setupLaunch = el('jc-setup-launch'), setupRadioWrap = el('jc-setup-radio-wrap'),
       setupRadio = el('jc-setup-radio'), setupRadioWhy = el('jc-setup-radio-why'),
-      setupManual = el('jc-setup-manual');
+      setupNote = el('jc-setup-note'), setupManual = el('jc-setup-manual');
 
   var connected = false;
   var openId = null;
@@ -324,6 +324,7 @@
   async function refreshSetupInner() {
     showSetup(true);
     setupChanges.innerHTML = '';
+    setupNote.hidden = true;
     setupGo.hidden = setupLaunch.hidden = setupRadioWrap.hidden = true;
 
     var p;
@@ -351,9 +352,25 @@
     // otherwise a detected collision would sit on screen unmentioned.
     if (setupRadioWhy) {
       setupRadioWhy.textContent = setupRadio && setupRadio.checked
-        ? 'also move its radio settings'
+        ? 'also fix its radio and audio settings'
         : (p.radioCollision ? 'it is sharing POTACAT’s slice — move it too'
                             : 'give it its own slice');
+    }
+
+    // A device JS8Call is told to open that is not on this PC is the single
+    // most misleading failure in the chain: JS8Call reports it as "Requested
+    // output audio format is not supported on device", which sends the
+    // operator hunting through sample rates for a device that is not there.
+    // Name the string.
+    var dead = (p.deadDeviceNames || []).filter(Boolean);
+    setupNote.hidden = !dead.length;
+    if (dead.length) {
+      setupNote.innerHTML = '<b>JS8Call is set to use ' +
+        dead.map(function (d) { return '<code>' + esc(d) + '</code>'; }).join(' and ') +
+        ', which ' + (dead.length > 1 ? 'are' : 'is') + ' not on this PC.</b> ' +
+        'That is what “Requested output audio format is not supported on device” means. ' +
+        'The change' + (dead.length > 1 ? 's' : '') + ' below point' + (dead.length > 1 ? '' : 's') +
+        ' at the real device name' + (dead.length > 1 ? 's' : '') + '.';
     }
 
     if (p.running) {
