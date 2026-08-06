@@ -17,6 +17,7 @@ const assert = require('assert');
 const {
   js8BinaryNames, js8PathCandidates, js8LaunchArgs,
   desiredJs8Settings, planJs8IniPatch, describeJs8Change, summarizeJs8Changes, shortDevice,
+  daxSearchSpecs, smartSdrVersion, pickNewestDax,
 } = require('../lib/js8call-process');
 
 let pass = 0, fail = 0;
@@ -243,6 +244,48 @@ test('a device drops the driver name it repeats', () => {
   assert.strictEqual(shortDevice('DAX Audio RX 2 (FlexRadio Systems DAX Audio)'), 'DAX Audio RX 2');
   assert.strictEqual(shortDevice('Speakers'), 'Speakers');
   assert.strictEqual(shortDevice(''), '');
+});
+
+// ── finding the DAX control panel ────────────────────────────────────────────
+
+test('both SmartSDR install layouts are searched', () => {
+  const specs = daxSearchSpecs({ platform: 'win32', env: { ProgramFiles: 'C:\\PF' } });
+  // v3.x / v4.0-4.1 nest under FlexRadio Systems with a DAX subfolder…
+  assert.ok(specs.some((s) => /FlexRadio Systems$/.test(s.base) && s.sub === 'DAX'));
+  // …and v4.2+ installs top-level with DAX.exe beside the app.
+  assert.ok(specs.some((s) => s.base === 'C:\\PF' && s.sub === ''));
+  assert.deepStrictEqual(daxSearchSpecs({ platform: 'linux', env: {} }), []);
+});
+
+test('a version is read out of either layout\'s path', () => {
+  assert.deepStrictEqual(smartSdrVersion('C:\\Program Files\\SmartSDR v4.2.20\\DAX.exe'), [4, 2, 20]);
+  assert.deepStrictEqual(
+    smartSdrVersion('C:\\Program Files\\FlexRadio Systems\\SmartSDR v4.1.5\\DAX\\DAX.exe'), [4, 1, 5]);
+  assert.deepStrictEqual(smartSdrVersion('C:\\Nope\\DAX.exe'), []);
+});
+
+test('the newest install wins, not the first found', () => {
+  // Both paths are real, from the station that hit this. The v4.1.5 tree is an
+  // orphan the upgrade left behind: it still holds a DAX.exe, it is missing
+  // Newtonsoft.Json.dll, and launching it opens a crash dialog that reads like
+  // a FlexRadio bug rather than POTACAT picking the wrong file.
+  const orphan = 'C:\\Program Files\\FlexRadio Systems\\SmartSDR v4.1.5\\DAX\\DAX.exe';
+  const live = 'C:\\Program Files\\SmartSDR v4.2.20\\DAX.exe';
+  assert.strictEqual(pickNewestDax([orphan, live]), live);
+  assert.strictEqual(pickNewestDax([live, orphan]), live, 'order found must not matter');
+});
+
+test('version compare is numeric per part, not lexical', () => {
+  // As text "v4.1.5" sorts above "v4.2.20", and "v4.9" above "v4.10".
+  assert.strictEqual(pickNewestDax(['a/SmartSDR v4.1.5/DAX.exe', 'b/SmartSDR v4.2.20/DAX.exe']),
+    'b/SmartSDR v4.2.20/DAX.exe');
+  assert.strictEqual(pickNewestDax(['a/SmartSDR v4.9.0/DAX.exe', 'b/SmartSDR v4.10.0/DAX.exe']),
+    'b/SmartSDR v4.10.0/DAX.exe');
+});
+
+test('nothing found is an empty string, not a crash', () => {
+  assert.strictEqual(pickNewestDax([]), '');
+  assert.strictEqual(pickNewestDax(null), '');
 });
 
 console.log(`\nJS8Call process: ${pass} passed, ${fail} failed`);

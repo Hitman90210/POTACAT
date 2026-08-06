@@ -5307,22 +5307,22 @@ function js8Running() {
  * for it. (K3SBP 2026-08-06.)
  */
 function findDaxApp() {
-  if (process.platform !== 'win32') return '';
-  const roots = [process.env['ProgramFiles'], process.env['ProgramFiles(x86)']].filter(Boolean);
   const found = [];
-  for (const r of roots) {
-    const base = path.join(r, 'FlexRadio Systems');
+  for (const spec of js8Process.daxSearchSpecs()) {
     let dirs = [];
-    try { dirs = fs.readdirSync(base); } catch { continue; }
+    try { dirs = fs.readdirSync(spec.base); } catch { continue; }
     for (const d of dirs) {
-      const exe = path.join(base, d, 'DAX', 'DAX.exe');
-      try { fs.accessSync(exe); found.push({ dir: d, exe }); } catch { /* next */ }
+      if (!/^SmartSDR/i.test(d)) continue;
+      const exe = spec.sub ? path.join(spec.base, d, spec.sub, 'DAX.exe')
+                           : path.join(spec.base, d, 'DAX.exe');
+      try { fs.accessSync(exe); found.push(exe); } catch { /* next */ }
     }
   }
-  // "SmartSDR v4.1.5" before "SmartSDR v3.10.10" — natural order, not string
-  // order, or v3.10 sorts above v4.1.
-  found.sort((a, b) => b.dir.localeCompare(a.dir, undefined, { numeric: true }));
-  return found.length ? found[0].exe : '';
+  // By version, not by which layout answered first: an upgrade to v4.2+ leaves
+  // the old FlexRadio Systems tree in place, DAX.exe and all, minus the DLLs it
+  // needs. Launching that orphan is what produced a Newtonsoft.Json crash
+  // dialog on K3SBP's station.
+  return js8Process.pickNewestDax(found);
 }
 
 /** Start the DAX control panel. Never kills one; it is the operator's window. */
