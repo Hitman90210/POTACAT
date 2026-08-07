@@ -5543,6 +5543,9 @@ function removeJs8Slice(why = '') {
       smartSdr.removeSlice(idx);
       sendCatLog(`[JS8Call] removed slice ${idx}${why ? ' — ' + why : ''}`);
     }
+    else {
+      sendCatLog(`[JS8Call] slice ${idx} left on the radio — no connection to remove it. Close it in SmartSDR.`);
+    }
   } catch (err) {
     sendCatLog('[JS8Call] could not remove slice ' + idx + ': ' + (err.message || err));
   }
@@ -30852,6 +30855,12 @@ function gracefulCleanup() {
   // radio before the SmartSDR/CAT/keyer connections close — otherwise the
   // radio can stay keyed with no audio (a silent-carrier FCC issue).
   try { handleRemotePtt(false); } catch {}
+  // Hand JS8Call's receiver back BEFORE any rig connection is torn down.
+  // removeJs8Slice needs a live smartSdr, and disconnectSmartSdr() is a dozen
+  // lines below — running it at the end of cleanup silently did nothing and
+  // left a slice behind on every quit (K3SBP 2026-08-07: "slices continue to
+  // be made, but not deleted at close").
+  try { removeJs8Slice('POTACAT closing'); } catch {}
   try { if (sstvEngine) sstvEngine.stop(); } catch {}
   // Save QRZ cache to disk
   try {
