@@ -5334,10 +5334,25 @@ async function createJs8Slice() {
   try {
     idx = await smartSdr.createSlice({ freq: plan.freq, mode: plan.mode });
   } catch (err) {
-    sendCatLog('[JS8Call] could not create a slice: ' + (err.message || err));
-    return { ok: false, reason: 'The radio refused to create a slice: ' + (err.message || err) };
+    // Distinguish "the radio said no" from "the radio may have said yes and we
+    // lost track of it" — the second leaves a receiver the operator has to
+    // close by hand, and saying nothing about it is how it gets orphaned.
+    const msg = String(err.message || err);
+    const maybeMade = /never announced it/.test(msg);
+    sendCatLog('[JS8Call] could not create a slice: ' + msg +
+      (maybeMade ? ' — a receiver may exist on the radio; check SmartSDR and close it if so.' : ''));
+    return {
+      ok: false,
+      reason: maybeMade
+        ? 'POTACAT asked the radio for a receiver but never saw it appear. Check SmartSDR — if a new slice is there, close it before trying again.'
+        : 'The radio refused to create a slice: ' + msg,
+    };
   }
   js8SliceIndex = idx;
+  // Before anything else: POTACAT must not adopt this slice as the one it
+  // follows. A new slice comes up active, and in bound mode that would drag
+  // POTACAT's tuning and DAX route onto JS8Call's receiver.
+  if (typeof smartSdr.excludeSlice === 'function') smartSdr.excludeSlice(idx);
   smartSdr.setSliceDax(idx, plan.daxChannel);
   sendCatLog(`[JS8Call] slice ${idx} created on ${plan.freq.toFixed(3)} MHz ${plan.mode}, DAX channel ${plan.daxChannel} — this receiver is JS8Call's.`);
   return { ok: true, sliceIndex: idx, daxChannel: plan.daxChannel, freq: plan.freq, mode: plan.mode };
@@ -5354,6 +5369,7 @@ function removeJs8Slice(why = '') {
   const idx = js8SliceIndex;
   js8SliceIndex = null;
   try {
+    if (smartSdr && typeof smartSdr.unexcludeSlice === 'function') smartSdr.unexcludeSlice(idx);
     if (smartSdr && smartSdr.connected) {
       smartSdr.removeSlice(idx);
       sendCatLog(`[JS8Call] removed slice ${idx}${why ? ' — ' + why : ''}`);
