@@ -5278,6 +5278,20 @@ function js8KeyForTx(on) {
     if (smartSdrAudio && smartSdrAudio.connected && typeof smartSdrAudio.setTxDax === 'function') {
       _js8PrevTxDax = smartSdrAudio.txDaxOn;    // true | false | null (unknown)
       smartSdrAudio.setTxDax(true);
+      // VERIFY it stuck. `transmit set dax` is per-station, and the station is
+      // SmartSDR's — its own DAX button governs and can hold the source on the
+      // MIC no matter what POTACAT asks for. The tell is a transmission whose
+      // power does not change when the sending application's audio level does:
+      // that is a live microphone, not DAX (K3SBP 2026-08-07, 11/13/11 W across
+      // a 25 dB slider sweep).
+      setTimeout(() => {
+        if (!js8TxActive) return;
+        if (smartSdrAudio && smartSdrAudio.txDaxOn === false) {
+          sendCatLog('[JS8Call] the radio did NOT switch transmit audio to DAX — it is still on the microphone, '
+            + 'so JS8Call is not being heard. Turn ON the DAX button in SmartSDR’s transmit panel; '
+            + 'that switch belongs to SmartSDR and POTACAT cannot override it.');
+        }
+      }, 600);
     }
     _js8ReleasedTxStream = !!(smartSdrAudio && typeof smartSdrAudio.releaseTxStream === 'function'
       && smartSdrAudio.releaseTxStream());
