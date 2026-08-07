@@ -569,10 +569,11 @@
     // Unticked there is no line, so the box has to state the reason itself —
     // otherwise a detected collision would sit on screen unmentioned.
     if (setupRadioWhy) {
-      setupRadioWhy.textContent = setupRadio && setupRadio.checked
-        ? 'also fix its radio and audio settings'
-        : (p.radioCollision ? 'it is sharing POTACAT’s slice — move it too'
-                            : 'give it its own slice');
+      // ONE meaning, always. This used to read "give it its own slice" while
+      // the button above said "Give JS8Call its own receiver" — two controls,
+      // nearly the same words, completely different jobs (this writes device
+      // names into JS8Call.ini; the button creates a slice on the radio).
+      setupRadioWhy.textContent = 'also set which audio devices JS8Call uses';
     }
 
     // A device JS8Call is told to open that is not on this PC is the single
