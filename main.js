@@ -5282,8 +5282,26 @@ function js8KeyForTx(on) {
     }
     _js8PrevTxDax = null;
     if (_js8PrevTxSlice !== null) {
-      smartSdr.setTxSlice(_js8PrevTxSlice);
-      sendCatLog(`[JS8Call] transmit returned to slice ${_js8PrevTxSlice}`);
+      // The slice may be gone — the operator can close one at any moment, and
+      // the radio answers "Slice receiver (N) not in use" rather than doing
+      // nothing quietly. Fall back to any slice that IS live, because leaving
+      // transmit pointed at JS8Call's receiver would send POTACAT's next
+      // transmission out on 14.078.
+      const live = (typeof smartSdr.sliceIndexes === 'object' && smartSdr.sliceIndexes) || [];
+      let back = _js8PrevTxSlice;
+      if (live.length && !live.includes(back)) {
+        back = live.find((i) => i !== js8SliceIndex);
+        if (back === undefined) back = null;
+        if (back !== null) {
+          sendCatLog(`[JS8Call] slice ${_js8PrevTxSlice} is gone — transmit moved to slice ${back} instead`);
+        } else {
+          sendCatLog(`[JS8Call] slice ${_js8PrevTxSlice} is gone and no other slice is live — transmit left where it is.`);
+        }
+      }
+      if (back !== null) {
+        smartSdr.setTxSlice(back);
+        sendCatLog(`[JS8Call] transmit returned to slice ${back}`);
+      }
       _js8PrevTxSlice = null;
     }
   }
