@@ -5248,10 +5248,21 @@ function js8KeyForTx(on) {
       _js8PrevTxSlice = ours;
     }
     smartSdr.setTxSlice(js8SliceIndex);
+    // Give up POTACAT's own dax_tx stream FIRST. `transmit set dax=1` picks
+    // DAX as the station's TX source and the station uses the dax_tx stream it
+    // owns — ours, which carries nothing while JS8Call is the one with audio.
+    // Keying with it still attached is a dead carrier: full power, no
+    // modulation, no error anywhere.
+    _js8ReleasedTxStream = !!(smartSdrAudio && typeof smartSdrAudio.releaseTxStream === 'function'
+      && smartSdrAudio.releaseTxStream());
     sendCatLog(`[JS8Call] transmitting on slice ${js8SliceIndex}`);
     handleRemotePtt(true, { audio: true });
   } else {
     handleRemotePtt(false, { audio: true });
+    if (_js8ReleasedTxStream && smartSdrAudio && typeof smartSdrAudio.restoreTxStream === 'function') {
+      smartSdrAudio.restoreTxStream();   // POTACAT's own TX needs it back
+      _js8ReleasedTxStream = false;
+    }
     if (_js8PrevTxSlice !== null) {
       smartSdr.setTxSlice(_js8PrevTxSlice);
       sendCatLog(`[JS8Call] transmit returned to slice ${_js8PrevTxSlice}`);
@@ -5362,6 +5373,8 @@ function js8HeartbeatText() {
 let js8SliceIndex = null;
 /** Where transmit belonged before JS8Call keyed, so it can be put back. */
 let _js8PrevTxSlice = null;
+/** Did we hand our dax_tx stream to JS8Call? Then we owe it back. */
+let _js8ReleasedTxStream = false;
 /** How long JS8Call may be gone before POTACAT takes its receiver back. */
 const JS8_SLICE_RECLAIM_MS = 45000;
 
