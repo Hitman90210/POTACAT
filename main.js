@@ -5290,7 +5290,16 @@ function js8KeyForTx(on) {
     // clean key/unkey means the audio never arrived — a level problem, not a
     // propagation one, and the two look identical from PSKReporter.
     if (_js8PeakFwdW > 0.5) {
-      sendCatLog(`[JS8Call] radiated ${_js8PeakFwdW.toFixed(0)} W peak`);
+      // Against the rig's SET power, because the number alone answers nothing.
+      // Full power means the audio is fine and only propagation is left; a
+      // fraction of it means the drive is too low, which looks like a routing
+      // failure and is a level control.
+      const set = _currentTxPower > 0 ? _currentTxPower : 0;
+      const short = set > 0 && _js8PeakFwdW < set * 0.5;
+      sendCatLog(`[JS8Call] radiated ${_js8PeakFwdW.toFixed(0)} W peak`
+        + (set > 0 ? ` (rig is set to ${set} W)` : '')
+        + (short ? ' — well under the rig setting, so the audio drive is too low. '
+          + 'Raise the JS8Call power slider or the DAX TX gain.' : ''));
     } else {
       sendCatLog('[JS8Call] NO measurable RF that transmission (peak '
         + _js8PeakFwdW.toFixed(1) + ' W) — the radio keyed but no audio reached it. '
