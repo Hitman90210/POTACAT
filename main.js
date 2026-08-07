@@ -278,6 +278,7 @@ const { Js8CallClient, isDirectedTo } = require('./lib/js8call-client');
 const { Js8Threads } = require('./lib/js8call-threads');
 const js8Process = require('./lib/js8call-process');
 const js8Audio = require('./lib/js8call-audio');
+const js8Slice = require('./lib/js8call-slice');
 const radioOwnerLib = require('./lib/radio-owner');
 const { attachMercuryRadioBridge } = require('./lib/mercury-radio-bridge');
 const mercuryAudioBridge = require('./lib/mercury-audio-bridge');
@@ -5280,6 +5281,88 @@ function js8HeartbeatText() {
   return js8Config.js8HeartbeatText(setup.ini);
 }
 
+// ─── JS8Call's own slice (multi-slice Flex) ──────────────────────────────────
+// A DAX channel only carries audio if a slice feeds it. With one slice bound to
+// DAX 1 — which POTACAT is already streaming — JS8Call has nowhere to listen,
+// and every channel it opens is a device that works perfectly and delivers
+// silence. A 4-slice radio can simply give it a receiver of its own.
+
+/** The slice POTACAT created for JS8Call, so it can clean up exactly that one. */
+let js8SliceIndex = null;
+
+/** The DAX channel JS8Call's own slice feeds, or 0 if it has no slice. */
+function js8SliceDaxChannel() {
+  if (js8SliceIndex === null || !smartSdr || !smartSdr.connected) return 0;
+  const info = smartSdr.sliceDaxChannel ? smartSdr.sliceDaxChannel(js8SliceIndex) : 0;
+  return Number(info) || 0;
+}
+
+/** Can POTACAT command this radio's slices right now? */
+function js8CanControlSlices() {
+  return !!(smartSdr && smartSdr.connected && typeof smartSdr.createSlice === 'function');
+}
+
+/** The plan, as data, without touching the radio. */
+function planJs8Slice() {
+  if (!js8CanControlSlices()) {
+    return { ok: false, reason: 'POTACAT is not controlling the radio right now.' };
+  }
+  return js8Slice.planJs8Slice({
+    slices: smartSdr.sliceIndexes,
+    maxSlices: Number(settings.flexMaxSlices) || 4,
+    canControl: true,
+    usedDax: smartSdr.usedDaxChannels,
+    currentHz: _currentFreqHz || 0,
+  });
+}
+
+/**
+ * Create the slice and bind it to a DAX channel.
+ *
+ * Order matters: create, then bind DAX, then tune. Binding before the slice
+ * exists is a command to nobody, and the radio answers a create with the index
+ * IT chose — assuming "the next one" eventually addresses somebody else's
+ * slice, which on a 4-slice radio is a matter of when.
+ */
+async function createJs8Slice() {
+  const plan = planJs8Slice();
+  if (!plan.ok) return plan;
+  if (js8SliceIndex !== null) {
+    return { ok: true, already: true, sliceIndex: js8SliceIndex, daxChannel: plan.daxChannel };
+  }
+  let idx;
+  try {
+    idx = await smartSdr.createSlice({ freq: plan.freq, mode: plan.mode });
+  } catch (err) {
+    sendCatLog('[JS8Call] could not create a slice: ' + (err.message || err));
+    return { ok: false, reason: 'The radio refused to create a slice: ' + (err.message || err) };
+  }
+  js8SliceIndex = idx;
+  smartSdr.setSliceDax(idx, plan.daxChannel);
+  sendCatLog(`[JS8Call] slice ${idx} created on ${plan.freq.toFixed(3)} MHz ${plan.mode}, DAX channel ${plan.daxChannel} — this receiver is JS8Call's.`);
+  return { ok: true, sliceIndex: idx, daxChannel: plan.daxChannel, freq: plan.freq, mode: plan.mode };
+}
+
+/**
+ * Remove the slice POTACAT made — and ONLY that one.
+ *
+ * Never removes a slice the operator created. js8SliceIndex is set solely by
+ * createJs8Slice(), so an index we did not put there is somebody's receiver.
+ */
+function removeJs8Slice(why = '') {
+  if (js8SliceIndex === null) return;
+  const idx = js8SliceIndex;
+  js8SliceIndex = null;
+  try {
+    if (smartSdr && smartSdr.connected) {
+      smartSdr.removeSlice(idx);
+      sendCatLog(`[JS8Call] removed slice ${idx}${why ? ' — ' + why : ''}`);
+    }
+  } catch (err) {
+    sendCatLog('[JS8Call] could not remove slice ' + idx + ': ' + (err.message || err));
+  }
+}
+
 // ─── one-click setup ─────────────────────────────────────────────────────────
 // "Open POTACAT, click More > JS8Call, then have JS8Call open and configure
 // itself to work with POTACAT" (K3SBP 2026-08-06). Three steps, in order:
@@ -5430,7 +5513,14 @@ function js8RadioPlan(setup, labels = [], catPorts = null) {
   // more official-looking names, so picking each device independently lands
   // JS8Call on a receive channel from the dead family and a transmit device
   // from the live one.
-  const dax = js8Audio.resolveDaxPair(labels, { taken: [_flexDaxChannel || 1], preferred });
+  // Prefer the channel JS8Call's own slice feeds. Without one, `preferred` is
+  // just a convention and the chosen channel may have no slice behind it — a
+  // device that opens and carries silence.
+  const ownCh = js8SliceDaxChannel();
+  const dax = js8Audio.resolveDaxPair(labels, {
+    taken: [_flexDaxChannel || 1],
+    preferred: ownCh || preferred,
+  });
   const ch = dax.channel;
   const soundIn = dax.rx;
   const soundOut = dax.tx;
@@ -5563,6 +5653,9 @@ async function planJs8Setup({ includeRadio = null } = {}) {
     // CAT, then has nothing to point at.
     catShimDown: setup.rigFamily === 'flex' && catPorts !== null && catPorts.length === 0,
     catPortDead: !!catPortDead,
+    // JS8Call's own receiver: whether it has one, and whether one can be made.
+    js8Slice: js8SliceIndex,
+    slicePlan: setup.rigFamily === 'flex' && js8SliceIndex === null ? planJs8Slice() : null,
     catPortWanted: wantCat,
     catPortsLive: catPorts || [],
     catPorts: catPorts || [],
@@ -23844,6 +23937,15 @@ app.whenReady().then(() => {
   });
   ipcMain.handle('js8call-launch', () => { markUserActive(); return launchJs8Call(); });
   ipcMain.handle('js8call-launch-smartsdr', () => { markUserActive(); return launchSmartSdrMain(); });
+  // Give JS8Call its own receiver. Deliberate and explicit: this creates a
+  // slice on the operator's radio, so it happens on a click and never as a
+  // side effect of opening a window.
+  ipcMain.handle('js8call-create-slice', async () => { markUserActive(); return createJs8Slice(); });
+  ipcMain.handle('js8call-remove-slice', () => {
+    markUserActive();
+    removeJs8Slice('you asked to give the receiver back');
+    return { ok: true };
+  });
   // Re-read the ini on demand so the Settings panel can show the effect of a
   // change the operator just made in JS8Call, without restarting anything.
   ipcMain.handle('js8call-check-setup', () => {

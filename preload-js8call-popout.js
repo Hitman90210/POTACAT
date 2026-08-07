@@ -48,6 +48,10 @@ contextBridge.exposeInMainWorld('api', {
   // individually: CAT.exe alone opens port 5002, which POTACAT reads as
   // "SmartSDR launched" and answers by giving up its GUI slot.
   launchSmartSdr: () => ipcRenderer.invoke('js8call-launch-smartsdr'),
+  // Give JS8Call its own slice on a multi-slice Flex — a real change to the
+  // radio, so it is always a click, never automatic.
+  createSlice: () => ipcRenderer.invoke('js8call-create-slice'),
+  removeSlice: () => ipcRenderer.invoke('js8call-remove-slice'),
 
   openExternal: (url) => ipcRenderer.send('open-external', url),
 

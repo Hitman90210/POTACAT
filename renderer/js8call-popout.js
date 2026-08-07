@@ -24,6 +24,7 @@
       setupLaunch = el('jc-setup-launch'), setupRadioWrap = el('jc-setup-radio-wrap'),
       setupRadio = el('jc-setup-radio'), setupRadioWhy = el('jc-setup-radio-why'),
       setupNote = el('jc-setup-note'), setupDax = el('jc-setup-dax'),
+      setupSlice = el('jc-setup-slice'), setupSliceWhy = el('jc-setup-slice-why'),
       setupManual = el('jc-setup-manual');
 
   var connected = false;
@@ -327,7 +328,7 @@
     setupChanges.innerHTML = '';
     setupNote.hidden = true;
     setupGo.hidden = setupLaunch.hidden = setupRadioWrap.hidden = true;
-    setupDax.hidden = true;
+    setupDax.hidden = setupSlice.hidden = setupSliceWhy.hidden = true;
 
     var p;
     // includeRadio deliberately unsent on the first pass: main decides it from
@@ -388,6 +389,31 @@
           '<br><br><b>Or skip all of it.</b> Set JS8Call’s <code>Radio &gt; Rig</code> to <code>None</code> and give ' +
           'it audio from a virtual cable — it decodes without touching the radio, and you tune from POTACAT.');
       return;
+    }
+
+    // A Flex with a spare receiver can simply give JS8Call one, which removes
+    // the whole "which DAX channel has a slice behind it" problem rather than
+    // navigating it. Offered before the audio changes, because the answer to
+    // "which channel" depends on it.
+    if (p.slicePlan && p.slicePlan.ok) {
+      setupSlice.hidden = false;
+      setupSlice.textContent = 'Give JS8Call its own receiver';
+      setupSliceWhy.hidden = false;
+      setupSliceWhy.innerHTML = 'Creates a second slice on ' +
+        esc(p.slicePlan.freq.toFixed(3)) + ' MHz ' + esc(p.slicePlan.mode) +
+        ' and binds it to DAX channel ' + p.slicePlan.daxChannel +
+        '. JS8Call then has a receiver of its own and you keep slice A. ' +
+        'POTACAT removes it again when it closes.';
+    } else if (p.slicePlan && p.slicePlan.reason) {
+      setupSlice.hidden = true;
+      setupSliceWhy.hidden = false;
+      setupSliceWhy.textContent = 'No separate receiver for JS8Call: ' + p.slicePlan.reason;
+    } else if (p.js8Slice !== null && p.js8Slice !== undefined) {
+      setupSlice.hidden = true;
+      setupSliceWhy.hidden = false;
+      setupSliceWhy.textContent = 'JS8Call has its own receiver (slice ' + p.js8Slice + ').';
+    } else {
+      setupSlice.hidden = setupSliceWhy.hidden = true;
     }
 
     setupRadioWrap.hidden = !p.canDoRadio;
@@ -543,6 +569,22 @@
       setupLede.textContent = 'Started ' + name + '. ' + thenDo + ' Then press Retry above.';
     });
   }
+  setupSlice.addEventListener('click', async function () {
+    setupSlice.disabled = true;
+    setupSlice.textContent = 'Creating…';
+    var r;
+    try { r = await window.api.createSlice(); } catch (e) { r = { ok: false, reason: e && e.message }; }
+    setupSlice.disabled = false;
+    if (!r || !r.ok) {
+      setupSliceWhy.textContent = (r && r.reason) || 'Could not create a receiver.';
+      setupSlice.hidden = true;
+      return;
+    }
+    // Re-plan: the audio devices to write depend on the channel it just took.
+    radioTouched = false;
+    refreshSetup();
+  });
+
   wireHelperLaunch(setupDax, function () { return window.api.launchSmartSdr(); }, 'SmartSDR',
     'It brings DAX and SmartSDR CAT up with it — tick a DAX RX channel and DAX TX, and make a CAT port for a slice.');
 
