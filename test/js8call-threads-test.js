@@ -13,8 +13,8 @@
  */
 
 const assert = require('assert');
-const { Js8Threads, isHeartbeatText, isGroupTarget, threadIdFor, MAX_THREADS } =
-  require('../lib/js8call-threads');
+const { Js8Threads, isHeartbeatText, isGroupTarget, threadIdFor, MAX_THREADS,
+  isAddressed, composeDirected } = require('../lib/js8call-threads');
 
 let pass = 0, fail = 0;
 function test(name, fn) {
@@ -203,6 +203,41 @@ test('setMyCall re-points routing for a callsign learned after connect', () => {
   assert.strictEqual(t.ingest(mk({ from: 'KC1QKM', to: 'K3SBP', text: 'a' })).threadId, null);
   t.setMyCall('K3SBP');
   assert.strictEqual(t.ingest(mk({ from: 'KC1QKM', to: 'K3SBP', text: 'b' })).threadId, 'KC1QKM');
+});
+
+// ── addressing outbound text ─────────────────────────────────────────────────
+
+test('a callsign takes a colon, a group takes a space', () => {
+  // Both forms are real: threadIdFor parses "KC1QKM: K3SBP HELLO" and
+  // "@HB HB FN20". A colon for both addresses a station named "@HB".
+  assert.strictEqual(composeDirected('K1ABC', 'SNR?'), 'K1ABC: SNR?');
+  assert.strictEqual(composeDirected('@ALLCALL', 'CQ CQ CQ'), '@ALLCALL CQ CQ CQ');
+  assert.strictEqual(composeDirected('@HB', 'HB FN20'), '@HB HB FN20');
+});
+
+test('text that already carries a destination is left alone', () => {
+  // js8HeartbeatText() emits its own "@HB …" prefix; prefixing again gives
+  // "@HB: @HB HB FN20", which is exactly what broke the HB button.
+  assert.strictEqual(composeDirected('@HB', '@HB HB FN20'), '@HB HB FN20');
+  assert.strictEqual(composeDirected('@ALLCALL', 'K1ABC: SNR?'), 'K1ABC: SNR?');
+});
+
+test('an ordinary sentence is not mistaken for an address', () => {
+  assert.strictEqual(isAddressed('HELLO THERE'), false, '"HELLO" is not a destination');
+  assert.strictEqual(isAddressed('MEET AT 10:30'), false, 'a later colon is not an address');
+  assert.strictEqual(isAddressed('@HB HB FN20'), true);
+  assert.strictEqual(isAddressed('K1ABC: HI'), true);
+});
+
+test('no destination and no text degrade quietly', () => {
+  assert.strictEqual(composeDirected('', 'HELLO'), 'HELLO');
+  assert.strictEqual(composeDirected('K1ABC', '   '), '');
+  assert.strictEqual(composeDirected('', ''), '');
+});
+
+test('a lower-case destination is addressed in upper case', () => {
+  assert.strictEqual(composeDirected('k1abc', 'hi'), 'K1ABC: hi');
+  assert.strictEqual(composeDirected('@allcall', 'hi'), '@ALLCALL hi');
 });
 
 console.log(`\nJS8Call threads: ${pass} passed, ${fail} failed`);

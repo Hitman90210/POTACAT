@@ -276,6 +276,7 @@ const { MercuryClient } = require('./lib/mercury-client');
 const js8Config = require('./lib/js8call-config');
 const { Js8CallClient, isDirectedTo } = require('./lib/js8call-client');
 const { Js8Threads } = require('./lib/js8call-threads');
+const js8Addr = require('./lib/js8call-threads');   // composeDirected / isAddressed
 const js8Process = require('./lib/js8call-process');
 const js8Audio = require('./lib/js8call-audio');
 const js8Slice = require('./lib/js8call-slice');
@@ -5247,29 +5248,43 @@ function handleJs8Tx(on) {
  * JS8Call's unprompted keying still needs the rigctld-listener work (Phase 3)
  * before POTACAT can gate it; this only refuses to make things worse.
  */
-function js8Transmit(text) {
-  const t = String(text || '').trim();
+/**
+ * Transmit through JS8Call.
+ *
+ * `to` is optional and the composition is done HERE, by the tested rules in
+ * lib/js8call-threads.js, so the window cannot address a message one way while
+ * the radio sends it another. A callsign takes a colon and a group takes a
+ * space; text that already carries a destination is left alone.
+ */
+function js8Transmit(text, to) {
+  const t = js8Addr.composeDirected(to, text);
+  const refuse = (error) => {
+    // Refusals go to the CAT log too. A send that failed only inside the
+    // pop-out leaves a bug report with no trace of the attempt at all.
+    sendCatLog(`[JS8Call] not transmitted: ${error}`);
+    return { ok: false, error };
+  };
   if (!t) return { ok: false, error: 'Nothing to send.' };
-  if (!js8Enabled()) return { ok: false, error: 'The JS8Call bridge is off.' };
-  if (!js8Client || !js8Client.connected) return { ok: false, error: 'Not connected to JS8Call.' };
+  if (!js8Enabled()) return refuse('The JS8Call bridge is off.');
+  if (!js8Client || !js8Client.connected) return refuse('Not connected to JS8Call.');
 
   // JS8Call silently ignores commands unless "Accept TCP Requests" is ticked —
   // a send that vanishes with no error is exactly the failure this whole
   // integration is built to avoid, so say it up front.
   const setup = readJs8Setup();
   if (setup && !setup.found.acceptTcpRequests) {
-    return { ok: false, error: 'JS8Call is not accepting API commands. Tick "Accept TCP Requests" under File > Settings > Reporting > API, then restart JS8Call.' };
+    return refuse('JS8Call is not accepting API commands. Tick "Accept TCP Requests" under File > Settings > Reporting > API, then restart JS8Call.');
   }
 
   // Don't ask for a transmission while POTACAT's own engine owns the radio.
   // (js8call is a preemptive owner, so acquireRadio would say yes — that path
   // is for OBSERVING a transmission already happening, not for starting one.)
   if (radioOwner !== 'none' && radioOwner !== 'js8call') {
-    return { ok: false, error: `The radio is in use by ${radioOwner}. Stop it before transmitting from JS8Call.` };
+    return refuse(`The radio is in use by ${radioOwner}. Stop it before transmitting from JS8Call.`);
   }
 
   const sent = js8Client.sendMessage(t);
-  if (!sent) return { ok: false, error: 'Could not write to JS8Call.' };
+  if (!sent) return refuse('Could not write to JS8Call.');
   sendCatLog(`[JS8Call] queued for transmission: ${t}`);
   pushJs8Tail({ kind: 'tx-queued', text: t, utc: Date.now() });
   // Show it in the thread immediately rather than waiting for the radio to
@@ -23996,9 +24011,12 @@ app.whenReady().then(() => {
   // Transmit. Always operator-initiated — there is no automatic path here, and
   // the reply carries the refusal reason so the popout can show it rather than
   // appearing to have done nothing.
-  ipcMain.handle('js8call-send', (_e, text) => {
+  // {text, to} — main composes, so the window cannot address a message one
+  // way while the radio sends it another. A bare string still works.
+  ipcMain.handle('js8call-send', (_e, arg) => {
     markUserActive();
-    return js8Transmit(text);
+    if (arg && typeof arg === 'object') return js8Transmit(arg.text, arg.to);
+    return js8Transmit(arg);
   });
   ipcMain.handle('js8call-heartbeat-text', () => js8HeartbeatText());
   // Conversations. State lives in main so unread survives the window closing.

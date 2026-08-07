@@ -276,18 +276,28 @@
     });
   }
 
-  /** The exact text that will be transmitted, from the To box and the message. */
+  /**
+   * Preview of what will go on the air.
+   *
+   * Mirrors composeDirected() in lib/js8call-threads.js, which is the tested
+   * original and the one that actually addresses the transmission — main
+   * composes from {text, to} so this can never disagree with what is sent.
+   * Duplicated here only because the renderer has no require() (same reason
+   * gridToLatLonLocal exists in app.js).
+   */
+  var GROUPS = ["@HB", "@ALLCALL", "@DX", "@GROUP", "@QSO", "@NET", "@CQ"];
+  function isAddressed(t) {
+    return /^@[A-Z0-9/]{2,}(s|$)/i.test(t) || /^[A-Z0-9/]{2,}:/i.test(t);
+  }
   function outgoing() {
     var body = textEl.value.trim();
-    if (!body) return '';
-    // Already addressed by hand (a macro, or a pasted directed message) — leave
-    // it exactly as typed. Prefixing a second destination would send it to a
-    // station that does not exist.
-    if (/^[A-Z0-9/@]{2,}\s*:/i.test(body)) return body;
-    var to = (toEl.value || '').trim();
-    return to ? to + ': ' + body : body;
+    if (!body) return "";
+    if (isAddressed(body)) return body;
+    var to = (toEl.value || "").trim().toUpperCase();
+    if (!to) return body;
+    var group = to.charAt(0) === "@" || GROUPS.indexOf(to) >= 0;
+    return group ? to + " " + body : to + ": " + body;
   }
-
   function refreshCompose() {
     textEl.disabled = toEl.disabled = !connected;
     sendBtn.disabled = !connected || !textEl.value.trim();
@@ -306,10 +316,10 @@
 
   function note(html, cls) { onairEl.className = cls || ''; onairEl.innerHTML = html; }
 
-  async function transmit(text) {
+  async function transmit(text, to) {
     note('Sending…', '');
     var r;
-    try { r = await window.api.send(text); }
+    try { r = await window.api.send(text, to); }
     catch (e) { note('Send failed: ' + esc(e && e.message), 'err'); return; }
     if (r && r.ok) { note('Queued <code>' + esc(r.text) + '</code>', 'ok'); textEl.value = ''; }
     else note(esc((r && r.error) || 'Send refused.'), 'err');
@@ -317,8 +327,8 @@
   }
 
   sendBtn.addEventListener('click', function () {
-    var t = outgoing();
-    if (t) transmit(t);
+    var body = textEl.value.trim();
+    if (body) transmit(body, toEl.value);
   });
   toEl.addEventListener('change', refreshCompose);
   textEl.addEventListener('keydown', function (e) {
@@ -333,19 +343,17 @@
   // These act on the STATION, not on a conversation, so they live in the bar
   // and stay live whenever the bridge is up.
 
+  // These SEND. A button labelled HB that only fills a box is not a heartbeat,
+  // and JS8Call's own HB button transmits — matching it avoids a control that
+  // means something different in the two windows side by side.
   el('jc-cq').addEventListener('click', function () {
-    // CQ is a broadcast; addressing it to anyone would be wrong.
-    textEl.value = 'CQ CQ CQ';
-    toEl.value = '@ALLCALL';
-    textEl.focus();
-    refreshCompose();
+    transmit('CQ CQ CQ', '@ALLCALL');
   });
 
   el('jc-hb').addEventListener('click', function () {
-    textEl.value = hbText || 'HB';
-    toEl.value = '@HB';
-    textEl.focus();
-    refreshCompose();
+    // hbText already carries its own "@HB " prefix from JS8Call's own template,
+    // so it is passed as-is; composeDirected leaves addressed text alone.
+    transmit(hbText || 'HB', '@HB');
   });
 
   /**

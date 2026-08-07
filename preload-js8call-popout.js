@@ -23,7 +23,8 @@ contextBridge.exposeInMainWorld('api', {
   reconnect: () => ipcRenderer.send('js8call-reconnect'),
   // Transmit. Returns {ok, error, text} so a refusal can be shown rather than
   // silently doing nothing.
-  send: (text) => ipcRenderer.invoke('js8call-send', text),
+  // Pass the destination separately: main owns the addressing rules.
+  send: (text, to) => ipcRenderer.invoke('js8call-send', { text, to }),
   heartbeatText: () => ipcRenderer.invoke('js8call-heartbeat-text'),
 
   // Conversations. State is owned by main (lib/js8call-threads.js) so unread
