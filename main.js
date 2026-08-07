@@ -5391,6 +5391,36 @@ function armJs8SliceReclaim() {
   }, JS8_SLICE_RECLAIM_MS);
 }
 
+/**
+ * Retune JS8Call's OWN receiver.
+ *
+ * Deliberately not sendCatFrequency(): that is the operator's slice, and moving
+ * it would take POTACAT's whole UI, spot filtering and band logic to JS8Call's
+ * band — the exact mistake CLAUDE.md flags for the WSJT-X bridge. This touches
+ * one slice, the one POTACAT created, and nothing else in the app reads it.
+ */
+function setJs8Band(band) {
+  const mhz = js8Slice.JS8_DIAL_MHZ[Number(band)];
+  if (!mhz) return { ok: false, reason: `No JS8 frequency known for ${band}m.` };
+  if (js8SliceIndex === null) {
+    return { ok: false, reason: 'JS8Call does not have its own receiver yet, so POTACAT has nothing of its own to tune.' };
+  }
+  if (!smartSdr || !smartSdr.connected) return { ok: false, reason: 'The radio is not connected.' };
+  smartSdr.tuneSlice(js8SliceIndex, mhz, js8Slice.JS8_MODE);
+  sendCatLog(`[JS8Call] its receiver moved to ${mhz.toFixed(3)} MHz (${band}m)`);
+  return { ok: true, band: Number(band), freq: mhz };
+}
+
+/** What the band picker should show: the bands, and where JS8Call is now. */
+function js8BandState() {
+  const bands = Object.keys(js8Slice.JS8_DIAL_MHZ).map(Number).sort((a, b) => b - a);
+  let current = 0;
+  if (js8SliceIndex !== null && smartSdr && typeof smartSdr.sliceFreqHz === 'function') {
+    current = js8Slice.bandForHz(smartSdr.sliceFreqHz(js8SliceIndex)) || 0;
+  }
+  return { bands, current, hasSlice: js8SliceIndex !== null, dials: js8Slice.JS8_DIAL_MHZ };
+}
+
 function cancelJs8SliceReclaim() {
   if (_js8SliceReclaimTimer) { clearTimeout(_js8SliceReclaimTimer); _js8SliceReclaimTimer = null; }
 }
@@ -23957,6 +23987,10 @@ app.whenReady().then(() => {
   }
   ipcMain.on('js8call-popout-open', () => openJs8Popout());
   ipcMain.on('js8call-popout-minimize', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.minimize(); });
+  ipcMain.on('js8call-popout-maximize', (e) => {
+    const w = BrowserWindow.fromWebContents(e.sender);
+    if (w) { w.isMaximized() ? w.unmaximize() : w.maximize(); }
+  });
   ipcMain.on('js8call-popout-close', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.close(); });
   ipcMain.on('js8call-reconnect', () => connectJs8Call());
   // Transmit. Always operator-initiated — there is no automatic path here, and
@@ -24003,6 +24037,8 @@ app.whenReady().then(() => {
   // slice on the operator's radio, so it happens on a click and never as a
   // side effect of opening a window.
   ipcMain.handle('js8call-create-slice', async () => { markUserActive(); return createJs8Slice(); });
+  ipcMain.handle('js8call-band-state', () => js8BandState());
+  ipcMain.handle('js8call-set-band', (_e, band) => { markUserActive(); return setJs8Band(band); });
   ipcMain.handle('js8call-remove-slice', () => {
     markUserActive();
     removeJs8Slice('you asked to give the receiver back');

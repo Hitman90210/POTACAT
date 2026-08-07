@@ -52,6 +52,10 @@ contextBridge.exposeInMainWorld('api', {
   // radio, so it is always a click, never automatic.
   createSlice: () => ipcRenderer.invoke('js8call-create-slice'),
   removeSlice: () => ipcRenderer.invoke('js8call-remove-slice'),
+  // Band control for JS8Call's OWN receiver — never the operator's slice.
+  bandState: () => ipcRenderer.invoke('js8call-band-state'),
+  setBand: (band) => ipcRenderer.invoke('js8call-set-band', band),
+  maximizeWindow: () => ipcRenderer.send('js8call-popout-maximize'),
 
   openExternal: (url) => ipcRenderer.send('open-external', url),
 

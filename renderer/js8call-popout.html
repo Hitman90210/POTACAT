@@ -17,16 +17,8 @@
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .num { font-variant-numeric: tabular-nums; }
 
-    /* --- title + status ---------------------------------------------------- */
-    .jc-titlebar { -webkit-app-region: drag; user-select: none; display: flex; align-items: center;
-      justify-content: space-between; padding: 6px 10px; background: var(--bg-secondary, #16213e);
-      border-bottom: 1px solid var(--border-primary, #333); font-size: 12px; font-weight: 600;
-      color: var(--text-primary, #e0e0e0); flex-shrink: 0; }
-    .jc-controls { -webkit-app-region: no-drag; display: flex; gap: 4px; }
-    .jc-titlebar button { background: none; border: 1px solid var(--border-primary, #333);
-      color: var(--text-secondary, #888); width: 22px; height: 22px; cursor: pointer;
-      font-size: 13px; line-height: 1; border-radius: 3px; }
-    .jc-titlebar button:hover { background: var(--bg-hover); color: var(--text-primary); }
+    /* Titlebar comes from styles.css (.titlebar / .titlebar-btn / .titlebar-close)
+       so this window matches every other POTACAT pop-out. Nothing local. */
 
     .jc-bar { display: flex; align-items: center; gap: 9px; padding: 5px 10px; font-size: 11px;
       background: var(--bg-secondary); border-bottom: 1px solid var(--border-primary);
@@ -35,6 +27,14 @@
     .jc-dot.up { background: var(--accent-green-btn, #4ecca3); }
     .jc-dot.down { background: var(--accent-red, #e94560); }
     .jc-bar b { color: var(--text-primary); font-weight: 600; }
+    .jc-bar .jc-btn { padding: 2px 9px; font-size: 10.5px; }
+    .jc-band select { background: var(--bg-tertiary, #1a1a2e); color: var(--text-primary);
+      border: 1px solid var(--border-primary); border-radius: 4px; padding: 2px 6px;
+      font-size: 11px; font-family: inherit; cursor: pointer; }
+    .jc-band[hidden], .jc-acts[hidden] { display: none; }
+    .jc-acts { display: flex; gap: 5px; }
+    /* The one control that must never be mistaken for a status light. */
+    .jc-acts .jc-btn { font-weight: 700; }
     /* TX is the operator's only warning that JS8Call has taken the radio. */
     .jc-tx { margin-left: auto; padding: 2px 8px; border-radius: 3px; font-weight: 700;
       border: 1px solid var(--border-primary); color: var(--text-tertiary, #666); flex: none; }
@@ -43,7 +43,10 @@
     @keyframes jc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .65; } }
     @media (prefers-reduced-motion: reduce) { .jc-tx.on { animation: none; } }
 
-    #jc-problems { flex-shrink: 0; max-height: 30vh; overflow-y: auto; }
+    /* Bounded, but generous: this is the only place a real fault is explained,
+       and it is hidden entirely while the setup page is up. */
+    #jc-problems { flex-shrink: 0; max-height: 22vh; overflow-y: auto; }
+    #jc-problems[hidden] { display: none; }
     .jc-prob { padding: 7px 10px; font-size: 12px; border-bottom: 1px solid var(--border-primary);
       background: var(--bg-tertiary, #1a1a2e); }
     .jc-prob b { display: block; color: var(--text-primary); font-weight: 600; margin-bottom: 2px; }
@@ -111,10 +114,13 @@
     .jc-empty code { background: var(--bg-tertiary); padding: 1px 5px; border-radius: 3px; }
 
     /* setup panel */
-    /* Takes the transcript's place, so it owns the same slot in the column. */
-    .jc-setup { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 20px;
-      max-width: 60ch; width: 100%; margin: 0 auto; }
+    /* A PAGE. It owns the whole window while the bridge is down — the rails
+       have nothing to show without a connection anyway — so it has room to
+       breathe instead of scrolling inside a third of the width. */
+    .jc-setup { flex: 1; min-height: 0; overflow-y: auto; padding: 22px 26px;
+      max-width: 68ch; width: 100%; margin: 0 auto; }
     .jc-setup[hidden] { display: none; }
+    .jc-cols[hidden] { display: none; }
     .jc-setup h2 { font-size: 15px; margin: 0 0 6px; color: var(--text-primary); font-weight: 600; }
     .jc-setup p { margin: 0 0 12px; font-size: 12.5px; color: var(--text-secondary); line-height: 1.6; }
     .jc-setup ul { margin: 0 0 14px; padding: 0; list-style: none; font-size: 12px;
@@ -166,6 +172,14 @@
     .jc-chip:hover { background: var(--bg-hover); }
     .jc-chip:disabled { opacity: .4; cursor: not-allowed; }
     .jc-row { display: flex; gap: 6px; align-items: center; }
+    /* An explicit destination beats knowing the "@GROUP: text" syntax. */
+    #jc-to { background: var(--bg-tertiary, #1a1a2e); color: var(--text-primary);
+      border: 1px solid var(--border-primary); border-radius: 4px; padding: 5px 6px;
+      font-size: 11.5px; font-family: ui-monospace, monospace; max-width: 130px;
+      flex: none; cursor: pointer; }
+    /* Groups sit above individuals: group traffic is one click, not a scroll. */
+    #jc-groups .jc-conv .c { color: var(--accent-blue, #4fc3f7); }
+    #jc-groups { border-bottom: 1px solid var(--border-primary); }
     .jc-row input { flex: 1; min-width: 0; padding: 5px 8px; font-size: 12px;
       background: var(--bg-input, #0f1419); border: 1px solid var(--border-primary);
       color: var(--text-primary); border-radius: 4px;
@@ -199,64 +213,76 @@
   </style>
 </head>
 <body>
-  <div class="jc-titlebar">
-    <span>JS8Call</span>
-    <div class="jc-controls">
-      <button id="jc-min" title="Minimize">&minus;</button>
-      <button id="jc-close" title="Close">&times;</button>
+  <!-- Shared titlebar from styles.css — same 46x32 borderless buttons and red
+       close hover as every other POTACAT window. The local 22x22 bordered
+       variant this used was inherited from the older log pop-out. -->
+  <div class="titlebar">
+    <div class="titlebar-drag"><span class="titlebar-title">POTACAT &mdash; JS8Call</span></div>
+    <div class="titlebar-controls">
+      <button class="titlebar-btn" id="jc-min" title="Minimize">&#x2014;</button>
+      <button class="titlebar-btn" id="jc-max" title="Maximize">&#x25A1;</button>
+      <button class="titlebar-btn titlebar-close" id="jc-close" title="Close">&#x2715;</button>
     </div>
   </div>
 
+  <!-- The control bar. Not a status readout: the band picker retunes JS8Call's
+       OWN receiver, and CQ/HB are station actions that must not depend on a
+       conversation being selected. -->
   <div class="jc-bar">
     <span class="jc-dot" id="jc-dot"></span>
     <span id="jc-state">Connecting&hellip;</span>
     <b class="mono" id="jc-station"></b>
+    <label class="jc-band" id="jc-band-wrap" hidden>
+      <select id="jc-band" title="Move JS8Call's receiver to another band"></select>
+    </label>
     <span class="mono num" id="jc-dial"></span>
-    <button class="jc-btn" id="jc-retry" style="padding:2px 8px;font-size:10px;" title="Re-read JS8Call's settings and reconnect">Retry</button>
+    <span class="jc-acts" id="jc-acts" hidden>
+      <button class="jc-btn" id="jc-cq" title="Call CQ on JS8">CQ</button>
+      <button class="jc-btn" id="jc-hb" title="Send a heartbeat">HB</button>
+    </span>
+    <button class="jc-btn" id="jc-retry" title="Re-read JS8Call's settings and reconnect">Retry</button>
     <span class="jc-tx" id="jc-tx">RX</span>
   </div>
 
   <div id="jc-problems"></div>
 
-  <div class="jc-cols">
+  <!-- Setup is a PAGE, not a panel: full width, its own scroll only if it ever
+       needs one. Cramming it into the middle third of a three-column grid is
+       what produced two nested scrollbars in a 250px column. -->
+  <div class="jc-setup" id="jc-setup">
+    <h2 id="jc-setup-title">Setting up JS8Call</h2>
+    <p id="jc-setup-lede">Checking&hellip;</p>
+    <div class="jc-setup-note" id="jc-setup-note" hidden></div>
+    <p class="jc-quiet" id="jc-setup-slice-why" hidden></p>
+    <ul id="jc-setup-changes"></ul>
+    <div class="jc-setup-actions">
+      <button class="jc-btn go" id="jc-setup-go" hidden>Set up and start JS8Call</button>
+      <button class="jc-btn" id="jc-setup-launch" hidden>Start JS8Call</button>
+      <button class="jc-btn go" id="jc-setup-dax" hidden>Start SmartSDR</button>
+      <button class="jc-btn go" id="jc-setup-slice" hidden>Give JS8Call its own receiver</button>
+      <label id="jc-setup-radio-wrap" hidden><input type="checkbox" id="jc-setup-radio"> <span id="jc-setup-radio-why">give it its own slice</span></label>
+    </div>
+    <!-- A div, not a p: it holds <p> and <details>, and a browser silently
+         closes a <p> at the first block child, orphaning everything after. -->
+    <div class="jc-setup-manual" id="jc-setup-manual"></div>
+  </div>
+
+  <div class="jc-cols" id="jc-cols">
     <div class="jc-rail jc-rail-l">
       <div class="jc-railhead">Conversations <span id="jc-unread"></span></div>
+      <div id="jc-groups"></div>
       <div id="jc-convs"></div>
     </div>
 
     <div class="jc-thread">
       <div class="jc-threadhead" id="jc-threadhead" hidden></div>
-      <!-- Shown INSTEAD of the transcript until the bridge is live. Deliberately
-           a sibling of #jc-msgs, not a child: renderThread() clears #jc-msgs, so
-           living inside it would delete this panel and orphan every cached
-           reference to it the first time a conversation was opened.
-           Setting JS8Call up by hand is six steps across three of its settings
-           pages, so POTACAT offers to do it — but shows every change first,
-           because this edits another application's configuration. -->
-      <div class="jc-setup" id="jc-setup">
-        <h2 id="jc-setup-title">Setting up JS8Call</h2>
-        <p id="jc-setup-lede">Checking&hellip;</p>
-        <div class="jc-setup-note" id="jc-setup-note" hidden></div>
-        <p class="jc-quiet" id="jc-setup-slice-why" hidden></p>
-        <ul id="jc-setup-changes"></ul>
-        <div class="jc-setup-actions">
-          <button class="jc-btn go" id="jc-setup-go" hidden>Set up and start JS8Call</button>
-          <button class="jc-btn" id="jc-setup-launch" hidden>Start JS8Call</button>
-          <button class="jc-btn go" id="jc-setup-dax" hidden>Start SmartSDR</button>
-          <button class="jc-btn go" id="jc-setup-slice" hidden>Give JS8Call its own receiver</button>
-          <label id="jc-setup-radio-wrap" hidden><input type="checkbox" id="jc-setup-radio"> <span id="jc-setup-radio-why">give it its own slice</span></label>
-        </div>
-        <!-- A div, not a p: it holds <p> and <details>, and a browser silently
-             closes a <p> at the first block child, orphaning everything after. -->
-        <div class="jc-setup-manual" id="jc-setup-manual"></div>
-      </div>
-
       <div class="jc-msgs" id="jc-msgs"></div>
 
       <div class="jc-compose">
         <div class="jc-chips" id="jc-chips"></div>
         <div class="jc-row">
-          <input type="text" id="jc-text" placeholder="Select a conversation, or type a full message" maxlength="200" autocomplete="off" spellcheck="false">
+          <select id="jc-to" title="Who this goes to"></select>
+          <input type="text" id="jc-text" placeholder="Message" maxlength="200" autocomplete="off" spellcheck="false">
           <button class="jc-btn go" id="jc-send">Send</button>
         </div>
         <div id="jc-onair"></div>

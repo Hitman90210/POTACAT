@@ -14,7 +14,9 @@
   var el = function (id) { return document.getElementById(id); };
   var dotEl = el('jc-dot'), stateEl = el('jc-state'), stationEl = el('jc-station'),
       dialEl = el('jc-dial'), txEl = el('jc-tx'), problemsEl = el('jc-problems'),
-      convsEl = el('jc-convs'), unreadEl = el('jc-unread'), headEl = el('jc-threadhead'),
+      convsEl = el('jc-convs'), groupsEl = el('jc-groups'), unreadEl = el('jc-unread'),
+      headEl = el('jc-threadhead'), colsEl = el('jc-cols'), toEl = el('jc-to'),
+      bandWrap = el('jc-band-wrap'), bandEl = el('jc-band'), actsEl = el('jc-acts'),
       msgsEl = el('jc-msgs'), chipsEl = el('jc-chips'),
       textEl = el('jc-text'), sendBtn = el('jc-send'), onairEl = el('jc-onair'),
       heardEl = el('jc-heard');
@@ -62,9 +64,13 @@
 
   // ── conversations ──────────────────────────────────────────────────────────
 
-  function renderConvs(list) {
+  function renderConvs(all) {
+    renderGroups(all);
+    renderTo(all);
+    // Individuals only — groups have their own rail above.
+    var list = (all || []).filter(function (t) { return !t.isGroup; });
     convsEl.innerHTML = '';
-    if (!list || !list.length) {
+    if (!list.length) {
       var d = document.createElement('div');
       d.className = 'jc-empty';
       d.style.padding = '16px 12px';
@@ -90,6 +96,55 @@
     });
   }
 
+  // ── groups ─────────────────────────────────────────────────────────────────
+  // JS8's group calls are how you reach more than one station, and burying them
+  // in the same alphabetical list as individuals makes the common case a scroll.
+  // @ALLCALL and @HB always exist; anything else seen on air joins them.
+  var BASE_GROUPS = ['@ALLCALL', '@HB'];
+
+  function knownGroups(list) {
+    var seen = {};
+    BASE_GROUPS.forEach(function (g) { seen[g] = true; });
+    (list || []).forEach(function (t) { if (t.isGroup && t.call) seen[t.call] = true; });
+    return Object.keys(seen).sort(function (a, b) {
+      var ai = BASE_GROUPS.indexOf(a), bi = BASE_GROUPS.indexOf(b);
+      if (ai >= 0 || bi >= 0) return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+      return a.localeCompare(b);
+    });
+  }
+
+  function renderGroups(list) {
+    groupsEl.innerHTML = '';
+    var byId = {};
+    (list || []).forEach(function (t) { byId[t.call] = t; });
+    knownGroups(list).forEach(function (g) {
+      var t = byId[g] || { id: g, call: g, unread: 0, lastText: '', isGroup: true };
+      var b = document.createElement('button');
+      b.className = 'jc-conv group' + (t.unread ? ' unread' : '') + (t.id === openId ? ' sel' : '');
+      b.type = 'button';
+      b.innerHTML = '<span class="c">' + esc(g) + '</span>' +
+        '<span class="p">' + esc(t.lastText || '') + '</span>' +
+        (t.unread ? '<span class="jc-badge">' + t.unread + '</span>' : '');
+      b.addEventListener('click', function () { openThread(t.id); });
+      groupsEl.appendChild(b);
+    });
+  }
+
+  /** Destinations for the compose row, current selection preserved. */
+  function renderTo(list) {
+    var want = toEl.value || openCall || '@ALLCALL';
+    var opts = knownGroups(list).slice();
+    if (openCall && opts.indexOf(openCall) < 0) opts.unshift(openCall);
+    heard.forEach(function (h) { if (opts.indexOf(h.call) < 0) opts.push(h.call); });
+    toEl.innerHTML = '';
+    opts.forEach(function (o) {
+      var opt = document.createElement('option');
+      opt.value = o; opt.textContent = o;
+      toEl.appendChild(opt);
+    });
+    toEl.value = opts.indexOf(want) >= 0 ? want : opts[0];
+  }
+
   function setUnreadTotal(n) {
     unreadEl.textContent = n ? '(' + n + ')' : '';
     unreadEl.style.color = n ? 'var(--accent-green-btn, #4ecca3)' : '';
@@ -100,9 +155,13 @@
     try { r = await window.api.thread(id); } catch (e) { return; }
     openId = id;
     // Stored conversations are readable offline, so opening one takes the
-    // column back from the setup panel. The status chip puts it back.
+    // window back from the setup page. The status chip puts it back.
     showSetup(false);
     renderThread(r && r.thread);
+    // Point the To box at whoever was opened, BEFORE renderConvs rebuilds the
+    // list — it preserves the current selection, so setting it after would be
+    // overwritten by the previous value.
+    if (r && r.thread && r.thread.call) toEl.value = r.thread.call;
     renderConvs(r && r.list);
     setUnreadTotal(r ? r.unread : 0);
     refreshCompose();
@@ -181,7 +240,10 @@
         openCall = h.call;
         openId = h.call;
         renderConvs(lastList);
-        textEl.value = h.call + ': ';
+        // Address it with the To box, not a typed prefix — outgoing() would
+        // otherwise see a hand-addressed message and send "CALL: CALL: text".
+        toEl.value = h.call;
+        textEl.value = '';
         textEl.focus();
         refreshCompose();
       });
@@ -193,18 +255,20 @@
 
   function renderChips() {
     chipsEl.innerHTML = '';
+    // HB and CQ moved to the control bar: they are STATION actions and must not
+    // be disabled just because no conversation is selected.
     var items = CHIPS.slice();
-    items.push('HB');
     items.forEach(function (label) {
       var b = document.createElement('button');
       b.className = 'jc-chip';
       b.type = 'button';
       b.textContent = label;
-      b.disabled = !connected || (label !== 'HB' && !openCall);
-      b.title = label === 'HB' ? (hbText ? 'Fill with: ' + hbText : 'Heartbeat')
-                               : 'Ask ' + (openCall || 'the station') + ': ' + label;
+      b.disabled = !connected;
+      b.title = 'Put "' + label + '" in the message box';
       b.addEventListener('click', function () {
-        textEl.value = label === 'HB' ? hbText : (openCall + ': ' + label);
+        // Body only — the To box already carries the destination, and a second
+        // one in the text would be transmitted verbatim.
+        textEl.value = label;
         textEl.focus();
         refreshCompose();
       });
@@ -212,18 +276,31 @@
     });
   }
 
+  /** The exact text that will be transmitted, from the To box and the message. */
+  function outgoing() {
+    var body = textEl.value.trim();
+    if (!body) return '';
+    // Already addressed by hand (a macro, or a pasted directed message) — leave
+    // it exactly as typed. Prefixing a second destination would send it to a
+    // station that does not exist.
+    if (/^[A-Z0-9/@]{2,}\s*:/i.test(body)) return body;
+    var to = (toEl.value || '').trim();
+    return to ? to + ': ' + body : body;
+  }
+
   function refreshCompose() {
-    textEl.disabled = !connected;
+    textEl.disabled = toEl.disabled = !connected;
     sendBtn.disabled = !connected || !textEl.value.trim();
-    textEl.placeholder = openCall ? ('Reply to ' + openCall + '…')
-                                  : 'Select a conversation, or type a full message';
+    textEl.placeholder = connected ? 'Message' : 'Not connected';
     renderChips();
-    var t = textEl.value.trim();
+    var t = outgoing();
     if (t && !onairEl.classList.contains('err') && !onairEl.classList.contains('ok')) {
       // Show exactly what leaves. A transmit control that hides its payload is
       // how the wrong thing ends up on the air.
       onairEl.className = '';
       onairEl.innerHTML = 'Goes on the air as <code>' + esc(t) + '</code>';
+    } else if (!t && !onairEl.classList.contains('err') && !onairEl.classList.contains('ok')) {
+      onairEl.innerHTML = '';
     }
   }
 
@@ -240,9 +317,10 @@
   }
 
   sendBtn.addEventListener('click', function () {
-    var t = textEl.value.trim();
+    var t = outgoing();
     if (t) transmit(t);
   });
+  toEl.addEventListener('change', refreshCompose);
   textEl.addEventListener('keydown', function (e) {
     if (e.key === 'Enter') { e.preventDefault(); sendBtn.click(); }
   });
@@ -251,10 +329,66 @@
     refreshCompose();
   });
 
+  // ── station actions + band ─────────────────────────────────────────────────
+  // These act on the STATION, not on a conversation, so they live in the bar
+  // and stay live whenever the bridge is up.
+
+  el('jc-cq').addEventListener('click', function () {
+    // CQ is a broadcast; addressing it to anyone would be wrong.
+    textEl.value = 'CQ CQ CQ';
+    toEl.value = '@ALLCALL';
+    textEl.focus();
+    refreshCompose();
+  });
+
+  el('jc-hb').addEventListener('click', function () {
+    textEl.value = hbText || 'HB';
+    toEl.value = '@HB';
+    textEl.focus();
+    refreshCompose();
+  });
+
+  /**
+   * The band picker moves JS8Call's OWN receiver.
+   *
+   * Never the operator's slice: POTACAT created a second one for JS8Call, and
+   * that is the only thing this touches. Hidden entirely when JS8Call has no
+   * receiver of its own, because then there is nothing POTACAT may retune.
+   */
+  async function refreshBands() {
+    var st;
+    try { st = await window.api.bandState(); } catch (e) { st = null; }
+    if (!st || !st.hasSlice || !st.bands || !st.bands.length) {
+      bandWrap.hidden = true;
+      return;
+    }
+    bandWrap.hidden = false;
+    var want = st.current || Number(bandEl.value) || 20;
+    bandEl.innerHTML = '';
+    st.bands.forEach(function (b) {
+      var o = document.createElement('option');
+      o.value = String(b);
+      o.textContent = b + 'm';
+      bandEl.appendChild(o);
+    });
+    bandEl.value = String(want);
+  }
+
+  bandEl.addEventListener('change', async function () {
+    var band = Number(bandEl.value);
+    bandEl.disabled = true;
+    var r;
+    try { r = await window.api.setBand(band); } catch (e) { r = { ok: false, reason: e && e.message }; }
+    bandEl.disabled = false;
+    if (!r || !r.ok) { note(esc((r && r.reason) || 'Could not change band.'), 'err'); refreshBands(); return; }
+    note('JS8Call’s receiver moved to <code>' + r.freq.toFixed(3) + ' MHz</code> (' + r.band + 'm)', 'ok');
+  });
+
   // Reading an old conversation shouldn't strand you away from setup.
   stateEl.addEventListener('click', function () { if (!connected) refreshSetup(); });
 
   el('jc-min').addEventListener('click', function () { window.api.minimizeWindow(); });
+  el('jc-max').addEventListener('click', function () { window.api.maximizeWindow(); });
   el('jc-close').addEventListener('click', function () { window.api.closeWindow(); });
   el('jc-retry').addEventListener('click', function () { window.api.reconnect(); });
   el('jc-refresh').addEventListener('click', function () { window.api.refreshHeard(); });
@@ -300,15 +434,19 @@
   // one of them is up at a time, so the window always answers the question the
   // operator actually has right now ("why is nothing here" vs "what was said").
   function showSetup(on) {
+    // Setup owns the WHOLE window, rails included. Without a connection the
+    // conversation list and the heard rail have nothing to show, and squeezing
+    // a page of setup into the middle third of a three-column grid is what
+    // produced two nested scrollbars in a 250 px column.
     setupEl.hidden = !on;
-    msgsEl.hidden = on;
+    colsEl.hidden = on;
     headEl.hidden = on || !openCall;
-    // And the diagnostics bar goes with it. Every problem it lists is either
-    // something the button below fixes or something it deliberately leaves
-    // alone — printing all of it beside a one-click offer makes the operator
-    // read six manual procedures to decide whether to press one button.
-    // Post-connect it comes back, where a notice ("JS8Call may transmit on its
-    // own") is the only thing being said and is worth saying.
+    // The diagnostics bar goes too. Every problem it lists is either something
+    // the button below fixes or something POTACAT deliberately leaves alone —
+    // printing all of it beside a one-click offer makes the operator read six
+    // manual procedures to decide whether to press one button. It returns once
+    // connected, where a notice ("JS8Call may transmit on its own") is the only
+    // thing being said and is worth saying.
     problemsEl.hidden = on;
   }
 
@@ -582,6 +720,7 @@
     }
     // Re-plan: the audio devices to write depend on the channel it just took.
     radioTouched = false;
+    refreshBands();          // JS8Call now has a receiver POTACAT may retune
     refreshSetup();
   });
 
@@ -627,8 +766,10 @@
       ? 'JS8Call is transmitting. POTACAT has stood down and will not key until it finishes.'
       : 'JS8Call is receiving.';
 
+    actsEl.hidden = !up;
     renderProblems(s && s.problems);
-    if (up && !was) loadHeartbeat();
+    if (up && !was) { loadHeartbeat(); refreshBands(); }
+    if (!up) bandWrap.hidden = true;
     // The setup panel is the whole middle column until the bridge is live.
     if (up !== was || !up) refreshSetup();
     refreshCompose();
