@@ -5248,14 +5248,26 @@ function js8KeyForTx(on) {
       _js8PrevTxSlice = ours;
     }
     smartSdr.setTxSlice(js8SliceIndex);
-    // Give up POTACAT's own dax_tx stream FIRST. `transmit set dax=1` picks
-    // DAX as the station's TX source and the station uses the dax_tx stream it
-    // owns — ours, which carries nothing while JS8Call is the one with audio.
-    // Keying with it still attached is a dead carrier: full power, no
-    // modulation, no error anywhere.
+
+    // ORDER MATTERS, and both halves are needed.
+    //
+    // 1. TX audio source must be DAX rather than the mic, or the radio keys on
+    //    a silent microphone. This is asserted HERE rather than left to
+    //    assertFlexTxDaxForTx(), which requires smartSdrAudio.txReady and so
+    //    goes quiet the moment step 2 removes the stream — that combination
+    //    transmitted the mic input and produced a second silent carrier.
+    // 2. POTACAT's own dax_tx stream must then be given up. `transmit set dax`
+    //    is per-STATION and the station takes the dax_tx stream it owns; ours
+    //    carries nothing while JS8Call is the one with audio. Removing it
+    //    leaves the DAX control panel's stream as the only DAX source, which
+    //    is where JS8Call's audio actually is.
+    if (smartSdrAudio && smartSdrAudio.connected && typeof smartSdrAudio.setTxDax === 'function') {
+      _js8PrevTxDax = smartSdrAudio.txDaxOn;    // true | false | null (unknown)
+      smartSdrAudio.setTxDax(true);
+    }
     _js8ReleasedTxStream = !!(smartSdrAudio && typeof smartSdrAudio.releaseTxStream === 'function'
       && smartSdrAudio.releaseTxStream());
-    sendCatLog(`[JS8Call] transmitting on slice ${js8SliceIndex}`);
+    sendCatLog(`[JS8Call] transmitting on slice ${js8SliceIndex} (TX audio from DAX)`);
     handleRemotePtt(true, { audio: true });
   } else {
     handleRemotePtt(false, { audio: true });
@@ -5263,6 +5275,12 @@ function js8KeyForTx(on) {
       smartSdrAudio.restoreTxStream();   // POTACAT's own TX needs it back
       _js8ReleasedTxStream = false;
     }
+    // Only put dax= back if it was explicitly OFF before. An unknown prior is
+    // left alone: restoring a guess is worse than leaving a working state.
+    if (_js8PrevTxDax === false && smartSdrAudio && smartSdrAudio.connected) {
+      smartSdrAudio.setTxDax(false);
+    }
+    _js8PrevTxDax = null;
     if (_js8PrevTxSlice !== null) {
       smartSdr.setTxSlice(_js8PrevTxSlice);
       sendCatLog(`[JS8Call] transmit returned to slice ${_js8PrevTxSlice}`);
@@ -5375,6 +5393,8 @@ let js8SliceIndex = null;
 let _js8PrevTxSlice = null;
 /** Did we hand our dax_tx stream to JS8Call? Then we owe it back. */
 let _js8ReleasedTxStream = false;
+/** transmit dax= before JS8Call keyed: true | false | null (never seen). */
+let _js8PrevTxDax = null;
 /** How long JS8Call may be gone before POTACAT takes its receiver back. */
 const JS8_SLICE_RECLAIM_MS = 45000;
 
