@@ -5217,21 +5217,72 @@ function clearJs8TxFailsafe() {
  * stand down. On a Flex, keying while JS8Call transmits re-points `tx=1` and
  * puts its audio out on POTACAT's slice and frequency.
  */
+/**
+ * Key the radio for JS8Call, on JS8Call's own slice.
+ *
+ * WHY POTACAT HAS TO DO THIS. On a Flex Direct station JS8Call has no radio of
+ * its own — `Rig=None`, PTT method VOX — because POTACAT owns the CAT link. Its
+ * audio reaches DAX TX correctly and nothing ever keys, so a heartbeat is
+ * accepted, queued, and never transmitted (K3SBP 2026-08-07: "queued for
+ * transmission: @HB HB FN20" with no RF).
+ *
+ * TWO things have to happen, and the second is the dangerous one:
+ *   1. key PTT
+ *   2. point the transmitter at JS8Call's slice — `slice set N tx=1` is GLOBAL
+ *      on a Flex, so without this JS8Call's audio goes out on the operator's
+ *      slice and frequency, with no error anywhere.
+ * Which is also why it must be put BACK afterwards: leaving tx=1 on JS8Call's
+ * slice would send POTACAT's next transmission out on 14.078.
+ *
+ * Only ever for a slice POTACAT created. A JS8Call with its own rig control
+ * keys itself, and keying underneath it would double up.
+ */
+function js8KeyForTx(on) {
+  if (js8SliceIndex === null) return;          // not ours to key for
+  if (!smartSdr || !smartSdr.connected) return;
+  if (on) {
+    if (_js8PrevTxSlice === null) {
+      // Remember where transmit belonged, from the radio rather than from an
+      // assumption about slice 0 — the operator may be on any slice.
+      const ours = typeof smartSdr.ourSliceIndex === 'number' ? smartSdr.ourSliceIndex : 0;
+      _js8PrevTxSlice = ours;
+    }
+    smartSdr.setTxSlice(js8SliceIndex);
+    sendCatLog(`[JS8Call] transmitting on slice ${js8SliceIndex}`);
+    handleRemotePtt(true, { audio: true });
+  } else {
+    handleRemotePtt(false, { audio: true });
+    if (_js8PrevTxSlice !== null) {
+      smartSdr.setTxSlice(_js8PrevTxSlice);
+      sendCatLog(`[JS8Call] transmit returned to slice ${_js8PrevTxSlice}`);
+      _js8PrevTxSlice = null;
+    }
+  }
+}
+
 function handleJs8Tx(on) {
+  const was = js8TxActive;
   js8TxActive = !!on;
+  // Both edges, always. Whether JS8Call ever announces a transmission is the
+  // first thing to know when nothing goes out, and its absence is a silence
+  // that reads identically to "POTACAT ignored it".
+  if (!!on !== !!was) sendCatLog(`[JS8Call] TX ${on ? 'START' : 'END'} (reported by JS8Call)`);
   if (on) {
     acquireRadio('js8call');   // always succeeds; stands the previous owner down
+    js8KeyForTx(true);
     clearJs8TxFailsafe();
     _js8TxFailsafeTimer = setTimeout(() => {
       _js8TxFailsafeTimer = null;
       if (!js8TxActive) return;
-      sendCatLog(`[JS8Call] no key-up seen in ${JS8_TX_FAILSAFE_MS / 1000}s — releasing the radio lock so POTACAT can transmit again.`);
+      sendCatLog(`[JS8Call] no key-up seen in ${JS8_TX_FAILSAFE_MS / 1000}s — unkeying and releasing the radio so POTACAT can transmit again.`);
       js8TxActive = false;
+      js8KeyForTx(false);   // and put transmit back where it was
       releaseRadio('js8call');
       sendJs8Status({ connected: !!(js8Client && js8Client.connected), tx: false });
     }, JS8_TX_FAILSAFE_MS);
   } else {
     clearJs8TxFailsafe();
+    js8KeyForTx(false);
     releaseRadio('js8call');
   }
   sendJs8Status({ connected: !!(js8Client && js8Client.connected), tx: js8TxActive });
@@ -5309,6 +5360,8 @@ function js8HeartbeatText() {
 
 /** The slice POTACAT created for JS8Call, so it can clean up exactly that one. */
 let js8SliceIndex = null;
+/** Where transmit belonged before JS8Call keyed, so it can be put back. */
+let _js8PrevTxSlice = null;
 /** How long JS8Call may be gone before POTACAT takes its receiver back. */
 const JS8_SLICE_RECLAIM_MS = 45000;
 
