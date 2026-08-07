@@ -5238,8 +5238,22 @@ function clearJs8TxFailsafe() {
  * keys itself, and keying underneath it would double up.
  */
 function js8KeyForTx(on) {
-  if (js8SliceIndex === null) return;          // not ours to key for
-  if (!smartSdr || !smartSdr.connected) return;
+  // Say why nothing happens. JS8Call announcing TX while POTACAT stays silent
+  // is indistinguishable from POTACAT ignoring it, and on a Flex Direct station
+  // POTACAT is the only thing that CAN key — so a quiet return here is a dead
+  // end with no explanation (K3SBP 2026-08-07: slice creation failed, TX START
+  // arrived, and nothing else was ever logged).
+  if (js8SliceIndex === null) {
+    if (on) {
+      sendCatLog('[JS8Call] it is transmitting, but POTACAT cannot key: JS8Call has no receiver of its own. '
+        + 'Use "Give JS8Call its own receiver" in the JS8Call window, or let JS8Call key the radio itself.');
+    }
+    return;
+  }
+  if (!smartSdr || !smartSdr.connected) {
+    if (on) sendCatLog('[JS8Call] it is transmitting, but POTACAT cannot key: no connection to the radio.');
+    return;
+  }
   if (on) {
     if (_js8PrevTxSlice === null) {
       // Remember where transmit belonged, from the radio rather than from an
