@@ -5159,9 +5159,14 @@ function connectJs8Call() {
   js8Client.on('status', (s) => {
     if (s.connected) {
       clearJs8StartWatchdog();
+      cancelJs8SliceReclaim();          // it came back — keep its receiver
       sendCatLog(`[JS8Call] Connected to the API on ${host}:${port}`);
       js8Client.requestStationInfo();
       js8Client.requestActivity();
+    } else {
+      // JS8Call may simply be restarting. Give the receiver back only if it
+      // stays gone — see armJs8SliceReclaim.
+      armJs8SliceReclaim();
     }
     sendJs8Status({ ...s, host, port });
   });
@@ -5289,6 +5294,8 @@ function js8HeartbeatText() {
 
 /** The slice POTACAT created for JS8Call, so it can clean up exactly that one. */
 let js8SliceIndex = null;
+/** How long JS8Call may be gone before POTACAT takes its receiver back. */
+const JS8_SLICE_RECLAIM_MS = 45000;
 
 /** The DAX channel JS8Call's own slice feeds, or 0 if it has no slice. */
 function js8SliceDaxChannel() {
@@ -5358,6 +5365,36 @@ async function createJs8Slice() {
   return { ok: true, sliceIndex: idx, daxChannel: plan.daxChannel, freq: plan.freq, mode: plan.mode };
 }
 
+let _js8SliceReclaimTimer = null;
+
+/**
+ * Give JS8Call's receiver back once JS8Call is really gone.
+ *
+ * DELAYED, not immediate: the API connection drops on a JS8Call restart, on a
+ * settings change that reopens its socket, and briefly whenever it is busy.
+ * Tearing the slice down on the first disconnect would pull the receiver out
+ * from under an application that is three seconds from coming back — and the
+ * operator would then have to click "give it its own receiver" again every
+ * time they restarted it.
+ *
+ * A slice left behind is the opposite failure: an idle receiver the operator
+ * has to find and close by hand, on a radio with four. The delay balances
+ * those, and a reconnect cancels it outright.
+ */
+function armJs8SliceReclaim() {
+  if (js8SliceIndex === null || _js8SliceReclaimTimer) return;
+  _js8SliceReclaimTimer = setTimeout(() => {
+    _js8SliceReclaimTimer = null;
+    if (js8SliceIndex === null) return;
+    if (js8Client && js8Client.connected) return;   // came back during the wait
+    removeJs8Slice('JS8Call closed');
+  }, JS8_SLICE_RECLAIM_MS);
+}
+
+function cancelJs8SliceReclaim() {
+  if (_js8SliceReclaimTimer) { clearTimeout(_js8SliceReclaimTimer); _js8SliceReclaimTimer = null; }
+}
+
 /**
  * Remove the slice POTACAT made — and ONLY that one.
  *
@@ -5365,6 +5402,7 @@ async function createJs8Slice() {
  * createJs8Slice(), so an index we did not put there is somebody's receiver.
  */
 function removeJs8Slice(why = '') {
+  cancelJs8SliceReclaim();
   if (js8SliceIndex === null) return;
   const idx = js8SliceIndex;
   js8SliceIndex = null;
@@ -5775,6 +5813,9 @@ function launchJs8Call() {
     if (js8Proc.stderr) js8Proc.stderr.on('data', relay);
     js8Proc.on('exit', (code) => {
       js8Proc = null;
+      // We started it, so its exit is unambiguous — no need to wait out the
+      // reclaim delay wondering whether it is coming back.
+      removeJs8Slice('JS8Call exited');
       // Quitting a second later means it never opened a window — say that,
       // rather than leaving the operator watching a spinner.
       if (Date.now() - startedAt < 5000) {
