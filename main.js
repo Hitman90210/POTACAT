@@ -10054,6 +10054,11 @@ function connectSmartSdr() {
               sendCatLog(`⚠ DAX channel ${_flexDaxChannel} CONFLICT — another SmartSDR client keeps taking it back; POTACAT can't share a DAX channel. `
                 + `Set a different DAX channel for POTACAT, or close the other client. (No longer fighting for it.)`);
             }
+          } else if (index === js8SliceIndex) {
+            // JS8Call's own receiver, deliberately on its own DAX channel.
+            // "Fixing" it to POTACAT's channel would put both applications on
+            // one channel and silence the one that lost.
+            return;
           } else if (settings.flexDaxAutoFix !== false && !_daxFixAttempted && typeof smartSdr.setSliceDax === 'function') {
             _daxFixAttempted = true;
             _daxFixTimes.push(now);
