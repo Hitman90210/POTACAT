@@ -5281,10 +5281,21 @@ function js8KeyForTx(on) {
     }
     _js8ReleasedTxStream = !!(smartSdrAudio && typeof smartSdrAudio.releaseTxStream === 'function'
       && smartSdrAudio.releaseTxStream());
+    _js8PeakFwdW = 0;
     sendCatLog(`[JS8Call] transmitting on slice ${js8SliceIndex} (TX audio from DAX)`);
     handleRemotePtt(true, { audio: true });
   } else {
     handleRemotePtt(false, { audio: true });
+    // Report what the radio's own TX bridge measured. Near-zero watts with a
+    // clean key/unkey means the audio never arrived — a level problem, not a
+    // propagation one, and the two look identical from PSKReporter.
+    if (_js8PeakFwdW > 0.5) {
+      sendCatLog(`[JS8Call] radiated ${_js8PeakFwdW.toFixed(0)} W peak`);
+    } else {
+      sendCatLog('[JS8Call] NO measurable RF that transmission (peak '
+        + _js8PeakFwdW.toFixed(1) + ' W) — the radio keyed but no audio reached it. '
+        + 'Check the DAX TX level and the JS8Call power slider.');
+    }
     if (_js8ReleasedTxStream && smartSdrAudio && typeof smartSdrAudio.restoreTxStream === 'function') {
       smartSdrAudio.restoreTxStream();   // POTACAT's own TX needs it back
       _js8ReleasedTxStream = false;
@@ -5427,6 +5438,8 @@ let _js8PrevTxSlice = null;
 let _js8ReleasedTxStream = false;
 /** transmit dax= before JS8Call keyed: true | false | null (never seen). */
 let _js8PrevTxDax = null;
+/** Peak forward power during JS8Call's current transmission, watts. */
+let _js8PeakFwdW = 0;
 /** How long JS8Call may be gone before POTACAT takes its receiver back. */
 const JS8_SLICE_RECLAIM_MS = 45000;
 
@@ -10101,6 +10114,13 @@ function connectSmartSdr() {
   // then only the optimistic echo. Everything downstream (renderer, VFO
   // popout, phone status broadcast) already flows from sendCatPower.
   smartSdr.on('power', sendCatPower);
+  // Peak forward power seen during the current key-down. The only thing that
+  // answers "did we actually radiate" without watching a meter on the radio for
+  // 13 seconds — and PSKReporter silence cannot tell a dead band from a dead
+  // transmitter.
+  smartSdr.on('fwd-power', (w) => {
+    if (js8TxActive && w > _js8PeakFwdW) _js8PeakFwdW = w;
+  });
   smartSdr.on('swr-ratio', (swr) => {
     if (win && !win.isDestroyed()) win.webContents.send('cat-swr-ratio', swr);
     if (vfoPopoutWin && !vfoPopoutWin.isDestroyed()) vfoPopoutWin.webContents.send('cat-swr-ratio', swr);
