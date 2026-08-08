@@ -5531,6 +5531,9 @@ async function createJs8Slice() {
   if (typeof smartSdr.excludeSlice === 'function') smartSdr.excludeSlice(idx);
   smartSdr.setSliceDax(idx, plan.daxChannel);
   sendCatLog(`[JS8Call] slice ${idx} created on ${plan.freq.toFixed(3)} MHz ${plan.mode}, DAX channel ${plan.daxChannel} — this receiver is JS8Call's.`);
+  // Same reason as a band change: with Rig=None JS8Call cannot see where its
+  // receiver actually is, and starts up displaying whatever it had last.
+  js8SyncDialToJs8Call(plan.freq);
   return { ok: true, sliceIndex: idx, daxChannel: plan.daxChannel, freq: plan.freq, mode: plan.mode };
 }
 
@@ -5576,6 +5579,11 @@ function setJs8Band(band) {
   }
   if (!smartSdr || !smartSdr.connected) return { ok: false, reason: 'The radio is not connected.' };
   smartSdr.tuneSlice(js8SliceIndex, mhz, js8Slice.JS8_MODE);
+  // And tell JS8Call, which has Rig=None and therefore no idea the radio moved.
+  // Without this its dial, its spots and its logging all stay on the old band.
+  if (js8Client && js8Client.connected && typeof js8Client.setDialFreq === 'function') {
+    js8Client.setDialFreq(Math.round(mhz * 1e6));
+  }
   sendCatLog(`[JS8Call] its receiver moved to ${mhz.toFixed(3)} MHz (${band}m)`);
   return { ok: true, band: Number(band), freq: mhz };
 }
@@ -5588,6 +5596,22 @@ function js8BandState() {
     current = js8Slice.bandForHz(smartSdr.sliceFreqHz(js8SliceIndex)) || 0;
   }
   return { bands, current, hasSlice: js8SliceIndex !== null, dials: js8Slice.JS8_DIAL_MHZ };
+}
+
+/**
+ * Push JS8Call's actual dial to JS8Call.
+ *
+ * Retried once: at slice-creation time JS8Call is usually not running yet, and
+ * a frequency sent to a socket that does not exist is silently nothing.
+ */
+function js8SyncDialToJs8Call(mhz, tries = 0) {
+  const hz = Math.round(Number(mhz) * 1e6);
+  if (!hz) return;
+  if (js8Client && js8Client.connected && typeof js8Client.setDialFreq === 'function') {
+    js8Client.setDialFreq(hz);
+    return;
+  }
+  if (tries < 12) setTimeout(() => js8SyncDialToJs8Call(mhz, tries + 1), 5000);
 }
 
 function cancelJs8SliceReclaim() {
