@@ -103,6 +103,16 @@ test('no cable at all names the driver to install', () => {
   assert.ok(/VB-CABLE/.test(p.rxReason), p.rxReason);
 });
 
+test('"could not read the devices" is not reported as "you have no cable"', () => {
+  // Sends someone to install a driver they already have. Both an empty list and
+  // a list with no readable names mean the enumeration failed, not the station.
+  for (const devices of [[], [dev('', 'audiooutput'), dev('', 'audioinput')]]) {
+    const p = planAudioBridge({ devices });
+    assert.ok(/could not read/i.test(p.rxReason), p.rxReason);
+    assert.ok(!/Install VB-CABLE/.test(p.rxReason), p.rxReason);
+  }
+});
+
 test('an explicit choice beats the first match', () => {
   const p = planAudioBridge({
     devices: TWO_CABLES,

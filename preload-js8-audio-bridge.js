@@ -14,6 +14,11 @@ contextBridge.exposeInMainWorld('api', {
   // Slice receive audio, the same VITA-49 frames JTCAT and ECHOCAT get.
   onAudioFrame: (cb) => ipcRenderer.on('smartsdr-audio-frame', (_e, f) => cb(f)),
 
+  // Tell main we consumed frames. Main's backpressure guard counts unacked
+  // frames and starts dropping at the cap — a consumer that never acks looks
+  // exactly like one that has stalled, and gets throttled to nothing.
+  ack: (count) => ipcRenderer.send('audio-ack', { channel: 'smartsdr-audio-frame', count: count }),
+
   // JS8Call's transmit audio, 24 kHz mono Float32, on its way to dax_tx.
   txChunk: (buf) => ipcRenderer.send('js8-audio-tx-chunk', buf),
 

@@ -142,8 +142,11 @@ api.onConfig(async function (cfg) {
   if (cfg.txDeviceId) await startTx(cfg.txDeviceId); else stopTx();
 });
 
+var ackPending = 0;
 api.onAudioFrame(function (frame) {
   if (frame && frame.pcm) playRx(frame.pcm, frame.sampleRate);
+  // Ack in batches: one IPC per frame would cost more than the audio does.
+  if (++ackPending >= 16) { api.ack(ackPending); ackPending = 0; }
 });
 
 // Enumerating requires permission for labels; ask once so the picker in the

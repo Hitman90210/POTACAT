@@ -5672,7 +5672,8 @@ function ensureJs8AudioWindow() {
     },
   });
   js8AudioWin.loadFile('renderer/js8-audio-bridge.html');
-  js8AudioWin.on('closed', () => { js8AudioWin = null; });
+  _js8AudioReady = false;
+  js8AudioWin.on('closed', () => { js8AudioWin = null; _js8AudioReady = false; });
   return js8AudioWin;
 }
 
@@ -5701,18 +5702,52 @@ function stopJs8AudioBridge() {
 }
 
 /** Ask the bridge to enumerate audio devices (labels need a renderer). */
-function listJs8AudioDevices() {
+let _js8AudioDevicesResolve = null;
+let _js8AudioReady = false;
+let _js8AudioReadyWaiters = [];
+
+/** Resolve once the bridge window has loaded and registered its listeners. */
+function whenJs8AudioReady(timeoutMs = 6000) {
+  ensureJs8AudioWindow();
+  if (_js8AudioReady) return Promise.resolve(true);
   return new Promise((resolve) => {
-    ensureJs8AudioWindow();
-    const done = () => resolve(_js8AudioDevices);
-    // The reply lands on 'js8-audio-devices'; give it a bounded wait so a
-    // wedged renderer cannot hang the settings UI.
-    _js8AudioDevicesResolve = resolve;
-    setTimeout(done, 4000);
+    const t = setTimeout(() => {
+      _js8AudioReadyWaiters = _js8AudioReadyWaiters.filter((w) => w !== fire);
+      resolve(false);
+    }, timeoutMs);
+    const fire = () => { clearTimeout(t); resolve(true); };
+    _js8AudioReadyWaiters.push(fire);
+  });
+}
+
+function markJs8AudioReady() {
+  _js8AudioReady = true;
+  const waiters = _js8AudioReadyWaiters;
+  _js8AudioReadyWaiters = [];
+  waiters.forEach((w) => { try { w(); } catch {} });
+}
+
+/**
+ * Enumerate audio devices through the bridge window.
+ *
+ * Waits for the window to say it is ready first. loadFile() is asynchronous, so
+ * sending the request straight after creating the window delivered it to a
+ * renderer with no listeners yet — the message was dropped, nothing enumerated,
+ * and the four-second timeout resolved with an empty list. The operator saw
+ * "No virtual audio cable found" on a machine with a dozen of them
+ * (K3SBP 2026-08-07).
+ */
+async function listJs8AudioDevices() {
+  const ready = await whenJs8AudioReady();
+  if (!ready || !js8AudioWin || js8AudioWin.isDestroyed()) return _js8AudioDevices;
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => { if (!settled) { settled = true; resolve(_js8AudioDevices); } };
+    _js8AudioDevicesResolve = (list) => { if (!settled) { settled = true; resolve(list); } };
+    setTimeout(done, 5000);
     try { js8AudioWin.webContents.send('js8-audio-list-devices'); } catch { done(); }
   });
 }
-let _js8AudioDevicesResolve = null;
 
 // ─── one-click setup ─────────────────────────────────────────────────────────
 // "Open POTACAT, click More > JS8Call, then have JS8Call open and configure
@@ -10528,8 +10563,13 @@ function startSmartSdrAudio() {
     if (remoteAudioWin) {
       audioSafeSend(remoteAudioWin.webContents, 'smartsdr-audio-frame', { pcm, sampleRate });
     }
-    // JS8Call's sound card. Same frames, played into a virtual cable.
-    if (js8AudioWin && !js8AudioWin.isDestroyed()) {
+    // JS8Call's sound card. Same frames, played into a virtual cable — but
+    // ONLY when the bridge is actually running. The window also gets created
+    // just to enumerate audio devices for the setup panel, and feeding a window
+    // that is not playing anything makes it a frame sink: the backpressure
+    // guard fills, main starts dropping, and the log fills with "renderer not
+    // keeping up" for a consumer that was never consuming (K3SBP 2026-08-07).
+    if (js8AudioWin && !js8AudioWin.isDestroyed() && js8AudioEnabled()) {
       audioSafeSend(js8AudioWin.webContents, 'smartsdr-audio-frame', { pcm, sampleRate });
     }
     // VFO popout: local "Radio audio monitor" playback for SmartSDR Direct —
@@ -24320,7 +24360,7 @@ app.whenReady().then(() => {
   // side effect of opening a window.
   ipcMain.handle('js8call-create-slice', async () => { markUserActive(); return createJs8Slice(); });
   // ── JS8Call audio bridge ──────────────────────────────────────────────────
-  ipcMain.on('js8-audio-ready', () => pushJs8AudioConfig());
+  ipcMain.on('js8-audio-ready', () => { markJs8AudioReady(); pushJs8AudioConfig(); });
   ipcMain.on('js8-audio-devices', (_e, list) => {
     _js8AudioDevices = Array.isArray(list) ? list : [];
     if (_js8AudioDevicesResolve) { _js8AudioDevicesResolve(_js8AudioDevices); _js8AudioDevicesResolve = null; }
