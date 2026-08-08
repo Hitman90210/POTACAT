@@ -5238,7 +5238,73 @@ function clearJs8TxFailsafe() {
  * Only ever for a slice POTACAT created. A JS8Call with its own rig control
  * keys itself, and keying underneath it would double up.
  */
+/**
+ * What the radio's own TX bridge measured, against the rig's SET power.
+ *
+ * The number alone answers nothing: full power means the audio is fine and only
+ * propagation is left, while a fraction of it means the drive is too low — which
+ * looks like a routing failure and is a level control. Near-zero with a clean
+ * key/unkey means the audio never arrived at all, and from PSKReporter that is
+ * indistinguishable from a dead band.
+ */
+function js8ReportTxPeak(lowAdvice) {
+  if (_js8PeakFwdW > 0.5) {
+    const set = _currentTxPower > 0 ? _currentTxPower : 0;
+    const short = set > 0 && _js8PeakFwdW < set * 0.5;
+    sendCatLog(`[JS8Call] radiated ${_js8PeakFwdW.toFixed(0)} W peak`
+      + (set > 0 ? ` (rig is set to ${set} W)` : '')
+      + (short ? ' — well under the rig setting, so the audio drive is too low. ' + lowAdvice : ''));
+  } else {
+    sendCatLog('[JS8Call] NO measurable RF that transmission (peak '
+      + _js8PeakFwdW.toFixed(1) + ' W) — the radio keyed but no audio reached it. ' + lowAdvice);
+  }
+}
+
+/**
+ * Key for JS8Call on the BRIDGE route, where POTACAT is its sound card.
+ *
+ * Almost nothing from the DAX route applies, and doing it anyway would be
+ * actively wrong:
+ *   - there is no JS8Call slice to point the transmitter at. JS8Call goes out
+ *     on the operator's own slice, which is where the transmitter already is;
+ *     `setTxSlice` here would move transmit to a slice that does not exist.
+ *   - POTACAT's dax_tx stream must be KEPT, not released. On this route it is
+ *     the stream carrying JS8Call's audio — releasing it is exactly the dead
+ *     carrier the DAX route had to release it to avoid.
+ * What remains is the JTCAT path: key, and let the captured audio ride out.
+ * handleRemotePtt asserts `transmit set dax` and runs the SWR guard itself.
+ *
+ * The refusal below is the one that matters. With no capture cable there is
+ * nothing to modulate, and keying regardless radiates a full-power dead carrier
+ * — the precise failure this whole route exists to end.
+ */
+function js8KeyForTxViaBridge(on) {
+  if (on) {
+    if (!settings.js8AudioTxDevice) {
+      sendCatLog('[JS8Call] it is transmitting, but POTACAT has no cable to capture its audio from — '
+        + 'keying now would radiate a dead carrier. Set "Transmit from" in the JS8Call window; '
+        + 'it has to be a DIFFERENT virtual cable from the receive one, so this needs a second cable '
+        + '(VB-CABLE) if the receive one is your only one.');
+      return;
+    }
+    if (!smartSdrAudio || !smartSdrAudio.txReady) {
+      sendCatLog('[JS8Call] it is transmitting, but POTACAT’s transmit audio stream to the radio is not '
+        + 'ready, so nothing would be modulated. Not keying.');
+      return;
+    }
+    _js8PeakFwdW = 0;
+    sendCatLog('[JS8Call] transmitting — audio bridged from the cable onto POTACAT’s own transmit stream');
+    handleRemotePtt(true, { audio: true });
+  } else {
+    handleRemotePtt(false, { audio: true });
+    js8ReportTxPeak('Raise the JS8Call power slider, or TX Drive in POTACAT.');
+  }
+}
+
 function js8KeyForTx(on) {
+  // The bridge route needs a different answer to every question below, so it
+  // branches before any of them are asked.
+  if (js8AudioEnabled()) { js8KeyForTxViaBridge(on); return; }
   // Say why nothing happens. JS8Call announcing TX while POTACAT stays silent
   // is indistinguishable from POTACAT ignoring it, and on a Flex Direct station
   // POTACAT is the only thing that CAN key — so a quiet return here is a dead
@@ -5301,25 +5367,7 @@ function js8KeyForTx(on) {
     handleRemotePtt(true, { audio: true });
   } else {
     handleRemotePtt(false, { audio: true });
-    // Report what the radio's own TX bridge measured. Near-zero watts with a
-    // clean key/unkey means the audio never arrived — a level problem, not a
-    // propagation one, and the two look identical from PSKReporter.
-    if (_js8PeakFwdW > 0.5) {
-      // Against the rig's SET power, because the number alone answers nothing.
-      // Full power means the audio is fine and only propagation is left; a
-      // fraction of it means the drive is too low, which looks like a routing
-      // failure and is a level control.
-      const set = _currentTxPower > 0 ? _currentTxPower : 0;
-      const short = set > 0 && _js8PeakFwdW < set * 0.5;
-      sendCatLog(`[JS8Call] radiated ${_js8PeakFwdW.toFixed(0)} W peak`
-        + (set > 0 ? ` (rig is set to ${set} W)` : '')
-        + (short ? ' — well under the rig setting, so the audio drive is too low. '
-          + 'Raise the JS8Call power slider or the DAX TX gain.' : ''));
-    } else {
-      sendCatLog('[JS8Call] NO measurable RF that transmission (peak '
-        + _js8PeakFwdW.toFixed(1) + ' W) — the radio keyed but no audio reached it. '
-        + 'Check the DAX TX level and the JS8Call power slider.');
-    }
+    js8ReportTxPeak('Check the DAX TX level and the JS8Call power slider.');
     if (_js8ReleasedTxStream && smartSdrAudio && typeof smartSdrAudio.restoreTxStream === 'function') {
       smartSdrAudio.restoreTxStream();   // POTACAT's own TX needs it back
       _js8ReleasedTxStream = false;

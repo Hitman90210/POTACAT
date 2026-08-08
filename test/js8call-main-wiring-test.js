@@ -152,6 +152,30 @@ test('every exit from launchJs8Call reports itself', () => {
     `launchJs8Call has ${returns} outcomes but only ${logs} log lines — a silent one is invisible`);
 });
 
+// ── keying on the bridge route ──────────────────────────────────────────────
+
+test('the bridge route is decided before any DAX-route work', () => {
+  const start = SRC.indexOf('function js8KeyForTx(on) {');
+  assert.ok(start > 0, 'js8KeyForTx not found');
+  const head = SRC.slice(start, start + 400);
+  assert.ok(/js8AudioEnabled\(\)/.test(head) && /js8KeyForTxViaBridge/.test(head),
+    'js8KeyForTx must hand off to the bridge branch before touching slices or streams');
+});
+
+test('the bridge branch never moves the transmitter or drops its own stream', () => {
+  // Both are correct on the DAX route and wrong here. setTxSlice would point
+  // transmit at a slice that does not exist; releasing the dax_tx stream would
+  // give away the very stream carrying JS8Call's audio — the DAX route releases
+  // it to AVOID a dead carrier, and here that is what causes one.
+  const start = SRC.indexOf('function js8KeyForTxViaBridge(on) {');
+  assert.ok(start > 0, 'js8KeyForTxViaBridge not found');
+  const body = SRC.slice(start, SRC.indexOf('\nfunction js8KeyForTx(on)', start));
+  assert.ok(!/setTxSlice/.test(body), 'the bridge branch must not re-point the transmit slice');
+  assert.ok(!/releaseTxStream/.test(body), 'the bridge branch must keep POTACAT’s dax_tx stream');
+  assert.ok(/js8AudioTxDevice/.test(body),
+    'the bridge branch must refuse to key with no capture cable — that is a dead carrier');
+});
+
 // ── the popout's setup gate ─────────────────────────────────────────────────
 
 const POPOUT = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'js8call-popout.js'), 'utf8');
