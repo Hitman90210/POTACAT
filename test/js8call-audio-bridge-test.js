@@ -118,6 +118,39 @@ test('a chosen device that has been unplugged is reported, not silently swapped'
   assert.ok(/CABLE Input/.test(p.rx.label));
 });
 
+// ── VoiceMeeter, which pairs strips to buses rather than Input to Output ─────
+
+test('VoiceMeeter strips are play targets and B-buses are capture sources', () => {
+  assert.strictEqual(cableRole('Voicemeeter Input (VB-Audio Voicemeeter VAIO)'), 'play');
+  assert.strictEqual(cableRole('Voicemeeter AUX Input (VB-Audio Voicemeeter VAIO)'), 'play');
+  assert.strictEqual(cableRole('Voicemeeter VAIO3 Input (VB-Audio Voicemeeter VAIO)'), 'play');
+  assert.strictEqual(cableRole('Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)'), 'record');
+});
+
+test('the A-buses are hardware sends and are never offered as a capture source', () => {
+  // A1..A5 feed real speakers. Recording from one captures whatever the
+  // operator is listening to — not JS8Call, and not silence.
+  assert.strictEqual(cableRole('Voicemeeter Out A1 (VB-Audio Voicemeeter VAIO)'), 'hardware');
+  const g = cableDevices([
+    dev('Voicemeeter Out A1 (VB-Audio Voicemeeter VAIO)', 'audioinput'),
+    dev('Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)', 'audioinput'),
+  ]);
+  assert.strictEqual(g.record.length, 1);
+  assert.ok(/B1/.test(g.record[0].label));
+});
+
+test('a VoiceMeeter Potato station gets both directions', () => {
+  const vm = [
+    dev('Voicemeeter Input (VB-Audio Voicemeeter VAIO)', 'audiooutput'),
+    dev('Voicemeeter AUX Input (VB-Audio Voicemeeter VAIO)', 'audiooutput'),
+    dev('Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)', 'audioinput'),
+    dev('Voicemeeter Out B2 (VB-Audio Voicemeeter VAIO)', 'audioinput'),
+  ];
+  const p = planAudioBridge({ devices: vm, txDeviceId: 'Voicemeeter Out B2 (VB-Audio Voicemeeter VAIO)' });
+  assert.ok(p.rx && p.tx, p.rxReason + ' / ' + p.txReason);
+  assert.strictEqual(p.txReason, '');
+});
+
 test('the two halves of one cable are recognised as one cable', () => {
   assert.strictEqual(
     sameCable('CABLE Input (VB-Audio Virtual Cable)', 'CABLE Output (VB-Audio Virtual Cable)'), true);
