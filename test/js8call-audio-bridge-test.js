@@ -13,8 +13,10 @@
  */
 
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const {
-  isVirtualCable, cableRole, cableDevices, planAudioBridge, sameCable,
+  isVirtualCable, cableRole, cableRank, cableDevices, planAudioBridge, sameCable,
 } = require('../lib/js8call-audio-bridge');
 
 let pass = 0, fail = 0;
@@ -159,6 +161,53 @@ test('a VoiceMeeter Potato station gets both directions', () => {
   const p = planAudioBridge({ devices: vm, txDeviceId: 'Voicemeeter Out B2 (VB-Audio Voicemeeter VAIO)' });
   assert.ok(p.rx && p.tx, p.rxReason + ' / ' + p.txReason);
   assert.strictEqual(p.txReason, '');
+});
+
+// ── ranking: the OS's enumeration order is not a preference ─────────────────
+
+test('the canonical VoiceMeeter strip outranks the insert channels', () => {
+  // VoiceMeeter's driver publishes "Voicemeeter In 1..5" insert channels that a
+  // Standard or Banana mixer has no strips for and cannot route. Windows
+  // enumerated "In 4" first, so the picker defaulted to a device that goes
+  // nowhere, on a station whose VAIO strip was sitting right there (K3SBP).
+  const devices = [
+    dev('Voicemeeter In 4 (VB-Audio Voicemeeter VAIO)', 'audiooutput'),
+    dev('Voicemeeter In 1 (VB-Audio Voicemeeter VAIO)', 'audiooutput'),
+    dev('Voicemeeter Input (VB-Audio Voicemeeter VAIO)', 'audiooutput'),
+  ];
+  assert.ok(/^Voicemeeter Input /.test(cableDevices(devices).play[0].label));
+  assert.ok(/^Voicemeeter Input /.test(planAudioBridge({ devices }).rx.label));
+});
+
+test('the capture default is a B-bus, never an insert channel', () => {
+  const devices = [
+    dev('Voicemeeter Out 3 (VB-Audio Voicemeeter VAIO)', 'audioinput'),
+    dev('Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)', 'audioinput'),
+  ];
+  assert.ok(/B1/.test(cableDevices(devices).record[0].label));
+});
+
+test('an explicit choice still beats the ranking', () => {
+  // Ranking supplies a default; it must never overrule the operator.
+  const devices = [
+    dev('Voicemeeter Input (VB-Audio Voicemeeter VAIO)', 'audiooutput'),
+    dev('CABLE Input (VB-Audio Virtual Cable)', 'audiooutput'),
+  ];
+  const p = planAudioBridge({ devices, rxDeviceId: 'CABLE Input (VB-Audio Virtual Cable)' });
+  assert.ok(/CABLE Input/.test(p.rx.label));
+});
+
+test('the ranking patterns contain no stray control characters', () => {
+  // A backslash-b written inside a template literal is a BACKSPACE, not a word
+  // boundary — so /^voicemeeter input\b/ became a pattern matching nothing and
+  // every device tied for last place. Generating source from source is how that
+  // got in; this assertion is how it stays out.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'js8call-audio-bridge.js'), 'utf8');
+  const bad = src.match(/[\x00-\x08\x0b\x0c\x0e-\x1f]/);
+  assert.ok(!bad, 'control character U+' + (bad && bad[0].charCodeAt(0).toString(16)) + ' in the module source');
+  assert.notStrictEqual(
+    cableRank('Voicemeeter Input (VB-Audio Voicemeeter VAIO)'),
+    cableRank('Voicemeeter In 4 (VB-Audio Voicemeeter VAIO)'));
 });
 
 test('the two halves of one cable are recognised as one cable', () => {
