@@ -684,12 +684,18 @@
     // output audio format is not supported on device", which sends the
     // operator hunting through sample rates for a device that is not there.
     // Name the string.
-    // On the bridge route JS8Call's DAX devices are meant to be unused, so
-    // reporting them as broken is noise about a thing nobody is relying on.
-    var dead = bridgeOn ? [] : (p.deviceProblems || []).filter(Boolean);
+    // Reported on BOTH routes. Suppressing these on the bridge route was wrong:
+    // JS8Call opens its input AND output devices at startup regardless of which
+    // one POTACAT cares about, so a stale DAX device still stops it dead with
+    // "Requested output audio format is not supported on device" — before any
+    // question of transmitting arises. What changes with the route is the
+    // REMEDY, not whether the operator needs to know (K3SBP 2026-08-08).
+    var dead = (p.deviceProblems || []).filter(Boolean);
     // The radio-side twin of a dead audio device, and the only remaining reason
-    // JS8Call still says it has no rig once the audio is right.
-    if (p.catPortDead) {
+    // JS8Call still says it has no rig once the audio is right. On the bridge
+    // route the Rig=None advice lives in the bridge note instead, so this would
+    // be the same instruction twice.
+    if (p.catPortDead && !bridgeOn) {
       dead = dead.concat([
         'Radio control is set to port ' + p.catPortWanted + ', and nothing is listening there' +
         (p.catPortsLive && p.catPortsLive.length
@@ -732,12 +738,47 @@
         : (/cable input/i.test(rxLabel)
           ? '<code>' + esc(rxLabel.replace(/input/i, 'Output')) + '</code>'
           : 'the capture half of that same cable');
+      // The transmit pair runs the other way: POTACAT RECORDS from audio.tx, so
+      // JS8Call has to PLAY into that cable's other half. Derivable for a
+      // VB-CABLE, not for VoiceMeeter (a bus is fed by whichever strip the
+      // operator routed to it), so say which without inventing a device name.
+      var txLabel = (audio.tx && audio.tx.label) || '';
+      var txPlayHtml = /cable output/i.test(txLabel)
+        ? '<code>' + esc(txLabel.replace(/output/i, 'Input')) + '</code>'
+        : (/voicemeeter/i.test(txLabel)
+          ? 'the Voicemeeter strip you routed to that bus'
+          : 'the play half of that cable');
       setupNote.hidden = false;
+      // The dead devices come FIRST and are the reason the list below matters.
+      // This note replaces the general one above, so it has to carry them or
+      // they vanish — and "Requested output audio format is not supported on
+      // device" is the error the operator is actually staring at.
       setupNote.innerHTML =
-        '<b>Three things to set in JS8Call itself:</b>' +
+        (dead.length
+          ? '<b>JS8Call is still pointed at devices that are not there:</b>' +
+            '<ul style="margin:6px 0 0;padding-left:18px;">' +
+            dead.map(function (d) { return '<li>' + esc(d) + '</li>'; }).join('') +
+            '</ul><div style="margin:6px 0 10px;">This is what JS8Call reports as ' +
+            '“Requested output audio format is not supported on device”. It opens BOTH its ' +
+            'devices at startup, so a stale one stops it before transmitting ever comes up.</div>'
+          : '') +
+        '<b>Set these in JS8Call itself:</b>' +
         '<ul style="margin:6px 0 0;padding-left:18px;">' +
         '<li><code>Settings &gt; Audio</code> → <b>Soundcard Input</b> → ' + capture +
         (rxLabel ? ' <span style="opacity:.75">(POTACAT plays into ' + esc(rxLabel) + ')</span>' : '') +
+        '</li>' +
+        // Output matters even though POTACAT does not use it yet: JS8Call opens
+        // it at startup and refuses to run its audio if it is dead. With no
+        // transmit cable there is no right answer, only a LIVE one — and saying
+        // "anything that exists" is honest, where leaving it out is what left
+        // the operator staring at a sound-output error on a working receiver.
+        '<li><code>Settings &gt; Audio</code> → <b>Soundcard Output</b> → ' +
+        (txLabel
+          ? txPlayHtml
+          : 'any device that exists — your speakers will do. ' +
+            '<span style="opacity:.75">JS8Call will not start its audio with a dead one here, but ' +
+            'nothing is transmitted until you set “Transmit from” above, and POTACAT refuses to ' +
+            'key without it.</span>') +
         '</li>' +
         '<li><code>Settings &gt; Radio</code> → <b>Rig</b> → <code>None</code></li>' +
         '<li><code>Settings &gt; Radio</code> → <b>PTT Method</b> → <code>VOX</code> ' +
