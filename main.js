@@ -5666,13 +5666,40 @@ function ensureJs8AudioWindow() {
       preload: path.join(__dirname, 'preload-js8-audio-bridge.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      // An AudioContext in a window that never received a user gesture starts
+      // SUSPENDED. This window has no UI and can never receive one.
+      autoplayPolicy: 'no-user-gesture-required',
       // Audio must keep running while the window is hidden and the app is in
       // the background — a throttled bridge stutters the decode window.
       backgroundThrottling: false,
     },
   });
-  js8AudioWin.loadFile('renderer/js8-audio-bridge.html');
+  // Without this the window's getUserMedia is DENIED, and a denied media
+  // permission is what makes enumerateDevices() return every device with a
+  // BLANK label. Nothing then matches a cable by name, and the panel reports
+  // "could not read this PC's audio devices" on a machine with sixteen of them
+  // (K3SBP 2026-08-08). remote-audio.html has always done this; the new window
+  // did not, and only inherited it by luck when ECHOCAT happened to be open.
+  js8AudioWin.webContents.session.setPermissionRequestHandler((_wc, _perm, cb) => cb(true));
+  // path.join(__dirname, ...) like every other window here. A bare relative
+  // path resolves against the CURRENT WORKING DIRECTORY, which only happens to
+  // match the app directory when launched with `npm start` from the repo root.
+  js8AudioWin.loadFile(path.join(__dirname, 'renderer', 'js8-audio-bridge.html'));
   _js8AudioReady = false;
+
+  // This window is invisible, so its failures are invisible too unless they are
+  // forwarded. A load error or a blocked script otherwise presents as a healthy
+  // window that simply never does anything.
+  js8AudioWin.webContents.on('did-fail-load', (_e, code, desc, url) => {
+    sendCatLog(`[JS8Call audio] window failed to load (${code} ${desc}) ${url || ''}`);
+  });
+  js8AudioWin.webContents.on('console-message', (_e, level, message, line, source) => {
+    // level 2 = warning, 3 = error. Anything at that level in a window with no
+    // UI is something nobody would otherwise ever see.
+    if (level >= 2) {
+      sendCatLog(`[JS8Call audio] renderer: ${message}${source ? ` (${String(source).split(/[\/]/).pop()}:${line})` : ''}`);
+    }
+  });
   js8AudioWin.on('closed', () => { js8AudioWin = null; _js8AudioReady = false; });
   return js8AudioWin;
 }
@@ -5739,6 +5766,10 @@ function markJs8AudioReady() {
  */
 async function listJs8AudioDevices() {
   const ready = await whenJs8AudioReady();
+  if (!ready) {
+    sendCatLog('[JS8Call audio] the bridge window never reported ready — its script did not run. '
+      + 'Any error from it is logged above as "renderer:".');
+  }
   if (!ready || !js8AudioWin || js8AudioWin.isDestroyed()) return _js8AudioDevices;
   return new Promise((resolve) => {
     let settled = false;
@@ -24363,6 +24394,9 @@ app.whenReady().then(() => {
   ipcMain.on('js8-audio-ready', () => { markJs8AudioReady(); pushJs8AudioConfig(); });
   ipcMain.on('js8-audio-devices', (_e, list) => {
     _js8AudioDevices = Array.isArray(list) ? list : [];
+    const named = _js8AudioDevices.filter((d) => d && d.label).length;
+    sendCatLog(`[JS8Call audio] ${_js8AudioDevices.length} audio devices, ${named} with readable names`
+      + (named === 0 && _js8AudioDevices.length ? ' — names are blank, which means microphone permission was refused' : ''));
     if (_js8AudioDevicesResolve) { _js8AudioDevicesResolve(_js8AudioDevices); _js8AudioDevicesResolve = null; }
   });
   ipcMain.on('js8-audio-status', (_e, st) => {
