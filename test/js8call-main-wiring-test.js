@@ -152,5 +152,34 @@ test('every exit from launchJs8Call reports itself', () => {
     `launchJs8Call has ${returns} outcomes but only ${logs} log lines — a silent one is invisible`);
 });
 
+// ── the popout's setup gate ─────────────────────────────────────────────────
+
+const POPOUT = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'js8call-popout.js'), 'utf8');
+
+test('the DAX prerequisite block yields to the audio bridge', () => {
+  // With POTACAT acting as JS8Call's sound card, DAX and SmartSDR CAT are not
+  // prerequisites for anything — the audio arrives over the network and the
+  // radio is tuned from POTACAT. The blocker returned early regardless, so the
+  // screen read "JS8Call needs two SmartSDR helpers running" directly above its
+  // own panel headed "Skip DAX entirely", and hid every button that starts
+  // JS8Call. The operator had followed the instructions and had nowhere to go
+  // (K3SBP 2026-08-08).
+  const m = POPOUT.match(/if \(\(?p\.daxDown[^)]*\)?[^{]*\{/);
+  assert.ok(m, 'the daxDown/catShimDown branch was not found — has it been renamed?');
+  assert.ok(/bridgeOn/.test(m[0]),
+    'the DAX blocker must be conditional on the bridge being off: ' + m[0]);
+});
+
+test('the bridge state is awaited before the setup branches on it', () => {
+  // refreshAudioBridge is async. Read without awaiting, `enabled` is undefined
+  // and every branch silently takes the no-bridge path — the same shape as the
+  // applyJs8Setup bug this file was written for.
+  const start = POPOUT.indexOf('async function refreshSetupInner()');
+  assert.ok(start > 0, 'refreshSetupInner not found');
+  const body = POPOUT.slice(start, start + 2000);
+  assert.ok(/await\s+refreshAudioBridge\(\)/.test(body),
+    'refreshSetupInner must await refreshAudioBridge() before branching on it');
+});
+
 console.log(`\nJS8Call main wiring: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

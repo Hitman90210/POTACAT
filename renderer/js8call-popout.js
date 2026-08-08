@@ -365,7 +365,7 @@
   async function refreshAudioBridge() {
     var p;
     try { p = await window.api.audioPlan(); } catch (e) { p = null; }
-    if (!p) { audioBox.hidden = true; return; }
+    if (!p) { audioBox.hidden = true; return null; }
     audioBox.hidden = false;
 
     var cables = (p.devices || []).filter(function (d) {
@@ -390,6 +390,11 @@
     if (p.txReason) notes.push(p.txReason);
     if (p.enabled && p.running) notes.push('Receive audio is flowing.');
     audioNote.innerHTML = notes.map(esc).join('<br>');
+    // Returned because the setup flow above has to know whether this route is
+    // live: with POTACAT as the sound card, DAX and SmartSDR CAT stop being
+    // prerequisites at all, and gating the launch on them strands the operator
+    // on a screen whose own instructions say to skip them (K3SBP 2026-08-08).
+    return p;
   }
 
   async function saveAudioBridge(enabled) {
@@ -545,7 +550,10 @@
 
   async function refreshSetupInner() {
     showSetup(true);
-    refreshAudioBridge();
+    // Awaited, not fired and forgotten: every branch below depends on whether
+    // POTACAT is already acting as JS8Call's sound card.
+    var audio = await refreshAudioBridge();
+    var bridgeOn = !!(audio && audio.enabled);
     setupChanges.innerHTML = '';
     setupNote.hidden = true;
     setupGo.hidden = setupLaunch.hidden = setupRadioWrap.hidden = true;
@@ -572,7 +580,12 @@
     // change JS8Call's settings, and no setting reaches the radio while the DAX
     // endpoints are inert placeholders — showing the usual button here would
     // hand the operator a fix that cannot work.
-    if (p.daxDown || p.catShimDown) {
+    // ...unless POTACAT is the sound card, in which case neither helper is a
+    // prerequisite for anything: the audio comes over the network and the
+    // radio is tuned from here. Blocking on them anyway put the operator on a
+    // screen headed "JS8Call needs two SmartSDR helpers running" directly above
+    // a panel headed "Skip DAX entirely", with no way to start JS8Call at all.
+    if ((p.daxDown || p.catShimDown) && !bridgeOn) {
       // Both prerequisites at once. POTACAT reaches a Flex over the native API
       // and needs neither of these, so on a Flex Direct station they are BOTH
       // usually missing — reporting one per visit turns a single answer into a
@@ -637,7 +650,9 @@
       setupSlice.hidden = setupSliceWhy.hidden = true;
     }
 
-    setupRadioWrap.hidden = !p.canDoRadio;
+    // Never offered on the bridge route: this box writes DAX device names into
+    // JS8Call.ini, which is precisely the wiring the bridge replaces.
+    setupRadioWrap.hidden = !p.canDoRadio || bridgeOn;
     if (setupRadio && !radioTouched) setupRadio.checked = !!p.includeRadio;
     // The label carries whatever the change list above does NOT. Ticked, the
     // list already spells the move out, so this is just the toggle's name.
@@ -656,7 +671,9 @@
     // output audio format is not supported on device", which sends the
     // operator hunting through sample rates for a device that is not there.
     // Name the string.
-    var dead = (p.deviceProblems || []).filter(Boolean);
+    // On the bridge route JS8Call's DAX devices are meant to be unused, so
+    // reporting them as broken is noise about a thing nobody is relying on.
+    var dead = bridgeOn ? [] : (p.deviceProblems || []).filter(Boolean);
     // The radio-side twin of a dead audio device, and the only remaining reason
     // JS8Call still says it has no rig once the audio is right.
     if (p.catPortDead) {
@@ -689,6 +706,32 @@
             'The other option is a CAT port for a second slice in the SmartSDR CAT window.'
           : '') +
         '</div>';
+    }
+
+    // The instructions POTACAT genuinely cannot carry out. These live in the
+    // same Qt binary blobs as Rig and PTT Method, and the capture device is not
+    // derivable anyway: which B-bus carries a VoiceMeeter strip is a routing
+    // choice made in its mixer, not a property of the device name.
+    if (bridgeOn) {
+      var rxLabel = (audio.rx && audio.rx.label) || '';
+      var capture = /voicemeeter/i.test(rxLabel)
+        ? 'the <code>Voicemeeter Out B</code> bus you switched on for that strip'
+        : (/cable input/i.test(rxLabel)
+          ? '<code>' + esc(rxLabel.replace(/input/i, 'Output')) + '</code>'
+          : 'the capture half of that same cable');
+      setupNote.hidden = false;
+      setupNote.innerHTML =
+        '<b>Three things to set in JS8Call itself:</b>' +
+        '<ul style="margin:6px 0 0;padding-left:18px;">' +
+        '<li><code>Settings &gt; Audio</code> → <b>Soundcard Input</b> → ' + capture +
+        (rxLabel ? ' <span style="opacity:.75">(POTACAT plays into ' + esc(rxLabel) + ')</span>' : '') +
+        '</li>' +
+        '<li><code>Settings &gt; Radio</code> → <b>Rig</b> → <code>None</code></li>' +
+        '<li><code>Settings &gt; Radio</code> → <b>PTT Method</b> → <code>VOX</code> ' +
+        '<span style="opacity:.75">(CAT would need the rig you just removed)</span></li>' +
+        '</ul><div style="margin-top:6px;">' +
+        'JS8Call then decodes without touching the radio: POTACAT feeds it audio, tunes the ' +
+        'radio, and keys on the transmit signal JS8Call reports over its API.</div>';
     }
 
     if (p.running) {
