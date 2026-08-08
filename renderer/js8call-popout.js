@@ -405,7 +405,15 @@
         txDeviceId: audioTx.value,
       });
     } catch (e) { audioNote.textContent = 'Could not save: ' + (e && e.message); return; }
-    refreshAudioBridge();
+    // The WHOLE setup screen, not just this panel. Switching the bridge on
+    // removes DAX and SmartSDR CAT as prerequisites, which changes the heading,
+    // the notes, and which buttons exist at all — refreshSetup redraws those and
+    // calls refreshAudioBridge on its way through. Refreshing only this panel
+    // left the operator reading "JS8Call needs two SmartSDR helpers running"
+    // directly above a live "Receive audio is flowing", with every button that
+    // starts JS8Call still hidden until they happened to press Retry
+    // (K3SBP 2026-08-08).
+    refreshSetup();
   }
 
   audioOn.addEventListener('click', function () { saveAudioBridge(true); });
@@ -537,15 +545,20 @@
     problemsEl.hidden = on;
   }
 
-  var setupBusy = false;
+  var setupBusy = false, setupAgain = false;
   // Once the operator moves the slice checkbox it is theirs, not ours.
   var radioTouched = false;
 
   async function refreshSetup() {
     if (connected) { showSetup(false); return; }
-    if (setupBusy) return;
+    // Coalesce rather than drop. A refresh asked for while one is in flight is
+    // the one that matters — the operator just changed something — and throwing
+    // it away leaves the screen describing the state before their click.
+    if (setupBusy) { setupAgain = true; return; }
     setupBusy = true;
-    try { await refreshSetupInner(); } finally { setupBusy = false; }
+    try {
+      do { setupAgain = false; await refreshSetupInner(); } while (setupAgain);
+    } finally { setupBusy = false; }
   }
 
   async function refreshSetupInner() {

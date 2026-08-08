@@ -181,5 +181,18 @@ test('the bridge state is awaited before the setup branches on it', () => {
     'refreshSetupInner must await refreshAudioBridge() before branching on it');
 });
 
+test('toggling the bridge redraws the setup screen, not just its own panel', () => {
+  // Enabling the bridge changes which prerequisites apply, so it changes the
+  // heading, the notes and which buttons exist. saveAudioBridge refreshed only
+  // the audio panel, so the screen kept the pre-bridge heading and hid every
+  // launch button until the operator happened to press Retry — with "Receive
+  // audio is flowing" showing two inches below it (K3SBP 2026-08-08).
+  const start = POPOUT.indexOf('async function saveAudioBridge(');
+  assert.ok(start > 0, 'saveAudioBridge not found');
+  const body = POPOUT.slice(start, POPOUT.indexOf('\n  }', start));
+  assert.ok(/refreshSetup\(\)/.test(body),
+    'saveAudioBridge must refresh the whole setup screen, not only the audio panel');
+});
+
 console.log(`\nJS8Call main wiring: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
