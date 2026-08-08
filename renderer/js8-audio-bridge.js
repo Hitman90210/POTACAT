@@ -17,7 +17,11 @@
 // (an operator can be on ECHOCAT and JS8Call at once).
 'use strict';
 
-var api = window.api;
+// NOT `var api`: at the top level of a classic script that assigns to
+// window.api, which contextBridge has already defined as read-only — it throws
+// on the first line and the whole bridge silently never runs. A const binding
+// lives in the script scope and touches no window property.
+const bridge = window.api;
 
 // ── receive: slice audio → cable ────────────────────────────────────────────
 // A scheduled-buffer player rather than a MediaStream: the frames arrive as
@@ -37,13 +41,13 @@ async function startRx(deviceId) {
   // Where it is unsupported the audio would silently go to the default output
   // — the operator's speakers — so refuse rather than quietly do that.
   if (typeof rxCtx.setSinkId !== 'function') {
-    api.status({ rx: false, error: 'This build cannot choose an audio output device (AudioContext.setSinkId missing).' });
+    bridge.status({ rx: false, error: 'This build cannot choose an audio output device (AudioContext.setSinkId missing).' });
     return;
   }
   try {
     await rxCtx.setSinkId(rxDeviceId);
   } catch (e) {
-    api.status({ rx: false, error: 'Could not open the receive cable: ' + (e && e.message) });
+    bridge.status({ rx: false, error: 'Could not open the receive cable: ' + (e && e.message) });
     return;
   }
   rxGain = rxCtx.createGain();
@@ -51,7 +55,7 @@ async function startRx(deviceId) {
   rxGain.connect(rxCtx.destination);
   rxNextAt = 0;
   rxFrames = 0;
-  api.status({ rx: true, rxDevice: rxDeviceId });
+  bridge.status({ rx: true, rxDevice: rxDeviceId });
 }
 
 function stopRx() {
@@ -77,7 +81,7 @@ function playRx(pcm, sampleRate) {
   src.start(rxNextAt);
   rxNextAt += buf.duration;
   rxFrames++;
-  if (rxFrames === 1) api.status({ rx: true, firstFrame: true, rate: rate });
+  if (rxFrames === 1) bridge.status({ rx: true, firstFrame: true, rate: rate });
 }
 
 // ── transmit: cable → main → dax_tx ─────────────────────────────────────────
@@ -97,7 +101,7 @@ async function startTx(deviceId) {
       },
     });
   } catch (e) {
-    api.status({ tx: false, error: 'Could not open the transmit cable: ' + (e && e.message) });
+    bridge.status({ tx: false, error: 'Could not open the transmit cable: ' + (e && e.message) });
     return;
   }
   // 24 kHz to match the radio's dax_tx wire rate, so main never resamples.
@@ -105,16 +109,16 @@ async function startTx(deviceId) {
   try {
     await txCtx.audioWorklet.addModule('dax-tx-worklet.js');
   } catch (e) {
-    api.status({ tx: false, error: 'TX worklet failed to load: ' + (e && e.message) });
+    bridge.status({ tx: false, error: 'TX worklet failed to load: ' + (e && e.message) });
     return;
   }
   txSource = txCtx.createMediaStreamSource(txStream);
   txNode = new AudioWorkletNode(txCtx, 'dax-tx-processor');
   txNode.port.onmessage = function (ev) {
-    if (ev.data && ev.data.length) api.txChunk(ev.data);
+    if (ev.data && ev.data.length) bridge.txChunk(ev.data);
   };
   txSource.connect(txNode);
-  api.status({ tx: true, txDevice: deviceId });
+  bridge.status({ tx: true, txDevice: deviceId });
 }
 
 function stopTx() {
@@ -127,28 +131,28 @@ function stopTx() {
 
 // ── wiring ──────────────────────────────────────────────────────────────────
 
-api.onConfig(async function (cfg) {
-  if (!cfg || !cfg.enabled) { stopRx(); stopTx(); api.status({ rx: false, tx: false }); return; }
+bridge.onConfig(async function (cfg) {
+  if (!cfg || !cfg.enabled) { stopRx(); stopTx(); bridge.status({ rx: false, tx: false }); return; }
   if (cfg.rxDeviceId) await startRx(cfg.rxDeviceId); else stopRx();
   if (cfg.txDeviceId) await startTx(cfg.txDeviceId); else stopTx();
 });
 
 var ackPending = 0;
-api.onAudioFrame(function (frame) {
+bridge.onAudioFrame(function (frame) {
   if (frame && frame.pcm) playRx(frame.pcm, frame.sampleRate);
   // Ack in batches: one IPC per frame would cost more than the audio does.
-  if (++ackPending >= 16) { api.ack(ackPending); ackPending = 0; }
+  if (++ackPending >= 16) { bridge.ack(ackPending); ackPending = 0; }
 });
 
 // Enumerating requires permission for labels; ask once so the picker in the
 // JS8Call window has real names rather than opaque ids.
-api.onListDevices(async function () {
+bridge.onListDevices(async function () {
   try {
     var s = await navigator.mediaDevices.getUserMedia({ audio: true });
     s.getTracks().forEach(function (t) { t.stop(); });
   } catch (e) { /* denied — ids still work, labels may be blank */ }
   var all = await navigator.mediaDevices.enumerateDevices();
-  api.devices(all
+  bridge.devices(all
     .filter(function (d) { return d.kind === 'audioinput' || d.kind === 'audiooutput'; })
     .map(function (d) { return { deviceId: d.deviceId, label: d.label, kind: d.kind }; }));
 });
@@ -158,5 +162,5 @@ window.addEventListener('beforeunload', function () { stopRx(); stopTx(); });
 // Says the script is alive. Its absence is the ONLY signal that the window
 // loaded but the code did not — which is what a CSP violation looks like from
 // the outside: a healthy window, no errors, and nothing ever happening.
-api.status({ loaded: true });
-api.ready();
+bridge.status({ loaded: true });
+bridge.ready();

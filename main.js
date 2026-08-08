@@ -5693,12 +5693,19 @@ function ensureJs8AudioWindow() {
   js8AudioWin.webContents.on('did-fail-load', (_e, code, desc, url) => {
     sendCatLog(`[JS8Call audio] window failed to load (${code} ${desc}) ${url || ''}`);
   });
-  js8AudioWin.webContents.on('console-message', (_e, level, message, line, source) => {
-    // level 2 = warning, 3 = error. Anything at that level in a window with no
-    // UI is something nobody would otherwise ever see.
-    if (level >= 2) {
-      sendCatLog(`[JS8Call audio] renderer: ${message}${source ? ` (${String(source).split(/[\/]/).pop()}:${line})` : ''}`);
-    }
+  js8AudioWin.webContents.on('console-message', (e, level, message, line, source) => {
+    // Electron 36+ passes ONE event object and warns that the positional form
+    // is deprecated; older builds pass positionals. Accept whichever arrived so
+    // this keeps working across the upgrade rather than going quiet at exactly
+    // the moment it is needed.
+    const lvl = (e && e.level !== undefined) ? e.level : level;
+    const msg = (e && e.message !== undefined) ? e.message : message;
+    const src = (e && e.sourceId !== undefined) ? e.sourceId : source;
+    const ln = (e && e.lineNumber !== undefined) ? e.lineNumber : line;
+    const bad = (lvl === 'warning' || lvl === 'error' || Number(lvl) >= 2);
+    if (!bad || !msg) return;
+    const where = src ? ` (${String(src).split(/[\\/]/).pop()}:${ln})` : '';
+    sendCatLog(`[JS8Call audio] renderer: ${msg}${where}`);
   });
   js8AudioWin.on('closed', () => { js8AudioWin = null; _js8AudioReady = false; });
   return js8AudioWin;
