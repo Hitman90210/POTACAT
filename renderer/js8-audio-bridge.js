@@ -1,0 +1,162 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Casey Stanton
+//
+// POTACAT as JS8Call's sound card. This window is never shown; it exists
+// because audio devices live in a renderer and nowhere else in Electron.
+//
+// RX: slice audio arrives from main as VITA-49 PCM (the same frames JTCAT and
+//     ECHOCAT already receive) and is played into a virtual cable. JS8Call
+//     records from the other end. No DAX, no SmartSDR, no slice of its own.
+// TX: JS8Call plays into a second cable; this captures it and hands chunks to
+//     main, which sends them to the radio on the dax_tx stream that JTCAT and
+//     SSTV already use successfully.
+//
+// Deliberately a SEPARATE window from remote-audio.html: that one is ECHOCAT's
+// WebRTC bridge with its own capture, PTT guard, EQ and TX-drive state, and
+// sharing it would couple two features that must be able to run independently
+// (an operator can be on ECHOCAT and JS8Call at once).
+'use strict';
+
+var api = window.api;
+
+// ── receive: slice audio → cable ────────────────────────────────────────────
+// A scheduled-buffer player rather than a MediaStream: the frames arrive as
+// bare PCM at the radio's own rate, and scheduling each one at an explicit
+// time is what keeps a continuous 15-second decode window free of the gaps a
+// naive "play when it arrives" loop produces under GC.
+
+var rxCtx = null, rxGain = null, rxNextAt = 0, rxDeviceId = '', rxFrames = 0;
+var RX_LEAD = 0.08;          // seconds of scheduling cushion
+var RX_RESYNC = 0.35;        // drift past this and we restart the clock
+
+async function startRx(deviceId) {
+  stopRx();
+  rxDeviceId = deviceId || '';
+  rxCtx = new AudioContext();
+  // setSinkId on an AudioContext is what routes the whole graph to the cable.
+  // Where it is unsupported the audio would silently go to the default output
+  // — the operator's speakers — so refuse rather than quietly do that.
+  if (typeof rxCtx.setSinkId !== 'function') {
+    api.status({ rx: false, error: 'This build cannot choose an audio output device (AudioContext.setSinkId missing).' });
+    return;
+  }
+  try {
+    await rxCtx.setSinkId(rxDeviceId);
+  } catch (e) {
+    api.status({ rx: false, error: 'Could not open the receive cable: ' + (e && e.message) });
+    return;
+  }
+  rxGain = rxCtx.createGain();
+  rxGain.gain.value = 1;
+  rxGain.connect(rxCtx.destination);
+  rxNextAt = 0;
+  rxFrames = 0;
+  api.status({ rx: true, rxDevice: rxDeviceId });
+}
+
+function stopRx() {
+  if (rxCtx) { try { rxCtx.close(); } catch (e) { /* already gone */ } }
+  rxCtx = null; rxGain = null; rxNextAt = 0;
+}
+
+function playRx(pcm, sampleRate) {
+  if (!rxCtx || !rxGain || !pcm || !pcm.length) return;
+  var rate = Number(sampleRate) || 24000;
+  var buf = rxCtx.createBuffer(1, pcm.length, rate);
+  buf.copyToChannel(pcm instanceof Float32Array ? pcm : new Float32Array(pcm), 0);
+  var src = rxCtx.createBufferSource();
+  src.buffer = buf;
+  src.connect(rxGain);
+
+  var now = rxCtx.currentTime;
+  // Restart the clock on a large gap (app suspended, radio silent, tab
+  // throttled). Without this the scheduled time falls permanently behind and
+  // every later frame plays instantly, which sounds like stutter and decodes
+  // like nothing.
+  if (!rxNextAt || rxNextAt < now || rxNextAt - now > RX_RESYNC) rxNextAt = now + RX_LEAD;
+  src.start(rxNextAt);
+  rxNextAt += buf.duration;
+  rxFrames++;
+  if (rxFrames === 1) api.status({ rx: true, firstFrame: true, rate: rate });
+}
+
+// ── transmit: cable → main → dax_tx ─────────────────────────────────────────
+
+var txCtx = null, txStream = null, txNode = null, txSource = null;
+
+async function startTx(deviceId) {
+  stopTx();
+  if (!deviceId) return;
+  try {
+    txStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        deviceId: { exact: deviceId },
+        // Every one of these mangles a data signal. They are voice features.
+        echoCancellation: false, noiseSuppression: false, autoGainControl: false,
+        channelCount: 1,
+      },
+    });
+  } catch (e) {
+    api.status({ tx: false, error: 'Could not open the transmit cable: ' + (e && e.message) });
+    return;
+  }
+  // 24 kHz to match the radio's dax_tx wire rate, so main never resamples.
+  txCtx = new AudioContext({ sampleRate: 24000 });
+  try {
+    await txCtx.audioWorklet.addModule('dax-tx-worklet.js');
+  } catch (e) {
+    api.status({ tx: false, error: 'TX worklet failed to load: ' + (e && e.message) });
+    return;
+  }
+  txSource = txCtx.createMediaStreamSource(txStream);
+  txNode = new AudioWorkletNode(txCtx, 'dax-tx-processor');
+  txNode.port.onmessage = function (ev) {
+    if (ev.data && ev.data.length) api.txChunk(ev.data);
+  };
+  txSource.connect(txNode);
+  api.status({ tx: true, txDevice: deviceId });
+}
+
+function stopTx() {
+  if (txNode) { try { txNode.port.onmessage = null; txNode.disconnect(); } catch (e) {} }
+  if (txSource) { try { txSource.disconnect(); } catch (e) {} }
+  if (txStream) { try { txStream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {} }
+  if (txCtx) { try { txCtx.close(); } catch (e) {} }
+  txNode = txSource = txStream = txCtx = null;
+}
+
+// ── wiring ──────────────────────────────────────────────────────────────────
+
+api.onConfig(async function (cfg) {
+  if (!cfg || !cfg.enabled) { stopRx(); stopTx(); api.status({ rx: false, tx: false }); return; }
+  if (cfg.rxDeviceId) await startRx(cfg.rxDeviceId); else stopRx();
+  if (cfg.txDeviceId) await startTx(cfg.txDeviceId); else stopTx();
+});
+
+var ackPending = 0;
+api.onAudioFrame(function (frame) {
+  if (frame && frame.pcm) playRx(frame.pcm, frame.sampleRate);
+  // Ack in batches: one IPC per frame would cost more than the audio does.
+  if (++ackPending >= 16) { api.ack(ackPending); ackPending = 0; }
+});
+
+// Enumerating requires permission for labels; ask once so the picker in the
+// JS8Call window has real names rather than opaque ids.
+api.onListDevices(async function () {
+  try {
+    var s = await navigator.mediaDevices.getUserMedia({ audio: true });
+    s.getTracks().forEach(function (t) { t.stop(); });
+  } catch (e) { /* denied — ids still work, labels may be blank */ }
+  var all = await navigator.mediaDevices.enumerateDevices();
+  api.devices(all
+    .filter(function (d) { return d.kind === 'audioinput' || d.kind === 'audiooutput'; })
+    .map(function (d) { return { deviceId: d.deviceId, label: d.label, kind: d.kind }; }));
+});
+
+window.addEventListener('beforeunload', function () { stopRx(); stopTx(); });
+
+// Says the script is alive. Its absence is the ONLY signal that the window
+// loaded but the code did not — which is what a CSP violation looks like from
+// the outside: a healthy window, no errors, and nothing ever happening.
+api.status({ loaded: true });
+api.ready();

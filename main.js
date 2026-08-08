@@ -24367,7 +24367,8 @@ app.whenReady().then(() => {
   });
   ipcMain.on('js8-audio-status', (_e, st) => {
     _js8AudioStatus = Object.assign({}, _js8AudioStatus, st || {});
-    if (st && st.error) sendCatLog('[JS8Call audio] ' + st.error);
+    if (st && st.loaded) sendCatLog('[JS8Call audio] bridge window ready');
+    else if (st && st.error) sendCatLog('[JS8Call audio] ' + st.error);
     else if (st && st.firstFrame) sendCatLog(`[JS8Call audio] receive audio flowing into the cable (${st.rate || 24000} Hz)`);
     else if (st && st.rx === true) sendCatLog('[JS8Call audio] receive cable open');
     else if (st && st.tx === true) sendCatLog('[JS8Call audio] transmit cable open');
