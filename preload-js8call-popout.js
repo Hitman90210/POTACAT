@@ -55,6 +55,10 @@ contextBridge.exposeInMainWorld('api', {
   removeSlice: () => ipcRenderer.invoke('js8call-remove-slice'),
   // Band control for JS8Call's OWN receiver — never the operator's slice.
   bandState: () => ipcRenderer.invoke('js8call-band-state'),
+  // POTACAT-as-sound-card: the DAX-free route.
+  audioDevices: () => ipcRenderer.invoke('js8-audio-list-devices'),
+  audioPlan: () => ipcRenderer.invoke('js8-audio-plan'),
+  setAudioBridge: (cfg) => ipcRenderer.invoke('js8-audio-set', cfg),
   setBand: (band) => ipcRenderer.invoke('js8call-set-band', band),
   maximizeWindow: () => ipcRenderer.send('js8call-popout-maximize'),
 

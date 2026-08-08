@@ -141,6 +141,16 @@
     .jc-link { color: var(--accent-blue, #4fc3f7); cursor: pointer; text-decoration: underline; }
     .jc-link:hover { filter: brightness(1.15); }
     .jc-quiet { color: var(--text-tertiary, #666); font-size: 11px; margin: 0 0 10px !important; }
+    .jc-audio { margin-top: 16px; padding: 12px 14px; border: 1px solid var(--border-primary);
+      border-radius: 5px; background: var(--bg-tertiary, #1a1a2e); }
+    .jc-audio[hidden] { display: none; }
+    .jc-audio h3 { margin: 0 0 5px; font-size: 13px; color: var(--text-primary); font-weight: 600; }
+    .jc-audio p { margin: 0 0 10px; font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
+    .jc-audio label { font-size: 11.5px; color: var(--text-secondary); display: flex;
+      align-items: center; gap: 6px; }
+    .jc-audio select { background: var(--bg-secondary); color: var(--text-primary);
+      border: 1px solid var(--border-primary); border-radius: 4px; padding: 4px 6px;
+      font-size: 11px; max-width: 210px; }
     /* The one diagnosis worth interrupting for: a device that is not there,
        which JS8Call reports as a format problem. */
     .jc-setup-note { font-size: 12px; line-height: 1.6; padding: 9px 11px; margin-bottom: 12px;
@@ -264,6 +274,23 @@
     </div>
     <!-- A div, not a p: it holds <p> and <details>, and a browser silently
          closes a <p> at the first block child, orphaning everything after. -->
+    <!-- The DAX-free route: POTACAT is JS8Call's sound card. A peer of the
+         DAX setup above rather than a fallback — on a SmartSDR-less station it
+         is the only one that works. -->
+    <div class="jc-audio" id="jc-audio" hidden>
+      <h3>Skip DAX entirely</h3>
+      <p id="jc-audio-lede"></p>
+      <div class="jc-setup-actions">
+        <label>Receive into <select id="jc-audio-rx"></select></label>
+        <label>Transmit from <select id="jc-audio-tx"></select></label>
+      </div>
+      <div class="jc-setup-actions" style="margin-top:8px;">
+        <button class="jc-btn go" id="jc-audio-on">Use POTACAT as the sound card</button>
+        <button class="jc-btn" id="jc-audio-off" hidden>Turn it off</button>
+      </div>
+      <p class="jc-quiet" id="jc-audio-note"></p>
+    </div>
+
     <div class="jc-setup-manual" id="jc-setup-manual"></div>
   </div>
 

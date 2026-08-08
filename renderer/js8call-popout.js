@@ -25,6 +25,9 @@
       setupChanges = el('jc-setup-changes'), setupGo = el('jc-setup-go'),
       setupLaunch = el('jc-setup-launch'), setupRadioWrap = el('jc-setup-radio-wrap'),
       setupRadio = el('jc-setup-radio'), setupRadioWhy = el('jc-setup-radio-why'),
+      audioBox = el('jc-audio'), audioLede = el('jc-audio-lede'), audioRx = el('jc-audio-rx'),
+      audioTx = el('jc-audio-tx'), audioOn = el('jc-audio-on'), audioOff = el('jc-audio-off'),
+      audioNote = el('jc-audio-note'),
       setupNote = el('jc-setup-note'), setupDax = el('jc-setup-dax'),
       setupSlice = el('jc-setup-slice'), setupSliceWhy = el('jc-setup-slice-why'),
       setupManual = el('jc-setup-manual');
@@ -339,6 +342,77 @@
     refreshCompose();
   });
 
+  // ── POTACAT as the sound card ──────────────────────────────────────────────
+  // The route that needs no DAX, no SmartSDR and no slice of its own: POTACAT
+  // plays the slice audio it already receives into a virtual cable, JS8Call
+  // records from the other end, and JS8Call's transmit audio comes back the
+  // same way onto the dax_tx stream JTCAT already uses.
+
+  function fillDevices(sel, list, chosen) {
+    sel.innerHTML = '';
+    var none = document.createElement('option');
+    none.value = ''; none.textContent = '(none)';
+    sel.appendChild(none);
+    (list || []).forEach(function (d) {
+      var o = document.createElement('option');
+      o.value = d.deviceId;
+      o.textContent = d.label || d.deviceId.slice(0, 24);
+      sel.appendChild(o);
+    });
+    sel.value = chosen || '';
+  }
+
+  async function refreshAudioBridge() {
+    var p;
+    try { p = await window.api.audioPlan(); } catch (e) { p = null; }
+    if (!p) { audioBox.hidden = true; return; }
+    audioBox.hidden = false;
+
+    var cables = (p.devices || []).filter(function (d) {
+      return /vb-audio|cable|voicemeeter|virtual audio/i.test(d.label || '');
+    });
+    fillDevices(audioRx, cables.filter(function (d) { return d.kind === 'audiooutput'; }),
+      p.rx && p.rx.deviceId);
+    fillDevices(audioTx, cables.filter(function (d) { return d.kind === 'audioinput'; }),
+      p.tx && p.tx.deviceId);
+
+    audioOn.hidden = !!p.enabled;
+    audioOff.hidden = !p.enabled;
+    audioLede.innerHTML = p.enabled
+      ? 'POTACAT is JS8Call’s sound card. It plays this radio’s receive audio into the cable ' +
+        'below, so JS8Call needs no DAX, no SmartSDR and no receiver of its own.'
+      : 'POTACAT already has this radio’s audio. It can play it straight into a virtual cable that ' +
+        'JS8Call records from — no DAX program, no SmartSDR, no second slice. Transmit comes back ' +
+        'the same way, onto the path JTCAT and SSTV already use here.';
+
+    var notes = [];
+    if (p.rxReason) notes.push(p.rxReason);
+    if (p.txReason) notes.push(p.txReason);
+    if (p.enabled && p.running) notes.push('Receive audio is flowing.');
+    audioNote.innerHTML = notes.map(esc).join('<br>');
+  }
+
+  async function saveAudioBridge(enabled) {
+    try {
+      await window.api.setAudioBridge({
+        enabled: enabled,
+        rxDeviceId: audioRx.value,
+        txDeviceId: audioTx.value,
+      });
+    } catch (e) { audioNote.textContent = 'Could not save: ' + (e && e.message); return; }
+    refreshAudioBridge();
+  }
+
+  audioOn.addEventListener('click', function () { saveAudioBridge(true); });
+  audioOff.addEventListener('click', function () { saveAudioBridge(false); });
+  // Changing a device keeps the bridge in whatever state it is already in —
+  // picking a different cable should not switch the sound card on, and should
+  // not switch it off while it is carrying audio. audioOff is visible exactly
+  // when the bridge is enabled.
+  function onDeviceChange() { saveAudioBridge(!audioOff.hidden); }
+  audioRx.addEventListener('change', onDeviceChange);
+  audioTx.addEventListener('change', onDeviceChange);
+
   // ── station actions + band ─────────────────────────────────────────────────
   // These act on the STATION, not on a conversation, so they live in the bar
   // and stay live whenever the bridge is up.
@@ -471,6 +545,7 @@
 
   async function refreshSetupInner() {
     showSetup(true);
+    refreshAudioBridge();
     setupChanges.innerHTML = '';
     setupNote.hidden = true;
     setupGo.hidden = setupLaunch.hidden = setupRadioWrap.hidden = true;

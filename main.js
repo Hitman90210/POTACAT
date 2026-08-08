@@ -280,6 +280,7 @@ const js8Addr = require('./lib/js8call-threads');   // composeDirected / isAddre
 const js8Process = require('./lib/js8call-process');
 const js8Audio = require('./lib/js8call-audio');
 const js8Slice = require('./lib/js8call-slice');
+const js8AudioBridgeLib = require('./lib/js8call-audio-bridge');
 const radioOwnerLib = require('./lib/radio-owner');
 const { attachMercuryRadioBridge } = require('./lib/mercury-radio-bridge');
 const mercuryAudioBridge = require('./lib/mercury-audio-bridge');
@@ -5463,6 +5464,10 @@ let _js8ReleasedTxStream = false;
 let _js8PrevTxDax = null;
 /** Peak forward power during JS8Call's current transmission, watts. */
 let _js8PeakFwdW = 0;
+/** Hidden renderer that is JS8Call's sound card (renderer/js8-audio-bridge.html). */
+let js8AudioWin = null;
+let _js8AudioDevices = [];       // last enumeration, for the device pickers
+let _js8AudioStatus = {};        // last status the bridge reported
 /** How long JS8Call may be gone before POTACAT takes its receiver back. */
 const JS8_SLICE_RECLAIM_MS = 45000;
 
@@ -5642,6 +5647,72 @@ function removeJs8Slice(why = '') {
     sendCatLog('[JS8Call] could not remove slice ' + idx + ': ' + (err.message || err));
   }
 }
+
+// ─── POTACAT as JS8Call's sound card ─────────────────────────────────────────
+// The alternative to DAX. Slice audio POTACAT already receives is played into a
+// virtual cable that JS8Call records from; JS8Call's transmit audio comes back
+// through a second cable and goes to the radio on the dax_tx stream JTCAT and
+// SSTV already use. No SmartSDR, no DAX program, no slice of its own.
+
+function js8AudioEnabled() {
+  return !!(settings.js8AudioBridge && settings.js8AudioRxDevice);
+}
+
+function ensureJs8AudioWindow() {
+  if (js8AudioWin && !js8AudioWin.isDestroyed()) return js8AudioWin;
+  js8AudioWin = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-js8-audio-bridge.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      // Audio must keep running while the window is hidden and the app is in
+      // the background — a throttled bridge stutters the decode window.
+      backgroundThrottling: false,
+    },
+  });
+  js8AudioWin.loadFile('renderer/js8-audio-bridge.html');
+  js8AudioWin.on('closed', () => { js8AudioWin = null; });
+  return js8AudioWin;
+}
+
+function pushJs8AudioConfig() {
+  if (!js8AudioWin || js8AudioWin.isDestroyed()) return;
+  js8AudioWin.webContents.send('js8-audio-config', {
+    enabled: js8AudioEnabled(),
+    rxDeviceId: settings.js8AudioRxDevice || '',
+    txDeviceId: settings.js8AudioTxDevice || '',
+  });
+}
+
+function startJs8AudioBridge() {
+  if (!js8AudioEnabled()) { stopJs8AudioBridge(); return; }
+  ensureJs8AudioWindow();
+  // Config is pushed on 'js8-audio-ready' as well, for the first load.
+  pushJs8AudioConfig();
+}
+
+function stopJs8AudioBridge() {
+  if (!js8AudioWin || js8AudioWin.isDestroyed()) return;
+  try { js8AudioWin.webContents.send('js8-audio-config', { enabled: false }); } catch {}
+  try { js8AudioWin.destroy(); } catch {}
+  js8AudioWin = null;
+  _js8AudioStatus = {};
+}
+
+/** Ask the bridge to enumerate audio devices (labels need a renderer). */
+function listJs8AudioDevices() {
+  return new Promise((resolve) => {
+    ensureJs8AudioWindow();
+    const done = () => resolve(_js8AudioDevices);
+    // The reply lands on 'js8-audio-devices'; give it a bounded wait so a
+    // wedged renderer cannot hang the settings UI.
+    _js8AudioDevicesResolve = resolve;
+    setTimeout(done, 4000);
+    try { js8AudioWin.webContents.send('js8-audio-list-devices'); } catch { done(); }
+  });
+}
+let _js8AudioDevicesResolve = null;
 
 // ─── one-click setup ─────────────────────────────────────────────────────────
 // "Open POTACAT, click More > JS8Call, then have JS8Call open and configure
@@ -10456,6 +10527,10 @@ function startSmartSdrAudio() {
     // consumer can't grow main's IPC backlog into a leak.
     if (remoteAudioWin) {
       audioSafeSend(remoteAudioWin.webContents, 'smartsdr-audio-frame', { pcm, sampleRate });
+    }
+    // JS8Call's sound card. Same frames, played into a virtual cable.
+    if (js8AudioWin && !js8AudioWin.isDestroyed()) {
+      audioSafeSend(js8AudioWin.webContents, 'smartsdr-audio-frame', { pcm, sampleRate });
     }
     // VFO popout: local "Radio audio monitor" playback for SmartSDR Direct —
     // the Windows DAX RX device the monitor would otherwise capture is silent
@@ -22129,6 +22204,7 @@ app.whenReady().then(() => {
   if (settings.myCallsign) connectRbn();
   if (settings.enableMercury) connectMercury();
   connectJs8Call();   // decides for itself — see js8Enabled()
+  startJs8AudioBridge();   // no-op unless a receive cable is configured
   connectSmartSdr(); // connects if smartSdrSpots, CW keyer, or WSJT-X+Flex
   connectTci();
   connectAntennaGenius();
@@ -24243,6 +24319,64 @@ app.whenReady().then(() => {
   // slice on the operator's radio, so it happens on a click and never as a
   // side effect of opening a window.
   ipcMain.handle('js8call-create-slice', async () => { markUserActive(); return createJs8Slice(); });
+  // ── JS8Call audio bridge ──────────────────────────────────────────────────
+  ipcMain.on('js8-audio-ready', () => pushJs8AudioConfig());
+  ipcMain.on('js8-audio-devices', (_e, list) => {
+    _js8AudioDevices = Array.isArray(list) ? list : [];
+    if (_js8AudioDevicesResolve) { _js8AudioDevicesResolve(_js8AudioDevices); _js8AudioDevicesResolve = null; }
+  });
+  ipcMain.on('js8-audio-status', (_e, st) => {
+    _js8AudioStatus = Object.assign({}, _js8AudioStatus, st || {});
+    if (st && st.error) sendCatLog('[JS8Call audio] ' + st.error);
+    else if (st && st.firstFrame) sendCatLog(`[JS8Call audio] receive audio flowing into the cable (${st.rate || 24000} Hz)`);
+    else if (st && st.rx === true) sendCatLog('[JS8Call audio] receive cable open');
+    else if (st && st.tx === true) sendCatLog('[JS8Call audio] transmit cable open');
+  });
+  // JS8Call's transmit audio on its way to the radio. NOT gated on
+  // _isEffectivelyTransmitting() like the phone-mic path: for JS8Call this
+  // stream IS the transmission, and POTACAT keys because of it. The bridge
+  // only produces samples while JS8Call is actually sending.
+  ipcMain.on('js8-audio-tx-chunk', (_e, buf) => {
+    if (!js8TxActive) return;                       // only while JS8Call transmits
+    if (!smartSdrAudio || !smartSdrAudio.txReady) return;
+    try {
+      const samples = buf instanceof Float32Array ? buf
+        : new Float32Array(buf.buffer || buf, buf.byteOffset || 0, (buf.byteLength || buf.length) / 4);
+      smartSdrAudio.pushTxAudioChunk(samples);
+    } catch (err) {
+      sendCatLog('[JS8Call audio] TX chunk failed: ' + (err.message || err));
+    }
+  });
+  ipcMain.handle('js8-audio-list-devices', () => listJs8AudioDevices());
+
+  // What the JS8Call window shows: which cables exist, what is chosen, and the
+  // exact reason either direction is unavailable.
+  ipcMain.handle('js8-audio-plan', async () => {
+    const devices = await listJs8AudioDevices();
+    const plan = js8AudioBridgeLib.planAudioBridge({
+      devices,
+      rxDeviceId: settings.js8AudioRxDevice || '',
+      txDeviceId: settings.js8AudioTxDevice || '',
+    });
+    return {
+      ...plan,
+      enabled: !!settings.js8AudioBridge,
+      running: !!_js8AudioStatus.rx,
+      devices,
+    };
+  });
+
+  ipcMain.handle('js8-audio-set', (_e, cfg) => {
+    markUserActive();
+    const c = cfg || {};
+    if ('enabled' in c) settings.js8AudioBridge = !!c.enabled;
+    if ('rxDeviceId' in c) settings.js8AudioRxDevice = String(c.rxDeviceId || '');
+    if ('txDeviceId' in c) settings.js8AudioTxDevice = String(c.txDeviceId || '');
+    saveSettings(settings);
+    if (js8AudioEnabled()) startJs8AudioBridge(); else stopJs8AudioBridge();
+    return { ok: true, enabled: !!settings.js8AudioBridge };
+  });
+
   ipcMain.handle('js8call-band-state', () => js8BandState());
   ipcMain.handle('js8call-set-band', (_e, band) => { markUserActive(); return setJs8Band(band); });
   ipcMain.handle('js8call-remove-slice', () => {
@@ -28436,6 +28570,11 @@ app.whenReady().then(() => {
       if (js8Enabled()) connectJs8Call();
       else disconnectJs8Call();
     }
+    // The audio bridge is independent of the API bridge: an operator can run
+    // one without the other, so it gets its own change gate.
+    if (has('js8AudioBridge') || has('js8AudioRxDevice') || has('js8AudioTxDevice')) {
+      if (js8AudioEnabled()) startJs8AudioBridge(); else stopJs8AudioBridge();
+    }
 
     // Reconnect SmartSDR if settings changed (also needed for WSJT-X+Flex and CW keyer).
     // activeRigChanged: a desktop rig switch must reconnect the FlexLib API
@@ -30960,6 +31099,7 @@ function gracefulCleanup() {
   // left a slice behind on every quit (K3SBP 2026-08-07: "slices continue to
   // be made, but not deleted at close").
   try { removeJs8Slice('POTACAT closing'); } catch {}
+  try { stopJs8AudioBridge(); } catch {}
   try { if (sstvEngine) sstvEngine.stop(); } catch {}
   // Save QRZ cache to disk
   try {
