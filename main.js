@@ -19482,17 +19482,27 @@ function createWindow() {
     settings.vfoPopoutOpen = !!(vfoPopoutWin && !vfoPopoutWin.isDestroyed());
     settings.logPopoutOpen = !!(logPopoutWin && !logPopoutWin.isDestroyed());
     saveSettings(settings);
-    if (popoutWin && !popoutWin.isDestroyed()) popoutWin.close();
-    if (qsoPopoutWin && !qsoPopoutWin.isDestroyed()) qsoPopoutWin.close();
-    if (spotsPopoutWin && !spotsPopoutWin.isDestroyed()) spotsPopoutWin.close();
-    if (clusterPopoutWin && !clusterPopoutWin.isDestroyed()) clusterPopoutWin.close();
-    if (actmapPopoutWin && !actmapPopoutWin.isDestroyed()) actmapPopoutWin.close();
-    if (vfoPopoutWin && !vfoPopoutWin.isDestroyed()) vfoPopoutWin.close();
-    if (logPopoutWin && !logPopoutWin.isDestroyed()) logPopoutWin.close();
-    if (remoteAudioWin && !remoteAudioWin.isDestroyed()) remoteAudioWin.close();
-    if (sstvPopoutWin && !sstvPopoutWin.isDestroyed()) sstvPopoutWin.close();
-    if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) jtcatPopoutWin.close();
-    if (jtcatMapPopoutWin && !jtcatMapPopoutWin.isDestroyed()) jtcatMapPopoutWin.close();
+    // Every other window, ENUMERATED rather than listed by name.
+    //
+    // Electron fires window-all-closed only when the LAST BrowserWindow is
+    // destroyed — hidden ones included — and app.quit() lives in that handler.
+    // So one window missing here leaves POTACAT running with no UI: the taskbar
+    // is clear, the process is not, and the launching terminal never returns.
+    // That is "I have to Ctrl+C the npm start window after closing POTACAT"
+    // (K3SBP 2026-08-08, roughly the last ten sessions).
+    //
+    // The list this replaces had drifted NINE windows behind — the ECHOCAT
+    // audio client, the JS8Call audio bridge and popout, Mercury, propagation,
+    // conditions, bandspread and both pairing windows — because it had to be
+    // updated by hand every time a window was added, and nothing failed loudly
+    // when it wasn't. Enumeration cannot fall behind.
+    //
+    // Hidden helper windows have no close handler of their own to run, and the
+    // popouts' handlers do the same persisting they already did.
+    BrowserWindow.getAllWindows().forEach((w) => {
+      if (w === win || w.isDestroyed()) return;
+      try { w.close(); } catch {}
+    });
   });
 
   // Once the renderer is actually ready to listen, send current state
