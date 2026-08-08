@@ -176,6 +176,32 @@ test('the bridge branch never moves the transmitter or drops its own stream', ()
     'the bridge branch must refuse to key with no capture cable — that is a dead carrier');
 });
 
+test('a refused key never unkeys and never reports power', () => {
+  // JS8Call keys into the cable whether or not POTACAT follows, so TX END
+  // arrives after a refusal too. Running the key-up path then dropped a PTT
+  // nobody raised and announced "the radio keyed but no audio reached it"
+  // about a transmission POTACAT had just declined — directly contradicting
+  // its own refusal and sending the operator after audio levels (K3SBP).
+  const start = SRC.indexOf('function js8KeyForTxViaBridge(on) {');
+  const body = SRC.slice(start, SRC.indexOf('\nfunction js8KeyForTx(on)', start));
+  const lines = body.split('\n');
+  const keyLine = lines.findIndex((l) => /handleRemotePtt\(true/.test(l));
+  const flagLine = lines.findIndex((l) => /_js8BridgeKeyed = true/.test(l));
+  assert.ok(keyLine > 0 && flagLine > keyLine,
+    'the keyed flag must be set only after the radio is actually keyed');
+  // Every early return has to happen before the key, or it was not a refusal.
+  lines.forEach((l, i) => {
+    if (/^\s*return;\s*$/.test(l) && i < keyLine) return;      // a refusal: fine
+    assert.ok(!/^\s*return;\s*$/.test(l) || i > flagLine,
+      'return on line ' + i + ' sits between the key and the flag — a keyed radio with the flag clear');
+  });
+  const off = body.slice(body.indexOf('} else {'));
+  assert.ok(off.indexOf('if (!_js8BridgeKeyed) return;') < off.indexOf('handleRemotePtt(false'),
+    'key-up must check the flag before unkeying');
+  assert.ok(off.indexOf('if (!_js8BridgeKeyed) return;') < off.indexOf('js8ReportTxPeak'),
+    'key-up must check the flag before reporting power');
+});
+
 // ── the popout's setup gate ─────────────────────────────────────────────────
 
 const POPOUT = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'js8call-popout.js'), 'utf8');

@@ -5280,6 +5280,7 @@ function js8ReportTxPeak(lowAdvice) {
  */
 function js8KeyForTxViaBridge(on) {
   if (on) {
+    _js8BridgeKeyed = false;
     if (!settings.js8AudioTxDevice) {
       sendCatLog('[JS8Call] it is transmitting, but POTACAT has no cable to capture its audio from — '
         + 'keying now would radiate a dead carrier. Set "Transmit from" in the JS8Call window; '
@@ -5295,7 +5296,17 @@ function js8KeyForTxViaBridge(on) {
     _js8PeakFwdW = 0;
     sendCatLog('[JS8Call] transmitting — audio bridged from the cable onto POTACAT’s own transmit stream');
     handleRemotePtt(true, { audio: true });
+    _js8BridgeKeyed = true;
   } else {
+    // Only if we actually keyed. Every refusal above returns without keying, so
+    // unkeying here would drop a PTT nobody raised — and the power report would
+    // then announce "the radio keyed but no audio reached it" about a
+    // transmission POTACAT had just declined, contradicting its own refusal
+    // seconds earlier and sending the operator hunting audio levels
+    // (K3SBP 2026-08-08: "NO measurable RF (peak 0.0 W)" right below "keying
+    // now would radiate a dead carrier").
+    if (!_js8BridgeKeyed) return;
+    _js8BridgeKeyed = false;
     handleRemotePtt(false, { audio: true });
     js8ReportTxPeak('Raise the JS8Call power slider, or TX Drive in POTACAT.');
   }
@@ -5512,6 +5523,13 @@ let _js8ReleasedTxStream = false;
 let _js8PrevTxDax = null;
 /** Peak forward power during JS8Call's current transmission, watts. */
 let _js8PeakFwdW = 0;
+/**
+ * Did POTACAT actually key on the bridge route? Not the same as "JS8Call is
+ * transmitting" — every refusal in js8KeyForTxViaBridge leaves JS8Call keying
+ * into a cable while the radio stays receiving, and key-up must then do and say
+ * nothing rather than unkeying a PTT nobody raised.
+ */
+let _js8BridgeKeyed = false;
 /** Hidden renderer that is JS8Call's sound card (renderer/js8-audio-bridge.html). */
 let js8AudioWin = null;
 let _js8AudioDevices = [];       // last enumeration, for the device pickers
