@@ -25,6 +25,7 @@ dbg.wav
 # Native addon build artifacts (built locally / by CI, never tracked)
 lib/ft8_native/build/
 lib/ft8_native/bin/
+lib/js8_native/build/
 lib/rade_native/build/
 
 # ── Local-only working files (present on Casey's machine, never committed) ──

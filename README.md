@@ -240,17 +240,27 @@ CAT control, spots, the FT8 engine, the CW keyer, and ECHOCAT all work headless.
 
 ## License
 
-POTACAT is licensed under the [Apache License 2.0](LICENSE).
+POTACAT is licensed under the [GNU General Public License v3.0](LICENSE)
+(or any later version), because it incorporates the JS8 modem from the
+[JS8Call](https://github.com/JS8Call-improved/JS8Call-improved) project.
+Files written for POTACAT carry an `SPDX-License-Identifier: Apache-2.0`
+header and are additionally available under the
+[Apache License 2.0](LICENSES/Apache-2.0.txt) from the copyright holder;
+the combined work you download is GPLv3. See [`NOTICE`](NOTICE).
 
 **"POTACAT" and "ECHOCAT" are trademarks of Casey Stanton.** The license covers
 the source code, not the names — see [TRADEMARKS.md](TRADEMARKS.md). If you fork
 and redistribute a modified build, please give it a different name.
 
+ECHOCAT mobile is a separate, independent program that talks to POTACAT over
+a documented network protocol and contains no GPL code.
+
 ### Third-party software
 
-POTACAT bundles some GPL-licensed tools as **separate executables**, invoked over
-a process boundary (mere aggregation). This does not place POTACAT's own
-Apache-2.0 code under the GPL. See [`NOTICE`](NOTICE) for the full list.
+The JS8 modem is compiled in from JS8Call-improved (GPLv3), vendored under
+[`third_party/js8call/`](third_party/js8call/). Some other GPL tools ship as
+**separate executables** invoked over a process boundary. See
+[`NOTICE`](NOTICE) for the full list.
 
 - [Hamlib](https://hamlib.github.io/) `rigctld` for radio control — [GPLv2](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html); source at [github.com/Hamlib/Hamlib](https://github.com/Hamlib/Hamlib).
 - `wsprd` WSPR decoder (K1JT/K9AN, WSJT Development Group) — [GPLv3](https://www.gnu.org/licenses/gpl-3.0.html); bundled as a standalone binary, not linked. See [`third_party/wsprd/`](third_party/wsprd/).

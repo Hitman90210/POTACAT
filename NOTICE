@@ -1,11 +1,21 @@
 POTACAT
 Copyright 2024-2026 Casey Stanton
 
-This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+POTACAT as a combined work is licensed under the GNU General Public License
+v3.0 or later (see LICENSE), because it incorporates the JS8 codec from the
+JS8Call project (GPLv3). Files authored for POTACAT carry an
+`SPDX-License-Identifier: Apache-2.0` header: those files are additionally
+available under the Apache License 2.0 (LICENSES/Apache-2.0.txt) from the
+copyright holder. When you receive them as part of POTACAT, the terms of the
+GPLv3 govern the combination.
 
-"POTACAT" and "ECHOCAT" are trademarks of Casey Stanton. The Apache License
-covers the source code only; it does not grant any right to use these names,
-logos, or other brand features. See TRADEMARKS.md.
+"POTACAT" and "ECHOCAT" are trademarks of Casey Stanton. Neither license
+grants any right to use these names, logos, or other brand features. See
+TRADEMARKS.md.
+
+ECHOCAT mobile is a separate, independent program. It communicates with
+POTACAT only over a documented network protocol (docs/echocat-protocol.md)
+and contains no code from POTACAT or from any GPL-licensed component.
 
 --------------------------------------------------------------------------------
 Third-party components
@@ -14,6 +24,15 @@ Third-party components
 This product bundles or builds upon the following third-party software. Each
 remains under its own license; the licenses are reproduced under third_party/
 or in the LICENSES/ directory of the distribution where applicable.
+
+  JS8Call / JS8Call-improved (JS8 modem: demodulator, LDPC, encoder)
+    Copyright (C) 2018-2026 Jordan Sherer (KN4CRD) and the JS8Call-improved
+    contributors; portions derived from WSJT-X, Copyright (C) Joe Taylor
+    (K1JT) and the WSJT Development Group.
+    License: GNU General Public License v3.0 (GPLv3)
+    Source: https://github.com/JS8Call-improved/JS8Call-improved
+    Vendored at: third_party/js8call/ (see its NOTES.md for the exact
+    upstream commit and the local modifications)
 
   ft8_lib (FT8/FT4 encode/decode)
     Copyright (c) Karlis Goba (YL3JG) and contributors
@@ -26,10 +45,30 @@ or in the LICENSES/ directory of the distribution where applicable.
     Development Group.
     License: GNU General Public License v3.0 (GPLv3)
     Source: https://sourceforge.net/p/wsjt/wsjtx/ (third_party/wsprd/)
-    NOTE: This GPLv3 component is distributed as an independent, separate
-    program. Its presence does not place POTACAT's own Apache-2.0 code under
-    the GPL ("mere aggregation"). A copy of the GPLv3 and the corresponding
-    source for wsprd are provided per the GPL's requirements.
+
+  kissfft
+    Copyright (c) 2003-2010 Mark Borgerding and contributors
+    License: BSD-3-Clause
+    Source: https://github.com/mborgerding/kissfft
+    Vendored at: third_party/js8call/kissfft/ (backs the fftw3f shim for
+    the JS8 modem addon)
+
+  Eigen (linear algebra, header-only)
+    License: MPL-2.0
+    Source: https://eigen.tuxfamily.org (vendored subset under
+    third_party/js8call/vendor/Eigen, as shipped by JS8Call-improved)
+
+  CRCpp (header-only CRC)
+    Copyright (c) 2022 Daniel Bahr
+    License: BSD-3-Clause
+    Source: https://github.com/d-bahr/CRCpp (vendored under
+    third_party/js8call/vendor/CRCpp, as shipped by JS8Call-improved)
+
+  Boost (header-only subset: crc, math/ccmath, multi_index and their
+    transitive includes)
+    License: Boost Software License 1.0
+    Source: https://www.boost.org (vendored subset under
+    third_party/js8call/boost/)
 
   Additional bundled libraries (Electron, Leaflet, serialport, ws, sharp,
   kiss_fft, etc.) retain their respective licenses; see package.json and the
