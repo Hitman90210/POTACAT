@@ -91,7 +91,7 @@ test('owner lifecycle + heartbeat + thread messages all emit', () => {
   rs._handleMessage(ws, { type: 'js8-thread-closed' }, {});
   rs._handleMessage(ws, { type: 'js8-stop' }, {});
   assert.strictEqual(seen.length, 5);
-  assert.deepStrictEqual(seen[1][1], { enabled: true, intervalMin: 30 });
+  assert.deepStrictEqual(seen[1][1], { enabled: true, intervalMin: 30, reqId: undefined });
   assert.deepStrictEqual(seen[2][1], { id: 'KN4CRD' });
 });
 
@@ -153,6 +153,53 @@ test('state/threads/heard broadcasts cache, and threads drops the delta', () => 
   const types = ws._sent.map((m) => m.type);
   assert.deepStrictEqual(types, ['js8-state', 'js8-threads', 'js8-heard']);
   assert.strictEqual(ws._sent[1].changed, 'KN4CRD');
+});
+
+// ── the two gaps the mobile team found (docs/desktop-asks) ──────────────────
+
+test('a guest auth gets the JS8 hydration trio, state first', () => {
+  // js8-thread-open is deliberately ungated for guests — but browsing needs
+  // an inbox to browse. The pass path used to stop at `status`, leaving the
+  // guest's JS8 surface blank until the next live push (many minutes on a
+  // quiet band). This drives the REAL pass-auth send block: the exact
+  // hydration lines, not a reimplementation.
+  const src = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'lib', 'remote-server.js'), 'utf8');
+  // The guest block is the one between the pass-auth status push and the
+  // "Guest Pass authenticated" log line.
+  const at = src.indexOf('Guest Pass authenticated:');
+  assert.ok(at > 0);
+  const before = src.slice(Math.max(0, at - 1600), at);
+  assert.ok(before.includes("type: 'status'"), 'anchored at the pass-auth status push');
+  const stateAt = before.indexOf("type: 'js8-state'");
+  const threadsAt = before.indexOf("type: 'js8-threads'");
+  const heardAt = before.indexOf("type: 'js8-heard'");
+  assert.ok(stateAt > 0, 'guest auth must hydrate js8-state');
+  assert.ok(threadsAt > stateAt, 'threads after state');
+  assert.ok(heardAt > threadsAt, 'heard after threads — same order as paired auth');
+});
+
+test('lifecycle emits carry reqId so start failures attribute to the tap', () => {
+  const rs = new RemoteServer();
+  const ws = fakeWs();
+  rs._client = ws;
+  const seen = {};
+  for (const t of ['js8-start', 'js8-stop', 'js8-heartbeat']) {
+    rs.on(t, (e) => { seen[t] = e; });
+  }
+  rs._handleMessage(ws, { type: 'js8-start', reqId: 'a1' }, {});
+  rs._handleMessage(ws, { type: 'js8-stop', reqId: 'a2' }, {});
+  rs._handleMessage(ws, { type: 'js8-heartbeat', enabled: true, reqId: 'a3' }, {});
+  assert.strictEqual(seen['js8-start'].reqId, 'a1');
+  assert.strictEqual(seen['js8-stop'].reqId, 'a2');
+  assert.strictEqual(seen['js8-heartbeat'].reqId, 'a3');
+});
+
+test('reqId is declared on the lifecycle messages, not merely tolerated', () => {
+  for (const t of ['js8-start', 'js8-stop', 'js8-heartbeat']) {
+    const fields = protocol.describe(t).fields || {};
+    assert.ok(fields.reqId, t + ' must declare reqId');
+  }
 });
 
 test('sendJs8Thread and sendJs8SendResult reach the live client', () => {

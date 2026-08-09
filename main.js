@@ -14629,15 +14629,17 @@ function connectRemote() {
   // Every handler reuses the exact function the desktop popout's IPC calls —
   // the phone is a peer surface, not a second implementation. Refusals ride
   // back on js8-send-result so the phone shows "why not" instead of nothing.
-  remoteServer.on('js8-start', () => {
+  remoteServer.on('js8-start', ({ reqId } = {}) => {
     markUserActive();
     if (js8Engine()) { js8PushStatus(); return; }
     if (!settings.myCallsign) {
-      remoteServer.sendJs8SendResult({ ok: false, error: 'Set your callsign in Settings on the desktop first.' });
+      // reqId attributes the failure to the tap — a bare ok:false reads as
+      // a session-level error on the phone and cancels a pending send.
+      remoteServer.sendJs8SendResult({ ok: false, error: 'Set your callsign in Settings on the desktop first.', reqId });
       return;
     }
     try { startJtcat('JS8'); } catch (err) {
-      remoteServer.sendJs8SendResult({ ok: false, error: String((err && err.message) || err) });
+      remoteServer.sendJs8SendResult({ ok: false, error: String((err && err.message) || err), reqId });
     }
   });
   remoteServer.on('js8-stop', () => {

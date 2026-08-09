@@ -58,6 +58,9 @@ Everything rides the existing ECHOCAT WS session. Full field shapes are in
 - `js8-heartbeat`: either field alone is valid. `intervalMin` (5–60)
   persists on the host; `enabled` is session-only there (see Heartbeat
   below).
+- `reqId` is declared on `js8-start`/`js8-stop`/`js8-heartbeat` too
+  (2026-08-09, per your gap report): a host-side start failure answers on
+  `js8-send-result` with your `reqId`, so it never reads as a failed send.
 - `js8-thread-open` marks the thread read ON THE HOST — that is the entire
   read-sync mechanism. Send `js8-thread-closed` when the user leaves the
   thread view (it releases the auto-read claim on new arrivals).
@@ -154,7 +157,9 @@ pieces, in priority order:
   `js8-send-result {ok:false, error}`. Disable the controls when your
   session is a guest session, and show the error if a race lets one
   through. (The server refuses regardless — the UI gate is courtesy, the
-  server is the law.)
+  server is the law.) Guests receive the same hydration trio at connect
+  as paired devices (added 2026-08-09 per your gap report — an inbox you
+  may browse arrives without waiting for a live push).
 - **Never compose addressing client-side** (worth repeating: the host owns
   `to` + `text` → on-air form).
 - **No emojis in UI copy**, and say "mobile device", not "phone", in any
