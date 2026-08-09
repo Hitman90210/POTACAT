@@ -50,7 +50,8 @@ async function main() {
     }
     for (const m of ['start', 'stop', 'feedAudio', 'txComplete', 'tryImmediateTx',
       'setMode', 'setTxSlot', 'setHoldTxFreq', 'setLateStartTx', 'setApContext',
-      'setAudioLatencyMs', 'setWsprDial', 'reBaseline', 'encodeMessage']) {
+      'setAudioLatencyMs', 'setWsprDial', 'reBaseline', 'encodeMessage',
+      'setTxMessage']) {
       assert.strictEqual(typeof e[m], 'function', 'missing contract method ' + m);
     }
     assert.strictEqual(e._mode, 'JS8');
@@ -140,6 +141,28 @@ async function main() {
     assert.strictEqual(engine.txQueueLength, 0);
     report('multi-frame messages queue one frame per period, disarmed by default');
   } catch (err) { report('multi-frame messages queue one frame per period, disarmed by default', err); }
+
+  // ── halt drops the queue and cuts the frame without a bogus completion ─────
+  // The JTCAT halt path (jtcat-halt-tx) runs, per slice:
+  //   eng._txEnabled = false; eng.setTxMessage(''); if (eng._txActive) eng.txComplete();
+  // Before setTxMessage existed that threw mid-loop and skipped the real cut
+  // (cancelTx + PTT release live after the loop). It must clear the queue AND
+  // not announce a message that never finished. (js8-halt-tx-throws.md)
+  try {
+    const n = engine.setTxText('KN4CRD MSG HALT ME NOW PLEASE');
+    assert.ok(n >= 1, 'need a queued message to halt');
+    let done = false;
+    engine.once('js8-tx-done', () => { done = true; });
+    engine._txActive = true;              // pretend a frame is on the air
+    engine._txEnabled = false;            // ── the halt sequence, verbatim ──
+    engine.setTxMessage('');
+    assert.strictEqual(engine.txQueueLength, 0, 'halt drops pending frames');
+    if (engine._txActive) engine.txComplete();
+    assert.strictEqual(engine._txActive, false, 'halt cuts the active frame');
+    await new Promise((r) => setTimeout(r, 20));
+    assert.strictEqual(done, false, 'a halt must not fire js8-tx-done');
+    report('halt clears the queue and cuts the frame without a bogus completion');
+  } catch (err) { report('halt clears the queue and cuts the frame without a bogus completion', err); }
 
   // ── a message that packs to nothing refuses to arm ────────────────────────
   try {

@@ -9530,6 +9530,14 @@ function stopJtcat() {
   }
   wsprSessionEnd();       // results stay serveable; next session starts fresh
   pushActivityState();    // the "now" feed follows every stop
+  // ...and so does the JS8 surface. _js8State is a cache with no "get state"
+  // message by design, so a stop that skips this (desktop's own JTCAT stop, a
+  // JS8->FT8 mode change, a QSY off the digital slot) strands it reading
+  // running:true forever, and every phone that connects after hydrates the
+  // lie (BUG-K3SBP-20260809-EE5BD0: Send HB refused "JS8 is not running" while
+  // the bar showed running). js8Engine() is null here (stopAll deleted the
+  // slice), so this produces the running:false snapshot. Safe with no engine.
+  try { js8PushStatus(); } catch { /* pre-init */ }
   if (jtcatTuneState.active) stopJtcatTune();
   if (jtcatPskRxTimer) {
     clearTimeout(jtcatPskRxTimer);
