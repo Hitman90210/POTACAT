@@ -149,7 +149,21 @@ async function main() {
     report('TX without a station identity refuses to queue');
   } catch (err) { report('TX without a station identity refuses to queue', err); }
 
-  manager.stopAll();
+  // The stop path itself is an invariant: stopping with an encode pending
+  // must CANCEL quietly. It used to reject into an emitter whose listeners
+  // the manager had already removed — a process-fatal ERR_UNHANDLED_ERROR
+  // that then segfaulted node in native-addon worker teardown.
+  try {
+    engine.setTxText('KN4CRD MSG STOP RACE CHECK');
+    manager.stopAll();
+    await new Promise((r) => setTimeout(r, 300)); // let any rejection land
+    report('stopping with a pending encode cancels quietly');
+  } catch (err) { report('stopping with a pending encode cancels quietly', err); }
+
+  // Worker teardown settle: engine.stop() fires worker.terminate() and does
+  // not await it. Exiting while a worker holding the native addon is mid-
+  // termination can crash node on Windows; the settle removes the race.
+  await new Promise((r) => setTimeout(r, 750));
 
   console.log(`\nJS8 engine: ${pass} passed, ${fail} failed`);
   if (failures.length) console.log(failures.map((f) => '  ' + f).join('\n'));

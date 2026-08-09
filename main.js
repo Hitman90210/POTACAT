@@ -273,14 +273,9 @@ const { DxClusterClient, looksLikeCallsign: clusterCallsignOk } = require('./lib
 const { RbnClient } = require('./lib/rbn');
 const mercuryProcess = require('./lib/mercury-process');
 const { MercuryClient } = require('./lib/mercury-client');
-const js8Config = require('./lib/js8call-config');
-const { Js8CallClient, isDirectedTo } = require('./lib/js8call-client');
 const { Js8Threads } = require('./lib/js8call-threads');
 const js8Addr = require('./lib/js8call-threads');   // composeDirected / isAddressed
-const js8Process = require('./lib/js8call-process');
-const js8Audio = require('./lib/js8call-audio');
-const js8Slice = require('./lib/js8call-slice');
-const js8AudioBridgeLib = require('./lib/js8call-audio-bridge');
+const { Js8RxAssembler } = require('./lib/js8-rx-assembler');
 const radioOwnerLib = require('./lib/radio-owner');
 const { attachMercuryRadioBridge } = require('./lib/mercury-radio-bridge');
 const mercuryAudioBridge = require('./lib/mercury-audio-bridge');
@@ -1194,26 +1189,21 @@ let mercuryReassembler = null;  // app-protocol frame reassembler on the data so
 let mercuryChatTail = [];       // recent chat/system lines for replay on popout open (cap 200)
 let mercuryRxFile = null;       // in-progress inbound file { name, size, received, path, ws }
 
-// ─── JS8Call bridge ──────────────────────────────────────────────────────────
-// POTACAT does NOT decode JS8; it reads a JS8Call the operator runs, over that
-// app's TCP API. JS8Call is GPLv3 and a socket is mere aggregation, where
-// linking or porting its code would relicense POTACAT (same posture as wsprd
-// and Mercury). RX-only today: we watch its traffic and yield the radio when it
-// keys. See lib/js8call-config.js for why we read its ini but never write it.
-let js8Client = null;           // Js8CallClient — persistent API connection
+// ─── JS8 (native) state ──────────────────────────────────────────────────────
+// POTACAT IS the JS8 station — the JS8Call modem is compiled in (GPLv3; see
+// NOTICE and third_party/js8call/NOTES.md) and the engine runs under JTCAT
+// (lib/js8-engine.js). The old TCP-bridge/virtual-cable architecture is
+// gone; docs/js8-native-plan.md records why.
 let js8LastStatus = null;       // last status pushed to the renderer (dedupe)
 let js8PopoutWin = null;        // the message-view window
 let js8Tail = [];               // recent activity for replay on popout open (cap 300)
-let js8Station = {};            // callsign/grid/dial as JS8Call reports them
-let js8Problems = [];           // last diagnoseJs8Config() result, for the UI
-let js8TxActive = false;        // JS8Call currently keying
-let _js8TxFailsafeTimer = null; // ceiling on a stuck PTT (see JS8_TX_FAILSAFE_MS)
-let _js8StartWatchdog = null;   // "it never connected, and here is why"
+let js8Station = {};            // { call, grid } — ours, from settings
 // Conversation state lives in MAIN, not the renderer, so unread counts keep
 // accumulating while the window is closed — the whole point of an inbox.
 let js8Threads = new Js8Threads({});
 let js8Heard = [];              // stations audible now, for the right rail
-let js8Proc = null;             // JS8Call we launched (never one we didn't)
+// Multi-frame RX reassembly (the MessageBuffer role; lib/js8-rx-assembler.js)
+let js8RxAssembler = new Js8RxAssembler({});
 // The exclusive radio TX/audio path can be held by at most one mode engine at a
 // time (lib/radio-owner.js). JTCAT and Mercury must never both key the rig.
 let radioOwner = 'none';        // 'none' | 'jtcat' | 'mercury'
@@ -5059,22 +5049,29 @@ function disconnectMercury() {
   sendMercuryStatus({ connected: false });
 }
 
-// ─── JS8Call bridge ──────────────────────────────────────────────────────────
 
-// JS8Call frames run to ~30 s in slow mode; well past that with PTT still
-// asserted means we lost the key-up, not that it is still sending. Without a
-// ceiling a missed event would hold the radio-owner lock forever and POTACAT
-// could never transmit again this session.
-const JS8_TX_FAILSAFE_MS = 90000;
-// Long enough for JS8Call to finish opening its audio device and its API
-// socket, short enough that a real failure doesn't read as a hang.
-const JS8_START_MS = 12000;
+// ─── JS8 (native) ────────────────────────────────────────────────────────────
+// POTACAT is the JS8 station: the real JS8Call modem is compiled in
+// (third_party/js8call → lib/js8_native), the message codec is
+// lib/js8-varicode.js, and the engine is a jtcat-hosted Ft8Engine sibling
+// (lib/js8-engine.js). No JS8Call app, no TCP API, no virtual audio cable,
+// no DAX. The conversation layer (lib/js8call-threads.js) and the message
+// window survived the bridge unchanged — they consume frames and never
+// cared where frames came from.
+
 const JS8_TAIL_CAP = 300;
 
+/** The Js8Engine when JTCAT is running in JS8 mode, else null. */
+function js8Engine() {
+  if (!jtcatManager) return null;
+  const eng = jtcatManager.engine;
+  return eng && eng._mode === 'JS8' ? eng : null;
+}
+
+function js8Active() { return !!js8Engine(); }
+
 function sendJs8Status(s) {
-  const payload = { ...s, problems: js8Problems, station: js8Station };
-  // Dedupe identical consecutive statuses — a refused socket retrying on
-  // backoff would otherwise narrate every attempt.
+  const payload = { ...s, station: js8Station };
   const key = JSON.stringify(payload);
   if (key === js8LastStatus) return;
   js8LastStatus = key;
@@ -5082,1190 +5079,154 @@ function sendJs8Status(s) {
   if (js8PopoutWin && !js8PopoutWin.isDestroyed()) js8PopoutWin.webContents.send('js8call-status', payload);
 }
 
-/** Read the operator's JS8Call.ini and work out what to expect of it. Returns
- *  the settings it found, or null when there's no config to read at all. */
-function readJs8Setup() {
-  const rigName = settings.js8RigName || '';
-  const candidates = js8Config.js8ConfigPathCandidates({ rigName });
-  let iniPath = null;
-  for (const p of candidates) { if (fs.existsSync(p)) { iniPath = p; break; } }
-  if (!iniPath) { js8Problems = []; return null; }
-  let ini;
-  try { ini = js8Config.parseJs8Ini(fs.readFileSync(iniPath, 'utf8')); }
-  catch { js8Problems = []; return null; }
-  const found = js8Config.readJs8Settings(ini);
-  // Rig family selects the VOCABULARY: slices and DAX channels exist only on a
-  // Flex, and naming them to an IC-7300 operator is advice they cannot act on.
-  const activeRig = (settings.rigs || []).find((r) => r && r.id === settings.activeRigId) || null;
-  const fam = activeRig ? (RigFamily.rigFamily(activeRig) || '') : '';
-  js8Problems = js8Config.diagnoseJs8Config({
-    ini,
-    rigFamily: fam,
-    // What POTACAT itself is using, so a collision can be named concretely.
-    potacatSlicePort: (settings.catTarget && settings.catTarget.port) || 0,
-    potacatDaxChannel: _flexDaxChannel || 0,
-    potacatCatPath: (settings.catTarget && settings.catTarget.path) || '',
-    potacatAudioIn: (activeRig && activeRig.remoteAudioInput) || settings.audioInputDeviceId || '',
-  });
-  return { ini, found, iniPath, rigFamily: fam };
-}
-
-/**
- * Should the bridge run? Deliberately opt-OUT, not opt-in (K3SBP 2026-08-06:
- * "It should be an option that isn't hidden. No enabling should be
- * necessary."). Reading a JS8Call the operator already runs is not the kind of
- * thing that warrants a checkbox hunt — Mercury needs one because it spawns a
- * process and holds PTT; this only listens.
- *   true  → forced on
- *   false → explicitly turned off, and stays off
- *   unset → on when a JS8Call config exists on this machine
- */
-function js8Enabled() {
-  if (settings.enableJs8Call === true) return true;
-  if (settings.enableJs8Call === false) return false;
-  return js8ConfigPresent();
-}
-
-function js8ConfigPresent() {
-  const rigName = settings.js8RigName || '';
-  return js8Config.js8ConfigPathCandidates({ rigName }).some((p) => {
-    try { return fs.existsSync(p); } catch { return false; }
+function js8PushStatus() {
+  const eng = js8Engine();
+  sendJs8Status({
+    running: !!eng,
+    connected: !!eng,   // legacy field name the popout renders as "up"
+    tx: !!(eng && eng._txActive),
+    txQueue: eng ? eng.txQueueLength : 0,
+    submode: eng ? eng._submodeName : (settings.js8Submode || 'NORMAL'),
+    heartbeat: js8HbEnabled,
+    heartbeatMin: js8HbIntervalMin(),
   });
 }
 
-function connectJs8Call() {
-  disconnectJs8Call();
-  if (!js8Enabled()) { sendJs8Status({ connected: false }); return; }
-
-  const setup = readJs8Setup();
-  if (!setup) {
-    sendCatLog('[JS8Call] No JS8Call configuration found — install and run JS8Call once, then re-enable this.');
-    sendJs8Status({ connected: false, error: 'JS8Call not found' });
-    return;
-  }
-  // Only a dead API stops us. Auto-reply and heartbeats are reported (JS8Call
-  // may key at any time) but are the operator's business, and refusing to look
-  // would not prevent one transmission — it would only blind us to them.
-  const blocked = js8Config.js8ConnectBlocked(js8Problems);
-  for (const p of js8Problems) {
-    sendCatLog(`[JS8Call] ${p.severity === 'blocker' ? 'Cannot connect' : p.severity}: ${p.message}${p.fix ? ' — ' + p.fix : ''}`);
-  }
-  if (blocked.length) { sendJs8Status({ connected: false, error: blocked[0].message }); return; }
-
-  const host = setup.found.tcpHost || '127.0.0.1';
-  const port = settings.js8Port || setup.found.tcpPort || 2442;
-  js8Station = { call: setup.found.myCall, dial: 0, grid: '' };
-
-  js8Client = new Js8CallClient();
-  js8Client.on('log', (m) => sendCatLog(`[JS8Call] ${m}`));
-  js8Client.on('status', (s) => {
-    if (s.connected) {
-      clearJs8StartWatchdog();
-      cancelJs8SliceReclaim();          // it came back — keep its receiver
-      sendCatLog(`[JS8Call] Connected to the API on ${host}:${port}`);
-      js8Client.requestStationInfo();
-      js8Client.requestActivity();
-    } else {
-      // JS8Call may simply be restarting. Give the receiver back only if it
-      // stays gone — see armJs8SliceReclaim.
-      armJs8SliceReclaim();
-    }
-    sendJs8Status({ ...s, host, port });
+/**
+ * Consume one interpreted frame from the engine ('js8-rx'). Every frame
+ * lands in the activity tail; complete messages (via the assembler) feed
+ * the conversation store and the heard rail.
+ */
+function js8HandleRx(d) {
+  // The raw frame line, WSJT-X-style, for the all-traffic pane.
+  pushJs8Tail({
+    kind: d.directed ? (js8IsForMe(d) ? 'to-me' : 'directed') : 'activity',
+    text: d.message,
+    from: (d.directed && d.directed[0]) || d.compound || '',
+    to: (d.directed && d.directed[1]) || '',
+    snr: d.snr, offset: Math.round(d.freq), dial: _currentFreqHz || 0,
+    utc: Date.now(),
+    submode: d.mode,
   });
-  js8Client.on('tx', handleJs8Tx);
-  js8Client.on('message', handleJs8Message);
 
-  clearJs8StartWatchdog();
-  _js8StartWatchdog = setTimeout(() => {
-    _js8StartWatchdog = null;
-    if (js8Client && js8Client.connected) return;
-    sendCatLog(`[JS8Call] No answer on ${host}:${port} after ${JS8_START_MS / 1000}s. ` +
-      'Is JS8Call running, and is "Enable TCP Server API" ticked under File > Settings > Reporting > API? ' +
-      'JS8Call also allows only one API client at a time, so another tool may hold it.');
-  }, JS8_START_MS);
+  const msg = js8RxAssembler.ingest(d);
+  if (!msg) return;
 
-  js8Client.connect({ host, port });
-}
-
-function disconnectJs8Call() {
-  clearJs8StartWatchdog();
-  clearJs8TxFailsafe();
-  if (js8TxActive) { js8TxActive = false; releaseRadio('js8call'); }
-  if (js8Client) {
-    js8Client.removeAllListeners();
-    try { js8Client.disconnect(); } catch { /* already down */ }
-    js8Client = null;
+  // Heard rail: any completed message proves the station is reachable now.
+  if (msg.from && !msg.from.startsWith('<')) {
+    const grid = msg.isHeartbeat ? (msg.text.match(/\b[A-R]{2}[0-9]{2}\b/) || [''])[0] : '';
+    js8Heard = [{ call: msg.from, snr: msg.snr, utc: Date.now(), grid }]
+      .concat(js8Heard.filter((h) => h.call !== msg.from)).slice(0, 40);
+    js8PushHeard();
   }
-  // Conversations deliberately SURVIVE a disconnect — a reconnect shouldn't
-  // wipe the operator's unread mail. Only the audible list is discarded,
-  // because it is a claim about right now and would be a lie a minute later.
-  js8Heard = [];
-  js8LastStatus = null;   // so the next status isn't deduped away
-  sendJs8Status({ connected: false });
+
+  // Conversations: directed traffic only — heartbeats fold into the per-
+  // thread count inside Js8Threads, raw activity stays in the tail.
+  if (msg.from && (msg.to || msg.isHeartbeat)) {
+    const r = js8Threads.ingest({
+      from: msg.from, to: msg.to || (msg.isHeartbeat ? '@HB' : ''),
+      text: msg.text, snr: msg.snr, offset: Math.round(msg.freq),
+      utc: Date.now(),
+    });
+    if (r.threadId) js8PushThreads(r.threadId);
+    const mine = msg.to && js8IsForMe({ directed: ['', msg.to] });
+    if (mine && !r.folded) {
+      sendCatLog(`[JS8] message for you from ${msg.from}: ${msg.text}`
+        + (msg.checksumValid === false ? ' (checksum FAILED — text may be incomplete)' : ''));
+    }
+  }
 }
 
-function clearJs8StartWatchdog() {
-  if (_js8StartWatchdog) { clearTimeout(_js8StartWatchdog); _js8StartWatchdog = null; }
-}
-function clearJs8TxFailsafe() {
-  if (_js8TxFailsafeTimer) { clearTimeout(_js8TxFailsafeTimer); _js8TxFailsafeTimer = null; }
+/** Is this interpreted frame addressed to us (directly or via a group)? */
+function js8IsForMe(d) {
+  const to = (d.directed && d.directed[1]) || '';
+  if (!to) return false;
+  const me = (settings.myCallsign || '').toUpperCase();
+  if (to === me) return true;
+  return to === '@ALLCALL' || to === '@HB' || to === '@CQ';
 }
 
 /**
- * JS8Call started or stopped transmitting. POTACAT cannot stop it — no API
- * command aborts a frame in flight — so this is an observation, and the only
- * correct response is to take the radio-owner lock so POTACAT's own engines
- * stand down. On a Flex, keying while JS8Call transmits re-points `tx=1` and
- * puts its audio out on POTACAT's slice and frequency.
- */
-/**
- * Key the radio for JS8Call, on JS8Call's own slice.
- *
- * WHY POTACAT HAS TO DO THIS. On a Flex Direct station JS8Call has no radio of
- * its own — `Rig=None`, PTT method VOX — because POTACAT owns the CAT link. Its
- * audio reaches DAX TX correctly and nothing ever keys, so a heartbeat is
- * accepted, queued, and never transmitted (K3SBP 2026-08-07: "queued for
- * transmission: @HB HB FN20" with no RF).
- *
- * TWO things have to happen, and the second is the dangerous one:
- *   1. key PTT
- *   2. point the transmitter at JS8Call's slice — `slice set N tx=1` is GLOBAL
- *      on a Flex, so without this JS8Call's audio goes out on the operator's
- *      slice and frequency, with no error anywhere.
- * Which is also why it must be put BACK afterwards: leaving tx=1 on JS8Call's
- * slice would send POTACAT's next transmission out on 14.078.
- *
- * Only ever for a slice POTACAT created. A JS8Call with its own rig control
- * keys itself, and keying underneath it would double up.
- */
-/**
- * What the radio's own TX bridge measured, against the rig's SET power.
- *
- * The number alone answers nothing: full power means the audio is fine and only
- * propagation is left, while a fraction of it means the drive is too low — which
- * looks like a routing failure and is a level control. Near-zero with a clean
- * key/unkey means the audio never arrived at all, and from PSKReporter that is
- * indistinguishable from a dead band.
- */
-function js8ReportTxPeak(lowAdvice) {
-  if (_js8PeakFwdW > 0.5) {
-    const set = _currentTxPower > 0 ? _currentTxPower : 0;
-    const short = set > 0 && _js8PeakFwdW < set * 0.5;
-    sendCatLog(`[JS8Call] radiated ${_js8PeakFwdW.toFixed(0)} W peak`
-      + (set > 0 ? ` (rig is set to ${set} W)` : '')
-      + (short ? ' — well under the rig setting, so the audio drive is too low. ' + lowAdvice : ''));
-  } else {
-    sendCatLog('[JS8Call] NO measurable RF that transmission (peak '
-      + _js8PeakFwdW.toFixed(1) + ' W) — the radio keyed but no audio reached it. ' + lowAdvice);
-  }
-}
-
-/**
- * Key for JS8Call on the BRIDGE route, where POTACAT is its sound card.
- *
- * Almost nothing from the DAX route applies, and doing it anyway would be
- * actively wrong:
- *   - there is no JS8Call slice to point the transmitter at. JS8Call goes out
- *     on the operator's own slice, which is where the transmitter already is;
- *     `setTxSlice` here would move transmit to a slice that does not exist.
- *   - POTACAT's dax_tx stream must be KEPT, not released. On this route it is
- *     the stream carrying JS8Call's audio — releasing it is exactly the dead
- *     carrier the DAX route had to release it to avoid.
- * What remains is the JTCAT path: key, and let the captured audio ride out.
- * handleRemotePtt asserts `transmit set dax` and runs the SWR guard itself.
- *
- * The refusal below is the one that matters. With no capture cable there is
- * nothing to modulate, and keying regardless radiates a full-power dead carrier
- * — the precise failure this whole route exists to end.
- */
-function js8KeyForTxViaBridge(on) {
-  if (on) {
-    _js8BridgeKeyed = false;
-    if (!settings.js8AudioTxDevice) {
-      sendCatLog('[JS8Call] it is transmitting, but POTACAT has no cable to capture its audio from — '
-        + 'keying now would radiate a dead carrier. Set "Transmit from" in the JS8Call window; '
-        + 'it has to be a DIFFERENT virtual cable from the receive one, so this needs a second cable '
-        + '(VB-CABLE) if the receive one is your only one.');
-      return;
-    }
-    if (!smartSdrAudio || !smartSdrAudio.txReady) {
-      sendCatLog('[JS8Call] it is transmitting, but POTACAT’s transmit audio stream to the radio is not '
-        + 'ready, so nothing would be modulated. Not keying.');
-      return;
-    }
-    _js8PeakFwdW = 0;
-    sendCatLog('[JS8Call] transmitting — audio bridged from the cable onto POTACAT’s own transmit stream');
-    handleRemotePtt(true, { audio: true });
-    _js8BridgeKeyed = true;
-  } else {
-    // Only if we actually keyed. Every refusal above returns without keying, so
-    // unkeying here would drop a PTT nobody raised — and the power report would
-    // then announce "the radio keyed but no audio reached it" about a
-    // transmission POTACAT had just declined, contradicting its own refusal
-    // seconds earlier and sending the operator hunting audio levels
-    // (K3SBP 2026-08-08: "NO measurable RF (peak 0.0 W)" right below "keying
-    // now would radiate a dead carrier").
-    if (!_js8BridgeKeyed) return;
-    _js8BridgeKeyed = false;
-    handleRemotePtt(false, { audio: true });
-    js8ReportTxPeak('Raise the JS8Call power slider, or TX Drive in POTACAT.');
-  }
-}
-
-function js8KeyForTx(on) {
-  // The bridge route needs a different answer to every question below, so it
-  // branches before any of them are asked.
-  if (js8AudioEnabled()) { js8KeyForTxViaBridge(on); return; }
-  // Say why nothing happens. JS8Call announcing TX while POTACAT stays silent
-  // is indistinguishable from POTACAT ignoring it, and on a Flex Direct station
-  // POTACAT is the only thing that CAN key — so a quiet return here is a dead
-  // end with no explanation (K3SBP 2026-08-07: slice creation failed, TX START
-  // arrived, and nothing else was ever logged).
-  if (js8SliceIndex === null) {
-    if (on) {
-      sendCatLog('[JS8Call] it is transmitting, but POTACAT cannot key: JS8Call has no receiver of its own. '
-        + 'Use "Give JS8Call its own receiver" in the JS8Call window, or let JS8Call key the radio itself.');
-    }
-    return;
-  }
-  if (!smartSdr || !smartSdr.connected) {
-    if (on) sendCatLog('[JS8Call] it is transmitting, but POTACAT cannot key: no connection to the radio.');
-    return;
-  }
-  if (on) {
-    if (_js8PrevTxSlice === null) {
-      // Remember where transmit belonged, from the radio rather than from an
-      // assumption about slice 0 — the operator may be on any slice.
-      const ours = typeof smartSdr.ourSliceIndex === 'number' ? smartSdr.ourSliceIndex : 0;
-      _js8PrevTxSlice = ours;
-    }
-    smartSdr.setTxSlice(js8SliceIndex);
-
-    // ORDER MATTERS, and both halves are needed.
-    //
-    // 1. TX audio source must be DAX rather than the mic, or the radio keys on
-    //    a silent microphone. This is asserted HERE rather than left to
-    //    assertFlexTxDaxForTx(), which requires smartSdrAudio.txReady and so
-    //    goes quiet the moment step 2 removes the stream — that combination
-    //    transmitted the mic input and produced a second silent carrier.
-    // 2. POTACAT's own dax_tx stream must then be given up. `transmit set dax`
-    //    is per-STATION and the station takes the dax_tx stream it owns; ours
-    //    carries nothing while JS8Call is the one with audio. Removing it
-    //    leaves the DAX control panel's stream as the only DAX source, which
-    //    is where JS8Call's audio actually is.
-    if (smartSdrAudio && smartSdrAudio.connected && typeof smartSdrAudio.setTxDax === 'function') {
-      _js8PrevTxDax = smartSdrAudio.txDaxOn;    // true | false | null (unknown)
-      smartSdrAudio.setTxDax(true);
-      // VERIFY it stuck. `transmit set dax` is per-station, and the station is
-      // SmartSDR's — its own DAX button governs and can hold the source on the
-      // MIC no matter what POTACAT asks for. The tell is a transmission whose
-      // power does not change when the sending application's audio level does:
-      // that is a live microphone, not DAX (K3SBP 2026-08-07, 11/13/11 W across
-      // a 25 dB slider sweep).
-      setTimeout(() => {
-        if (!js8TxActive) return;
-        if (smartSdrAudio && smartSdrAudio.txDaxOn === false) {
-          sendCatLog('[JS8Call] the radio did NOT switch transmit audio to DAX — it is still on the microphone, '
-            + 'so JS8Call is not being heard. Turn ON the DAX button in SmartSDR’s transmit panel; '
-            + 'that switch belongs to SmartSDR and POTACAT cannot override it.');
-        }
-      }, 600);
-    }
-    _js8ReleasedTxStream = !!(smartSdrAudio && typeof smartSdrAudio.releaseTxStream === 'function'
-      && smartSdrAudio.releaseTxStream());
-    _js8PeakFwdW = 0;
-    sendCatLog(`[JS8Call] transmitting on slice ${js8SliceIndex} (TX audio from DAX)`);
-    handleRemotePtt(true, { audio: true });
-  } else {
-    handleRemotePtt(false, { audio: true });
-    js8ReportTxPeak('Check the DAX TX level and the JS8Call power slider.');
-    if (_js8ReleasedTxStream && smartSdrAudio && typeof smartSdrAudio.restoreTxStream === 'function') {
-      smartSdrAudio.restoreTxStream();   // POTACAT's own TX needs it back
-      _js8ReleasedTxStream = false;
-    }
-    // Only put dax= back if it was explicitly OFF before. An unknown prior is
-    // left alone: restoring a guess is worse than leaving a working state.
-    if (_js8PrevTxDax === false && smartSdrAudio && smartSdrAudio.connected) {
-      smartSdrAudio.setTxDax(false);
-    }
-    _js8PrevTxDax = null;
-    if (_js8PrevTxSlice !== null) {
-      // The slice may be gone — the operator can close one at any moment, and
-      // the radio answers "Slice receiver (N) not in use" rather than doing
-      // nothing quietly. Fall back to any slice that IS live, because leaving
-      // transmit pointed at JS8Call's receiver would send POTACAT's next
-      // transmission out on 14.078.
-      const live = (typeof smartSdr.sliceIndexes === 'object' && smartSdr.sliceIndexes) || [];
-      let back = _js8PrevTxSlice;
-      if (live.length && !live.includes(back)) {
-        back = live.find((i) => i !== js8SliceIndex);
-        if (back === undefined) back = null;
-        if (back !== null) {
-          sendCatLog(`[JS8Call] slice ${_js8PrevTxSlice} is gone — transmit moved to slice ${back} instead`);
-        } else {
-          sendCatLog(`[JS8Call] slice ${_js8PrevTxSlice} is gone and no other slice is live — transmit left where it is.`);
-        }
-      }
-      if (back !== null) {
-        smartSdr.setTxSlice(back);
-        sendCatLog(`[JS8Call] transmit returned to slice ${back}`);
-      }
-      _js8PrevTxSlice = null;
-    }
-  }
-}
-
-function handleJs8Tx(on) {
-  const was = js8TxActive;
-  js8TxActive = !!on;
-  // Both edges, always. Whether JS8Call ever announces a transmission is the
-  // first thing to know when nothing goes out, and its absence is a silence
-  // that reads identically to "POTACAT ignored it".
-  if (!!on !== !!was) sendCatLog(`[JS8Call] TX ${on ? 'START' : 'END'} (reported by JS8Call)`);
-  if (on) {
-    acquireRadio('js8call');   // always succeeds; stands the previous owner down
-    js8KeyForTx(true);
-    clearJs8TxFailsafe();
-    _js8TxFailsafeTimer = setTimeout(() => {
-      _js8TxFailsafeTimer = null;
-      if (!js8TxActive) return;
-      sendCatLog(`[JS8Call] no key-up seen in ${JS8_TX_FAILSAFE_MS / 1000}s — unkeying and releasing the radio so POTACAT can transmit again.`);
-      js8TxActive = false;
-      js8KeyForTx(false);   // and put transmit back where it was
-      releaseRadio('js8call');
-      sendJs8Status({ connected: !!(js8Client && js8Client.connected), tx: false });
-    }, JS8_TX_FAILSAFE_MS);
-  } else {
-    clearJs8TxFailsafe();
-    js8KeyForTx(false);
-    releaseRadio('js8call');
-  }
-  sendJs8Status({ connected: !!(js8Client && js8Client.connected), tx: js8TxActive });
-}
-
-/**
- * Ask JS8Call to transmit something. Returns {ok, error, text}.
- *
- * The distinction that makes this safe enough to ship ahead of the full TX
- * work: JS8Call already keys the radio on its own for heartbeat auto-replies,
- * and the radio-owner yield handles that collision. What is NEW here is
- * POTACAT *causing* a transmission — so if POTACAT's own engine holds the
- * radio, commanding one would be a collision of our own making, and we refuse.
- * JS8Call's unprompted keying still needs the rigctld-listener work (Phase 3)
- * before POTACAT can gate it; this only refuses to make things worse.
- */
-/**
- * Transmit through JS8Call.
- *
- * `to` is optional and the composition is done HERE, by the tested rules in
- * lib/js8call-threads.js, so the window cannot address a message one way while
- * the radio sends it another. A callsign takes a colon and a group takes a
- * space; text that already carries a destination is left alone.
+ * Transmit. Composes the directed form, hands the text to the engine's
+ * frame queue, and arms TX — the engine fires each frame at a period
+ * boundary through the standard dispatch (radio-owner, SWR guard,
+ * wrong-band guard, every audio route).
  */
 function js8Transmit(text, to) {
   const t = js8Addr.composeDirected(to, text);
-  const refuse = (error) => {
-    // Refusals go to the CAT log too. A send that failed only inside the
-    // pop-out leaves a bug report with no trace of the attempt at all.
-    sendCatLog(`[JS8Call] not transmitted: ${error}`);
-    return { ok: false, error };
+  const refuse = (why) => {
+    sendCatLog('[JS8] TX refused: ' + why);
+    return { ok: false, error: why, text: t };
   };
-  if (!t) return { ok: false, error: 'Nothing to send.' };
-  if (!js8Enabled()) return refuse('The JS8Call bridge is off.');
-  if (!js8Client || !js8Client.connected) return refuse('Not connected to JS8Call.');
-
-  // JS8Call silently ignores commands unless "Accept TCP Requests" is ticked —
-  // a send that vanishes with no error is exactly the failure this whole
-  // integration is built to avoid, so say it up front.
-  const setup = readJs8Setup();
-  if (setup && !setup.found.acceptTcpRequests) {
-    return refuse('JS8Call is not accepting API commands. Tick "Accept TCP Requests" under File > Settings > Reporting > API, then restart JS8Call.');
+  const eng = js8Engine();
+  if (!eng) return refuse('JS8 is not running. Start JTCAT in JS8 mode first.');
+  if (!settings.myCallsign) return refuse('Set your callsign in Settings first.');
+  if (radioOwner !== 'none' && radioOwner !== 'jtcat') {
+    return refuse(`the radio is busy (${radioOwner}).`);
   }
-
-  // Don't ask for a transmission while POTACAT's own engine owns the radio.
-  // (js8call is a preemptive owner, so acquireRadio would say yes — that path
-  // is for OBSERVING a transmission already happening, not for starting one.)
-  if (radioOwner !== 'none' && radioOwner !== 'js8call') {
-    return refuse(`The radio is in use by ${radioOwner}. Stop it before transmitting from JS8Call.`);
-  }
-
-  const sent = js8Client.sendMessage(t);
-  if (!sent) return refuse('Could not write to JS8Call.');
-  sendCatLog(`[JS8Call] queued for transmission: ${t}`);
-  pushJs8Tail({ kind: 'tx-queued', text: t, utc: Date.now() });
-  // Show it in the thread immediately rather than waiting for the radio to
-  // confirm — the operator should see their own message where they sent it.
+  eng.setStation({ call: settings.myCallsign, grid: settings.grid });
+  const frames = eng.setTxText(t);
+  if (!frames) return refuse('nothing in that message can be encoded.');
+  eng._txEnabled = true;
+  const sub = eng.submode;
+  sendCatLog(`[JS8] queued ${frames} frame${frames > 1 ? 's' : ''} (~${frames * sub.period}s of air time): ${t}`);
   const rec = js8Threads.recordOutgoing(t);
   if (rec.threadId) js8PushThreads(rec.threadId);
-  return { ok: true, text: t };
+  js8PushStatus();
+  return { ok: true, text: t, frames };
 }
 
-/** The heartbeat this station would send, composed from JS8Call's own template. */
-function js8HeartbeatText() {
-  const setup = readJs8Setup();
-  if (!setup) return '';
-  return js8Config.js8HeartbeatText(setup.ini);
+// ── heartbeat scheduler ──────────────────────────────────────────────────────
+// "We def need hb" (Casey 2026-08-09). A station transmitting unprompted on
+// a timer is automatic operation, so this carries the same Part-97 posture
+// as ULTRACAT's Full Auto CQ: session-only enable (never persisted), and a
+// 30-minute attended-operator watchdog — no operator activity for that long
+// stops the heartbeat rather than letting it beacon to an empty chair.
+
+let js8HbEnabled = false;
+let js8HbTimer = null;
+let js8HbLastActivity = 0;
+const JS8_HB_WATCHDOG_MS = 30 * 60 * 1000;
+
+function js8HbIntervalMin() {
+  const n = parseInt(settings.js8HeartbeatMin, 10);
+  return Number.isFinite(n) && n >= 5 && n <= 60 ? n : 15;
 }
 
-// ─── JS8Call's own slice (multi-slice Flex) ──────────────────────────────────
-// A DAX channel only carries audio if a slice feeds it. With one slice bound to
-// DAX 1 — which POTACAT is already streaming — JS8Call has nowhere to listen,
-// and every channel it opens is a device that works perfectly and delivers
-// silence. A 4-slice radio can simply give it a receiver of its own.
-
-/** The slice POTACAT created for JS8Call, so it can clean up exactly that one. */
-let js8SliceIndex = null;
-/** Where transmit belonged before JS8Call keyed, so it can be put back. */
-let _js8PrevTxSlice = null;
-/** Did we hand our dax_tx stream to JS8Call? Then we owe it back. */
-let _js8ReleasedTxStream = false;
-/** transmit dax= before JS8Call keyed: true | false | null (never seen). */
-let _js8PrevTxDax = null;
-/** Peak forward power during JS8Call's current transmission, watts. */
-let _js8PeakFwdW = 0;
-/**
- * Did POTACAT actually key on the bridge route? Not the same as "JS8Call is
- * transmitting" — every refusal in js8KeyForTxViaBridge leaves JS8Call keying
- * into a cable while the radio stays receiving, and key-up must then do and say
- * nothing rather than unkeying a PTT nobody raised.
- */
-let _js8BridgeKeyed = false;
-/** Hidden renderer that is JS8Call's sound card (renderer/js8-audio-bridge.html). */
-let js8AudioWin = null;
-let _js8AudioDevices = [];       // last enumeration, for the device pickers
-let _js8AudioStatus = {};        // last status the bridge reported
-/** How long JS8Call may be gone before POTACAT takes its receiver back. */
-const JS8_SLICE_RECLAIM_MS = 45000;
-
-/** The DAX channel JS8Call's own slice feeds, or 0 if it has no slice. */
-function js8SliceDaxChannel() {
-  if (js8SliceIndex === null || !smartSdr || !smartSdr.connected) return 0;
-  const info = smartSdr.sliceDaxChannel ? smartSdr.sliceDaxChannel(js8SliceIndex) : 0;
-  return Number(info) || 0;
-}
-
-/** Can POTACAT command this radio's slices right now? */
-function js8CanControlSlices() {
-  return !!(smartSdr && smartSdr.connected && typeof smartSdr.createSlice === 'function');
-}
-
-/** The plan, as data, without touching the radio. */
-function planJs8Slice() {
-  if (!js8CanControlSlices()) {
-    return { ok: false, reason: 'POTACAT is not controlling the radio right now.' };
+function js8SetHeartbeat(enabled) {
+  js8HbEnabled = !!enabled;
+  if (js8HbTimer) { clearInterval(js8HbTimer); js8HbTimer = null; }
+  if (js8HbEnabled) {
+    js8HbLastActivity = Date.now();   // enabling IS operator activity
+    js8HbTimer = setInterval(js8HbTick, 30 * 1000);
+    sendCatLog(`[JS8] heartbeat ON — @HB HB every ${js8HbIntervalMin()} min while you are here (30 min attended watchdog)`);
+    js8HbTick();
+  } else {
+    sendCatLog('[JS8] heartbeat OFF');
   }
-  return js8Slice.planJs8Slice({
-    slices: smartSdr.sliceIndexes,
-    maxSlices: Number(settings.flexMaxSlices) || 4,
-    canControl: true,
-    usedDax: smartSdr.usedDaxChannels,
-    currentHz: _currentFreqHz || 0,
-  });
+  js8PushStatus();
 }
 
-/**
- * Create the slice and bind it to a DAX channel.
- *
- * Order matters: create, then bind DAX, then tune. Binding before the slice
- * exists is a command to nobody, and the radio answers a create with the index
- * IT chose — assuming "the next one" eventually addresses somebody else's
- * slice, which on a 4-slice radio is a matter of when.
- */
-async function createJs8Slice() {
-  const plan = planJs8Slice();
-  if (!plan.ok) return plan;
-  if (js8SliceIndex !== null) {
-    return { ok: true, already: true, sliceIndex: js8SliceIndex, daxChannel: plan.daxChannel };
-  }
-  let idx;
-  try {
-    idx = await smartSdr.createSlice({ freq: plan.freq, mode: plan.mode });
-  } catch (err) {
-    // Distinguish "the radio said no" from "the radio may have said yes and we
-    // lost track of it" — the second leaves a receiver the operator has to
-    // close by hand, and saying nothing about it is how it gets orphaned.
-    const msg = String(err.message || err);
-    const maybeMade = /never announced it/.test(msg);
-    sendCatLog('[JS8Call] could not create a slice: ' + msg +
-      (maybeMade ? ' — a receiver may exist on the radio; check SmartSDR and close it if so.' : ''));
-    return {
-      ok: false,
-      reason: maybeMade
-        ? 'POTACAT asked the radio for a receiver but never saw it appear. Check SmartSDR — if a new slice is there, close it before trying again.'
-        : 'The radio refused to create a slice: ' + msg,
-    };
-  }
-  js8SliceIndex = idx;
-  // Before anything else: POTACAT must not adopt this slice as the one it
-  // follows. A new slice comes up active, and in bound mode that would drag
-  // POTACAT's tuning and DAX route onto JS8Call's receiver.
-  if (typeof smartSdr.excludeSlice === 'function') smartSdr.excludeSlice(idx);
-  smartSdr.setSliceDax(idx, plan.daxChannel);
-  sendCatLog(`[JS8Call] slice ${idx} created on ${plan.freq.toFixed(3)} MHz ${plan.mode}, DAX channel ${plan.daxChannel} — this receiver is JS8Call's.`);
-  // Same reason as a band change: with Rig=None JS8Call cannot see where its
-  // receiver actually is, and starts up displaying whatever it had last.
-  js8SyncDialToJs8Call(plan.freq);
-  return { ok: true, sliceIndex: idx, daxChannel: plan.daxChannel, freq: plan.freq, mode: plan.mode };
-}
-
-let _js8SliceReclaimTimer = null;
-
-/**
- * Give JS8Call's receiver back once JS8Call is really gone.
- *
- * DELAYED, not immediate: the API connection drops on a JS8Call restart, on a
- * settings change that reopens its socket, and briefly whenever it is busy.
- * Tearing the slice down on the first disconnect would pull the receiver out
- * from under an application that is three seconds from coming back — and the
- * operator would then have to click "give it its own receiver" again every
- * time they restarted it.
- *
- * A slice left behind is the opposite failure: an idle receiver the operator
- * has to find and close by hand, on a radio with four. The delay balances
- * those, and a reconnect cancels it outright.
- */
-function armJs8SliceReclaim() {
-  if (js8SliceIndex === null || _js8SliceReclaimTimer) return;
-  _js8SliceReclaimTimer = setTimeout(() => {
-    _js8SliceReclaimTimer = null;
-    if (js8SliceIndex === null) return;
-    if (js8Client && js8Client.connected) return;   // came back during the wait
-    removeJs8Slice('JS8Call closed');
-  }, JS8_SLICE_RECLAIM_MS);
-}
-
-/**
- * Retune JS8Call's OWN receiver.
- *
- * Deliberately not sendCatFrequency(): that is the operator's slice, and moving
- * it would take POTACAT's whole UI, spot filtering and band logic to JS8Call's
- * band — the exact mistake CLAUDE.md flags for the WSJT-X bridge. This touches
- * one slice, the one POTACAT created, and nothing else in the app reads it.
- */
-function setJs8Band(band) {
-  const mhz = js8Slice.JS8_DIAL_MHZ[Number(band)];
-  if (!mhz) return { ok: false, reason: `No JS8 frequency known for ${band}m.` };
-  if (js8SliceIndex === null) {
-    return { ok: false, reason: 'JS8Call does not have its own receiver yet, so POTACAT has nothing of its own to tune.' };
-  }
-  if (!smartSdr || !smartSdr.connected) return { ok: false, reason: 'The radio is not connected.' };
-  smartSdr.tuneSlice(js8SliceIndex, mhz, js8Slice.JS8_MODE);
-  // And tell JS8Call, which has Rig=None and therefore no idea the radio moved.
-  // Without this its dial, its spots and its logging all stay on the old band.
-  if (js8Client && js8Client.connected && typeof js8Client.setDialFreq === 'function') {
-    js8Client.setDialFreq(Math.round(mhz * 1e6));
-  }
-  sendCatLog(`[JS8Call] its receiver moved to ${mhz.toFixed(3)} MHz (${band}m)`);
-  return { ok: true, band: Number(band), freq: mhz };
-}
-
-/** What the band picker should show: the bands, and where JS8Call is now. */
-function js8BandState() {
-  const bands = Object.keys(js8Slice.JS8_DIAL_MHZ).map(Number).sort((a, b) => b - a);
-  let current = 0;
-  if (js8SliceIndex !== null && smartSdr && typeof smartSdr.sliceFreqHz === 'function') {
-    current = js8Slice.bandForHz(smartSdr.sliceFreqHz(js8SliceIndex)) || 0;
-  }
-  return { bands, current, hasSlice: js8SliceIndex !== null, dials: js8Slice.JS8_DIAL_MHZ };
-}
-
-/**
- * Push JS8Call's actual dial to JS8Call.
- *
- * Retried once: at slice-creation time JS8Call is usually not running yet, and
- * a frequency sent to a socket that does not exist is silently nothing.
- */
-function js8SyncDialToJs8Call(mhz, tries = 0) {
-  const hz = Math.round(Number(mhz) * 1e6);
-  if (!hz) return;
-  if (js8Client && js8Client.connected && typeof js8Client.setDialFreq === 'function') {
-    js8Client.setDialFreq(hz);
+let _js8HbLastSent = 0;
+function js8HbTick() {
+  if (!js8HbEnabled) return;
+  const eng = js8Engine();
+  if (!eng) return;
+  if (Date.now() - js8HbLastActivity > JS8_HB_WATCHDOG_MS) {
+    js8SetHeartbeat(false);
+    sendCatLog('[JS8] heartbeat stopped — no operator activity for 30 min (Part 97: this must be attended). Toggle it back on when you return.');
     return;
   }
-  if (tries < 12) setTimeout(() => js8SyncDialToJs8Call(mhz, tries + 1), 5000);
-}
-
-function cancelJs8SliceReclaim() {
-  if (_js8SliceReclaimTimer) { clearTimeout(_js8SliceReclaimTimer); _js8SliceReclaimTimer = null; }
-}
-
-/**
- * Remove the slice POTACAT made — and ONLY that one.
- *
- * Never removes a slice the operator created. js8SliceIndex is set solely by
- * createJs8Slice(), so an index we did not put there is somebody's receiver.
- */
-function removeJs8Slice(why = '') {
-  cancelJs8SliceReclaim();
-  if (js8SliceIndex === null) return;
-  const idx = js8SliceIndex;
-  js8SliceIndex = null;
-  try {
-    if (smartSdr && typeof smartSdr.unexcludeSlice === 'function') smartSdr.unexcludeSlice(idx);
-    if (smartSdr && smartSdr.connected) {
-      smartSdr.removeSlice(idx);
-      sendCatLog(`[JS8Call] removed slice ${idx}${why ? ' — ' + why : ''}`);
-    }
-    else {
-      sendCatLog(`[JS8Call] slice ${idx} left on the radio — no connection to remove it. Close it in SmartSDR.`);
-    }
-  } catch (err) {
-    sendCatLog('[JS8Call] could not remove slice ' + idx + ': ' + (err.message || err));
-  }
-}
-
-// ─── POTACAT as JS8Call's sound card ─────────────────────────────────────────
-// The alternative to DAX. Slice audio POTACAT already receives is played into a
-// virtual cable that JS8Call records from; JS8Call's transmit audio comes back
-// through a second cable and goes to the radio on the dax_tx stream JTCAT and
-// SSTV already use. No SmartSDR, no DAX program, no slice of its own.
-
-function js8AudioEnabled() {
-  return !!(settings.js8AudioBridge && settings.js8AudioRxDevice);
-}
-
-function ensureJs8AudioWindow() {
-  if (js8AudioWin && !js8AudioWin.isDestroyed()) return js8AudioWin;
-  js8AudioWin = new BrowserWindow({
-    show: false,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload-js8-audio-bridge.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      // An AudioContext in a window that never received a user gesture starts
-      // SUSPENDED. This window has no UI and can never receive one.
-      autoplayPolicy: 'no-user-gesture-required',
-      // Audio must keep running while the window is hidden and the app is in
-      // the background — a throttled bridge stutters the decode window.
-      backgroundThrottling: false,
-    },
-  });
-  // Without this the window's getUserMedia is DENIED, and a denied media
-  // permission is what makes enumerateDevices() return every device with a
-  // BLANK label. Nothing then matches a cable by name, and the panel reports
-  // "could not read this PC's audio devices" on a machine with sixteen of them
-  // (K3SBP 2026-08-08). remote-audio.html has always done this; the new window
-  // did not, and only inherited it by luck when ECHOCAT happened to be open.
-  js8AudioWin.webContents.session.setPermissionRequestHandler((_wc, _perm, cb) => cb(true));
-  // path.join(__dirname, ...) like every other window here. A bare relative
-  // path resolves against the CURRENT WORKING DIRECTORY, which only happens to
-  // match the app directory when launched with `npm start` from the repo root.
-  js8AudioWin.loadFile(path.join(__dirname, 'renderer', 'js8-audio-bridge.html'));
-  _js8AudioReady = false;
-
-  // This window is invisible, so its failures are invisible too unless they are
-  // forwarded. A load error or a blocked script otherwise presents as a healthy
-  // window that simply never does anything.
-  js8AudioWin.webContents.on('did-fail-load', (_e, code, desc, url) => {
-    sendCatLog(`[JS8Call audio] window failed to load (${code} ${desc}) ${url || ''}`);
-  });
-  js8AudioWin.webContents.on('console-message', (e, level, message, line, source) => {
-    // Electron 36+ passes ONE event object and warns that the positional form
-    // is deprecated; older builds pass positionals. Accept whichever arrived so
-    // this keeps working across the upgrade rather than going quiet at exactly
-    // the moment it is needed.
-    const lvl = (e && e.level !== undefined) ? e.level : level;
-    const msg = (e && e.message !== undefined) ? e.message : message;
-    const src = (e && e.sourceId !== undefined) ? e.sourceId : source;
-    const ln = (e && e.lineNumber !== undefined) ? e.lineNumber : line;
-    const bad = (lvl === 'warning' || lvl === 'error' || Number(lvl) >= 2);
-    if (!bad || !msg) return;
-    const where = src ? ` (${String(src).split(/[\\/]/).pop()}:${ln})` : '';
-    sendCatLog(`[JS8Call audio] renderer: ${msg}${where}`);
-  });
-  js8AudioWin.on('closed', () => { js8AudioWin = null; _js8AudioReady = false; });
-  return js8AudioWin;
-}
-
-function pushJs8AudioConfig() {
-  if (!js8AudioWin || js8AudioWin.isDestroyed()) return;
-  js8AudioWin.webContents.send('js8-audio-config', {
-    enabled: js8AudioEnabled(),
-    rxDeviceId: settings.js8AudioRxDevice || '',
-    txDeviceId: settings.js8AudioTxDevice || '',
-  });
-}
-
-function startJs8AudioBridge() {
-  if (!js8AudioEnabled()) { stopJs8AudioBridge(); return; }
-  ensureJs8AudioWindow();
-  // Config is pushed on 'js8-audio-ready' as well, for the first load.
-  pushJs8AudioConfig();
-}
-
-function stopJs8AudioBridge() {
-  if (!js8AudioWin || js8AudioWin.isDestroyed()) return;
-  try { js8AudioWin.webContents.send('js8-audio-config', { enabled: false }); } catch {}
-  try { js8AudioWin.destroy(); } catch {}
-  js8AudioWin = null;
-  _js8AudioStatus = {};
-}
-
-/** Ask the bridge to enumerate audio devices (labels need a renderer). */
-let _js8AudioDevicesResolve = null;
-let _js8AudioReady = false;
-let _js8AudioReadyWaiters = [];
-
-/** Resolve once the bridge window has loaded and registered its listeners. */
-function whenJs8AudioReady(timeoutMs = 6000) {
-  ensureJs8AudioWindow();
-  if (_js8AudioReady) return Promise.resolve(true);
-  return new Promise((resolve) => {
-    const t = setTimeout(() => {
-      _js8AudioReadyWaiters = _js8AudioReadyWaiters.filter((w) => w !== fire);
-      resolve(false);
-    }, timeoutMs);
-    const fire = () => { clearTimeout(t); resolve(true); };
-    _js8AudioReadyWaiters.push(fire);
-  });
-}
-
-function markJs8AudioReady() {
-  _js8AudioReady = true;
-  const waiters = _js8AudioReadyWaiters;
-  _js8AudioReadyWaiters = [];
-  waiters.forEach((w) => { try { w(); } catch {} });
-}
-
-/**
- * Enumerate audio devices through the bridge window.
- *
- * Waits for the window to say it is ready first. loadFile() is asynchronous, so
- * sending the request straight after creating the window delivered it to a
- * renderer with no listeners yet — the message was dropped, nothing enumerated,
- * and the four-second timeout resolved with an empty list. The operator saw
- * "No virtual audio cable found" on a machine with a dozen of them
- * (K3SBP 2026-08-07).
- */
-async function listJs8AudioDevices() {
-  const ready = await whenJs8AudioReady();
-  if (!ready) {
-    sendCatLog('[JS8Call audio] the bridge window never reported ready — its script did not run. '
-      + 'Any error from it is logged above as "renderer:".');
-  }
-  if (!ready || !js8AudioWin || js8AudioWin.isDestroyed()) return _js8AudioDevices;
-  return new Promise((resolve) => {
-    let settled = false;
-    const done = () => { if (!settled) { settled = true; resolve(_js8AudioDevices); } };
-    _js8AudioDevicesResolve = (list) => { if (!settled) { settled = true; resolve(list); } };
-    setTimeout(done, 5000);
-    try { js8AudioWin.webContents.send('js8-audio-list-devices'); } catch { done(); }
-  });
-}
-
-// ─── one-click setup ─────────────────────────────────────────────────────────
-// "Open POTACAT, click More > JS8Call, then have JS8Call open and configure
-// itself to work with POTACAT" (K3SBP 2026-08-06). Three steps, in order:
-// work out what needs changing, change it while JS8Call is CLOSED, launch it.
-
-function findJs8Call() {
-  for (const p of js8Process.js8PathCandidates({ settings })) {
-    try { fs.accessSync(p, fs.constants.X_OK); return p; } catch { /* keep looking */ }
-  }
-  return '';
-}
-
-function js8Running() {
-  return !!(js8Proc && js8Proc.exitCode === null);
-}
-
-/**
- * The SmartSDR DAX control panel, newest version first.
- *
- * POTACAT itself does not need DAX — Flex Direct streams VITA-49 straight off
- * the network — so a station running POTACAT alone has every reason never to
- * start it. JS8Call is a normal Windows application and can only reach the
- * radio through DAX's audio endpoints, which stay inert placeholders until the
- * control panel runs. Nothing POTACAT can write into JS8Call.ini substitutes
- * for it. (K3SBP 2026-08-06.)
- */
-function findSmartSdrApp(exeName) {
-  const found = [];
-  for (const spec of js8Process.daxSearchSpecs()) {
-    let dirs = [];
-    try { dirs = fs.readdirSync(spec.base); } catch { continue; }
-    for (const d of dirs) {
-      if (!/^SmartSDR/i.test(d)) continue;
-      // v4.2+ keeps DAX.exe and CAT.exe beside SmartSDR.exe; older layouts put
-      // each in its own subfolder named after the app.
-      for (const exe of [
-        spec.sub ? path.join(spec.base, d, spec.sub, exeName) : path.join(spec.base, d, exeName),
-        path.join(spec.base, d, path.basename(exeName, '.exe'), exeName),
-      ]) {
-        try { fs.accessSync(exe); found.push(exe); break; } catch { /* next */ }
-      }
-    }
-  }
-  // By version, not by which layout answered first: an upgrade to v4.2+ leaves
-  // the old FlexRadio Systems tree in place, DAX.exe and all, minus the DLLs it
-  // needs. Launching that orphan is what produced a Newtonsoft.Json crash
-  // dialog on K3SBP's station.
-  return js8Process.pickNewestDax(found);
-}
-
-function findDaxApp() { return findSmartSdrApp('DAX.exe'); }
-
-/**
- * Is anything actually listening on a SmartSDR CAT slice port?
- *
- * POTACAT does not use these: Flex Direct drives the radio over the native API
- * on 4992, so `settings.catTarget` can be empty and everything still works.
- * That made it easy to propose moving JS8Call to "slice B, port 5003" on a
- * station where SmartSDR CAT has never been started and nothing is listening on
- * any of them — advice that cannot work, written into someone's config file.
- * (K3SBP 2026-08-06: nothing on 5002-5005, CAT.exe installed but not running.)
- */
-function probeCatPort(port, timeoutMs = 400) {
-  const net = require('net');
-  return new Promise((resolve) => {
-    const sock = new net.Socket();
-    let done = false;
-    const finish = (open) => { if (done) return; done = true; try { sock.destroy(); } catch {} resolve(open); };
-    sock.setTimeout(timeoutMs);
-    sock.once('connect', () => finish(true));
-    sock.once('timeout', () => finish(false));
-    sock.once('error', () => finish(false));
-    try { sock.connect(port, '127.0.0.1'); } catch { finish(false); }
-  });
-}
-
-/** Which of the SmartSDR CAT slice ports are live, lowest first. */
-async function openCatSlicePorts() {
-  const ports = [5002, 5003, 5004, 5005];
-  const open = await Promise.all(ports.map((p) => probeCatPort(p)));
-  return ports.filter((_p, i) => open[i]);
-}
-
-/**
- * Start one of SmartSDR's helper apps. Never kills one — they are the
- * operator's windows, and they outlive POTACAT by design.
- */
-function launchSmartSdrApp(exe, label) {
-  if (!exe) {
-    sendCatLog(`[JS8Call] cannot start ${label}: not found in any SmartSDR install.`);
-    return { ok: false, error: `Could not find ${label}. Start it from your SmartSDR installation, then press Retry.` };
-  }
-  try {
-    sendCatLog(`[JS8Call] launching ${label}: ${exe}`);
-    const p = spawn(exe, [], { stdio: 'ignore', detached: true });
-    p.unref();
-    p.on('error', (err) => sendCatLog(`[JS8Call] ${label} launch failed: ` + (err.message || err)));
-  } catch (err) {
-    return { ok: false, error: `Could not start ${label}: ` + (err.message || err) };
-  }
-  return { ok: true, exe };
-}
-
-/**
- * Start SmartSDR itself — NOT its helpers individually.
- *
- * "Opening SmartSDR tends to open DAX and CAT" (K3SBP 2026-08-06), and that is
- * the only order that is safe. POTACAT infers "SmartSDR is running" from the
- * CAT shim answering on 5002 (checkFlexHandoff), because in real life CAT.exe
- * exists only because SmartSDR started it. A button that launched CAT.exe alone
- * broke that invariant: the port opened, POTACAT concluded SmartSDR had
- * launched, released its GUI slot with multiFlex off, waited out the full
- * yield timeout for a SmartSDR that was never coming, and left rig control down
- * for twelve seconds — then polled a shim with no slice port, which answers
- * every command with '?'. Launching the real thing makes the inference true.
- */
-function launchSmartSdrMain() { return launchSmartSdrApp(findSmartSdrMain(), 'SmartSDR'); }
-function findSmartSdrMain() { return findSmartSdrApp('SmartSDR.exe'); }
-
-/**
- * What one-click setup would do, without doing any of it. The popout shows this
- * before asking — POTACAT is editing another application's configuration, and
- * that should never be a surprise.
- */
-/**
- * Where to move JS8Call's radio and audio so it stops fighting POTACAT.
- * Flex only — it is the one rig that can host both apps at once, on separate
- * slices. Anywhere else there is no second receiver to move to, so there is
- * nothing honest to propose and this returns null.
- */
-function js8RadioPlan(setup, labels = [], catPorts = null) {
-  if (!setup || setup.rigFamily !== 'flex') return null;
-  const ours = (settings.catTarget && settings.catTarget.port) || 5002;
-  // Only offer a slice port something is actually listening on. `catPorts` null
-  // means "not probed" and keeps the old assumption; an empty array means we
-  // looked and SmartSDR CAT is not running, so there is no honest port to name.
-  const live = catPorts === null ? [5002, 5003, 5004, 5005] : catPorts;
-  const port = live.find((p) => p !== ours) || null;
-
-  // Slice-to-DAX-channel is a CONVENTION; which channels the machine presents
-  // is a fact, and only the fact can go into a config file. K3SBP's station
-  // has no DAX RX 4 and calls its transmit endpoint "DAX RESERVED AUDIO TX",
-  // so the template this used to build named devices that did not exist and
-  // JS8Call reported it as an unsupported audio format (2026-08-06).
-  const preferred = port ? (port - 5002) + 1 : 0;
-  // RX and TX resolved TOGETHER from one driver family. Two DAX generations can
-  // be installed at once and both enumerate; the stale one has the longer,
-  // more official-looking names, so picking each device independently lands
-  // JS8Call on a receive channel from the dead family and a transmit device
-  // from the live one.
-  // Prefer the channel JS8Call's own slice feeds. Without one, `preferred` is
-  // just a convention and the chosen channel may have no slice behind it — a
-  // device that opens and carries silence.
-  const ownCh = js8SliceDaxChannel();
-  const dax = js8Audio.resolveDaxPair(labels, {
-    taken: [_flexDaxChannel || 1],
-    preferred: ownCh || preferred,
-  });
-  const ch = dax.channel;
-  const soundIn = dax.rx;
-  const soundOut = dax.tx;
-
-  const plan = { daxFamily: dax.family };
-  if (port) plan.catPort = port;
-  // Omit what we could not verify rather than writing a guess. desiredJs8Settings
-  // skips absent keys, so JS8Call keeps whatever it already had and the operator
-  // is told which part POTACAT could not do.
-  if (soundIn) plan.soundIn = soundIn;
-  if (soundOut) plan.soundOut = soundOut;
-  plan.daxChannel = ch || 0;
-  plan.audioUnknown = !labels.length;
-  return plan;
-}
-
-/**
- * The audio endpoints this machine actually presents.
- *
- * Chromium is the only enumerator available here, so this borrows the main
- * window the same way the ECHOCAT device list does. Headless (or before the
- * window exists) it returns [] — and every caller treats [] as "unknown",
- * never as "no devices", because those two mean opposite things.
- */
-async function js8AudioLabels() {
-  try {
-    if (!win || win.isDestroyed()) return [];
-    // Chromium blanks every label until microphone permission has been granted,
-    // so a naive enumerate returns a list of empty strings and this whole check
-    // silently does nothing. Enumerate FIRST and only open a stream if the
-    // labels really are blank — POTACAT usually unlocked them earlier in the
-    // session, and opening the default input unasked can contend with a JTCAT
-    // or SSTV capture already running on it.
-    const list = await win.webContents.executeJavaScript(`
-      (async () => {
-        const grab = async () => (await navigator.mediaDevices.enumerateDevices())
-          .filter(x => x.kind === 'audioinput' || x.kind === 'audiooutput')
-          .map(x => x.label).filter(Boolean);
-        let out = await grab();
-        if (!out.length) {
-          try {
-            const s = await navigator.mediaDevices.getUserMedia({ audio: true });
-            s.getTracks().forEach(t => t.stop());
-            out = await grab();
-          } catch (e) { /* denied: [] means "unknown", never "no devices" */ }
-        }
-        return out;
-      })()
-    `);
-    return Array.isArray(list) ? list : [];
-  } catch {
-    return [];
-  }
-}
-
-async function planJs8Setup({ includeRadio = null } = {}) {
-  const setup = readJs8Setup();
-  if (!setup) return { ok: false, error: 'No JS8Call configuration found. Install JS8Call and run it once.' };
-  const labels = await js8AudioLabels();
-  const catPorts = setup.rigFamily === 'flex' ? await openCatSlicePorts() : null;
-
-  // A real, detected collision decides the default — offering an unticked box
-  // beside a warning that the two apps will fight over the same slice makes the
-  // operator do the diagnosis POTACAT has already done.
-  //
-  // A device JS8Call is told to open that is not there counts too: that is
-  // exactly the state that produces "Requested output audio format is not
-  // supported on device", a message about formats that is really about a
-  // missing device, and nothing else on this screen would have explained it.
-  // deviceProblem, not deviceMissing: both devices JS8Call was pointed at here
-  // enumerated fine and neither could carry audio (one a placeholder, one from
-  // the dead driver generation), so a presence check reported "ready" and
-  // launched JS8Call straight into the same error.
-  const devTrouble = labels.length
-    ? [setup.found.soundIn, setup.found.soundOut]
-        .map((d) => ({ device: d, why: js8Audio.deviceProblem(d, labels) }))
-        .filter((x) => x.device && x.why)
-    : [];
-  const deadDevice = devTrouble.length > 0;
-
-  // The same class of problem on the radio side: JS8Call is pointed at a CAT
-  // port with nothing listening on it, so it reports no radio. POTACAT wrote
-  // that port itself before it learned to probe, and there is no honest fix it
-  // can apply alone — the only live port is the one POTACAT is using, and the
-  // alternatives (add a slice port in SmartSDR CAT, or set Rig to None) are
-  // both the operator's call. So this is DIAGNOSED, never silently rewritten.
-  const wantCat = Number(setup.found.catPort) || 0;
-  const catPortDead = setup.rigFamily === 'flex' && wantCat && catPorts !== null
-    && !catPorts.includes(wantCat);
-  const collides = js8Problems.some((p) => p.code === 'cat-slice-collision' || p.code === 'dax-rx-collision');
-  const wantRadio = includeRadio === null ? (collides || !!deadDevice) : !!includeRadio;
-  const radio = wantRadio ? js8RadioPlan(setup, labels, catPorts) : null;
-
-  const want = js8Process.desiredJs8Settings({
-    tcpPort: settings.js8Port || setup.found.tcpPort || 2442,
-    radio,
-  });
-  let raw = '';
-  try { raw = fs.readFileSync(setup.iniPath, 'utf8'); } catch (err) {
-    return { ok: false, error: 'Could not read JS8Call.ini: ' + (err.message || err) };
-  }
-  const plan = js8Process.planJs8IniPatch(raw, want);
-  return {
-    ok: true,
-    iniPath: setup.iniPath,
-    // Summarized, not one line per ini key: the list is a set of DECISIONS the
-    // operator is agreeing to, and the three radio keys are one of them.
-    changes: js8Process.summarizeJs8Changes(plan.changes).map((label) => ({ label })),
-    rawChanges: plan.changes,
-    missingSection: plan.missingSection,
-    running: js8Running(),
-    binary: findJs8Call(),
-    rigFamily: setup.rigFamily,
-    canDoRadio: setup.rigFamily === 'flex',
-    radioCollision: collides,
-    // DAX down is its OWN state, not a config problem: no ini change fixes it,
-    // and offering the usual "set up JS8Call" button would just rewrite a name
-    // that still cannot be opened. null = we could not tell.
-    daxDown: setup.rigFamily === 'flex' ? js8Audio.daxProvisioned(labels) === false : false,
-    // One app, not three: SmartSDR brings DAX and CAT up with it, and starting
-    // either helper alone is what broke this station.
-    smartSdrApp: findSmartSdrMain(),
-    // multiFlex off means POTACAT hands the single GUI slot to SmartSDR and
-    // rides along. That is a real change to how the station runs, so the panel
-    // says it rather than letting it be discovered.
-    yieldsGuiSlot: settings.flexMultiflex === false,
-    // The other half of the same story. POTACAT drives a Flex over the native
-    // API on 4992 and never needs these slice ports, so a perfectly working
-    // station can have none of them — and JS8Call, which can only speak serial
-    // CAT, then has nothing to point at.
-    catShimDown: setup.rigFamily === 'flex' && catPorts !== null && catPorts.length === 0,
-    catPortDead: !!catPortDead,
-    // JS8Call's own receiver: whether it has one, and whether one can be made.
-    js8Slice: js8SliceIndex,
-    slicePlan: setup.rigFamily === 'flex' && js8SliceIndex === null ? planJs8Slice() : null,
-    catPortWanted: wantCat,
-    catPortsLive: catPorts || [],
-    catPorts: catPorts || [],
-    deadDevice,
-    // Named, and with the REASON — "your audio is wrong" sends the operator
-    // hunting; "that one is a placeholder" ends it.
-    deviceProblems: devTrouble.map((x) => js8Audio.describeDeviceProblem(x.device, x.why)),
-    includeRadio: wantRadio,
-  };
-}
-
-/**
- * Apply the plan. Refuses while JS8Call is running: Qt rewrites the whole ini
- * on exit, so anything written underneath a live instance is silently reverted
- * — the operator would see us claim success and nothing change.
- */
-async function applyJs8Setup({ includeRadio = null } = {}) {
-  const plan = await planJs8Setup({ includeRadio });
-  if (!plan.ok) return plan;
-  if (plan.missingSection) {
-    return { ok: false, error: 'That JS8Call.ini has no [Configuration] section — run JS8Call once so it writes a full config.' };
-  }
-  if (js8ExternalJs8CallRunning()) {
-    return { ok: false, error: 'Close JS8Call first. It rewrites its settings file when it exits, so changes made while it is running would be undone.' };
-  }
-  // `noChanges`, not `already` — the IPC layer uses `already` for "JS8Call was
-  // already running", and one key meaning two things is how a caller ends up
-  // reporting the wrong one.
-  if (!plan.changes.length) return { ok: true, changes: [], noChanges: true };
-
-  const setup = readJs8Setup();
-  let raw;
-  try { raw = fs.readFileSync(setup.iniPath, 'utf8'); } catch (err) {
-    return { ok: false, error: 'Could not read JS8Call.ini: ' + (err.message || err) };
-  }
-  // plan.includeRadio, not the raw argument: the plan resolves `null` into the
-  // collision-driven default, and applying something other than what was shown
-  // is the one failure this whole confirm-first design exists to prevent.
-  const want = js8Process.desiredJs8Settings({
-    tcpPort: settings.js8Port || setup.found.tcpPort || 2442,
-    radio: plan.includeRadio
-      ? js8RadioPlan(setup, await js8AudioLabels(), await openCatSlicePorts())
-      : null,
-  });
-  const patched = js8Process.planJs8IniPatch(raw, want);
-
-  // Keep a copy. We are editing someone else's application config; a way back
-  // is not optional.
-  try {
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    fs.writeFileSync(setup.iniPath + '.potacat-' + stamp + '.bak', raw, 'utf8');
-    fs.writeFileSync(setup.iniPath, patched.text, 'utf8');
-  } catch (err) {
-    return { ok: false, error: 'Could not write JS8Call.ini: ' + (err.message || err) };
-  }
-  for (const c of patched.changes) sendCatLog(`[JS8Call] setup: ${js8Process.describeJs8Change(c)}`);
-  return { ok: true, changes: js8Process.summarizeJs8Changes(patched.changes).map((label) => ({ label })) };
-}
-
-/** Is a JS8Call running that POTACAT did not start? Best-effort: if its API
- *  answers, it is up. Used to refuse patching under a live instance. */
-function js8ExternalJs8CallRunning() {
-  if (js8Running()) return true;
-  return !!(js8Client && js8Client.connected);
-}
-
-/**
- * Start JS8Call. Never touches one POTACAT did not start.
- *
- * And deliberately NOT killed in gracefulCleanup, unlike Mercury. Mercury is a
- * headless modem POTACAT owns; JS8Call is a window the operator is looking at,
- * possibly mid-QSO. Killing it would also skip QSettings' shutdown write and
- * roll back the ini we just patched — so quitting POTACAT leaves it running,
- * which is what closing one of two open applications should do.
- */
-function launchJs8Call() {
-  // Every exit from this function says what it did. Not launching is a normal
-  // outcome twice over (already up / not found), and both used to leave the
-  // log with nothing between "settings applied" and silence.
-  if (js8ExternalJs8CallRunning()) {
-    sendCatLog('[JS8Call] already running — not starting a second copy.');
-    return { ok: true, already: true };
-  }
-  const bin = findJs8Call();
-  if (!bin) {
-    sendCatLog('[JS8Call] cannot start it: no JS8Call program found in the usual places.');
-    return { ok: false, error: 'Could not find JS8Call. Set its location in Settings > Station > JS8Call, or download it from js8call.com.' };
-  }
-  try {
-    const args = js8Process.js8LaunchArgs(settings);
-    sendCatLog(`[JS8Call] launching: ${bin}${args.length ? ' ' + args.join(' ') : ''}`);
-    // Pipe BOTH streams. Mercury's real failure message went to stdout and was
-    // discarded for weeks; a Qt app that dies on a missing library says so the
-    // same way, and "nothing happened" is the worst thing this can report.
-    js8Proc = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'], detached: false });
-    const startedAt = Date.now();
-    const relay = (buf) => {
-      String(buf).split(/\r?\n/).forEach((l) => { if (l.trim()) sendCatLog('[JS8Call] ' + l.trim()); });
-    };
-    if (js8Proc.stdout) js8Proc.stdout.on('data', relay);
-    if (js8Proc.stderr) js8Proc.stderr.on('data', relay);
-    js8Proc.on('exit', (code) => {
-      js8Proc = null;
-      // We started it, so its exit is unambiguous — no need to wait out the
-      // reclaim delay wondering whether it is coming back.
-      removeJs8Slice('JS8Call exited');
-      // Quitting a second later means it never opened a window — say that,
-      // rather than leaving the operator watching a spinner.
-      if (Date.now() - startedAt < 5000) {
-        sendCatLog(`[JS8Call] exited immediately (code ${code}) — it did not start. Try launching it yourself to see the error it shows.`);
-      }
-    });
-    js8Proc.on('error', (err) => { js8Proc = null; sendCatLog('[JS8Call] launch failed: ' + (err.message || err)); });
-  } catch (err) {
-    return { ok: false, error: 'Could not start JS8Call: ' + (err.message || err) };
-  }
-  // It has a splash and an audio device to open before the API listens; the
-  // connect retries on its own backoff, so just nudge it after a moment.
-  setTimeout(() => { connectJs8Call(); }, 4000);
-  return { ok: true };
+  if (Date.now() - _js8HbLastSent < js8HbIntervalMin() * 60 * 1000) return;
+  if (eng._txActive || eng.txQueueLength > 0) return;    // never preempt a message
+  if (radioOwner !== 'none' && radioOwner !== 'jtcat') return;
+  const grid = String(settings.grid || '').slice(0, 4).toUpperCase();
+  eng.setStation({ call: settings.myCallsign, grid });
+  const frames = eng.setTxText(grid ? `HB ${grid}` : 'HB');
+  if (!frames) return;
+  eng._txEnabled = true;
+  _js8HbLastSent = Date.now();
+  sendCatLog(`[JS8] heartbeat queued: @HB HB ${grid}`);
 }
 
 /** Stop JTCAT keying because an external transmitter took the radio. */
@@ -6283,28 +5244,6 @@ function haltJtcatForPreemption() {
   }
 }
 
-/**
- * RX.CALL_ACTIVITY comes back as an object keyed by callsign. Flatten it into
- * a sorted list the rail can render, strongest-and-most-recent first — that
- * ordering is the answer to "who can I work", which a raw map is not.
- */
-function normalizeJs8CallActivity(msg) {
-  const p = msg.params || {};
-  const out = [];
-  for (const [call, v] of Object.entries(p)) {
-    if (!call || call.startsWith('_') || !v || typeof v !== 'object') continue;
-    out.push({
-      call: String(call).toUpperCase(),
-      snr: v.SNR == null ? null : Number(v.SNR),
-      utc: Number(v.UTC) || 0,
-      grid: String(v.GRID || '').toUpperCase(),
-    });
-  }
-  // Recency first (a strong station heard an hour ago is not reachable now),
-  // SNR as the tiebreak within the same minute.
-  out.sort((a, b) => (Math.floor(b.utc / 60000) - Math.floor(a.utc / 60000)) || ((b.snr ?? -99) - (a.snr ?? -99)));
-  return out.slice(0, 40);
-}
 
 function js8PushHeard() {
   if (js8PopoutWin && !js8PopoutWin.isDestroyed()) {
@@ -6330,64 +5269,6 @@ function pushJs8Tail(entry) {
   if (js8PopoutWin && !js8PopoutWin.isDestroyed()) js8PopoutWin.webContents.send('js8call-activity', entry);
 }
 
-function handleJs8Message(msg) {
-  const t = String(msg.type || '').toUpperCase();
-  const p = msg.params || {};
-
-  // Station identity + what JS8Call thinks it is tuned to. NOTE: this is
-  // recorded for display ONLY and must never reach sendCatFrequency(). The
-  // WSJT-X bridge does feed its dial through, and is right to — WSJT-X owns the
-  // radio there. JS8Call is on its OWN slice, so doing the same would make
-  // POTACAT's frequency display, spot filtering, band logic and privileges
-  // checker all believe the rig is on JS8Call's band.
-  if (t === 'STATION.CALLSIGN') {
-    js8Station.call = String(msg.value || '').toUpperCase();
-    // The callsign answers after the socket opens, so early frames can arrive
-    // before routing knows who we are.
-    js8Threads.setMyCall(js8Station.call);
-  }
-  else if (t === 'STATION.GRID') js8Station.grid = String(msg.value || '').toUpperCase();
-  else if (t === 'RIG.FREQ' || t === 'STATION.STATUS') {
-    if (p.DIAL) js8Station.dial = Number(p.DIAL) || js8Station.dial;
-    if (p.SPEED !== undefined) js8Station.speed = p.SPEED;
-  }
-
-  // Who is audible right now — the right rail's whole job is answering "can I
-  // reach anyone", which is the question that decides whether to call at all.
-  if (t === 'RX.CALL_ACTIVITY') {
-    js8Heard = normalizeJs8CallActivity(msg);
-    js8PushHeard();
-  }
-
-  if (t === 'RX.DIRECTED' || t === 'RX.ACTIVITY' || t === 'RX.SPOT') {
-    const mine = isDirectedTo(msg, js8Station.call || settings.myCallsign);
-    const entry = {
-      kind: t === 'RX.DIRECTED' ? (mine ? 'to-me' : 'directed') : 'activity',
-      text: msg.value || '',
-      from: p.FROM || '', to: p.TO || '',
-      snr: p.SNR, offset: p.OFFSET, dial: p.DIAL,
-      utc: p.UTC || Date.now(),
-    };
-    pushJs8Tail(entry);
-
-    // Only DIRECTED traffic forms conversations. RX.ACTIVITY is the raw stream
-    // and belongs in the all-traffic view, not threaded under a person.
-    if (t === 'RX.DIRECTED') {
-      const r = js8Threads.ingest({
-        from: p.FROM, to: p.TO, text: msg.value || '',
-        snr: p.SNR, offset: p.OFFSET, utc: p.UTC ? Number(p.UTC) : Date.now(),
-      });
-      if (r.threadId) js8PushThreads(r.threadId);
-      if (entry.kind === 'to-me' && !r.folded) {
-        sendCatLog(`[JS8Call] message for you from ${entry.from}: ${entry.text}`);
-      }
-    }
-  }
-
-  if (js8PopoutWin && !js8PopoutWin.isDestroyed()) {
-    js8PopoutWin.webContents.send('js8call-message', msg);
-  }
-}
 
 // --- PSKReporter FreeDV integration ---
 function sendPskrStatus(s) {
@@ -9137,7 +8018,15 @@ function startJtcat(mode) {
   jtcatFullAutoCq = false;
   jtcatFullAutoCqOwner = null;
   if (!jtcatManager) jtcatManager = new JtcatManager();
-  jtcatManager.startSlice({ sliceId: 'default', mode: mode || 'FT8' });
+  jtcatManager.startSlice({
+    sliceId: 'default',
+    mode: mode || 'FT8',
+    // JS8 needs its station identity at construction — the engine's frame
+    // builder refuses to queue TX without a callsign.
+    submode: settings.js8Submode || 'NORMAL',
+    myCall: (settings.myCallsign || '').toUpperCase(),
+    myGrid: (settings.grid || '').toUpperCase(),
+  });
   ft8Engine = jtcatManager.engine; // Phase 0 alias
 
   // Apply persisted JTCAT calibration to the freshly-started engine.
@@ -9232,6 +8121,30 @@ function startJtcat(mode) {
   ft8Engine.removeAllListeners('tx-start');
   ft8Engine.removeAllListeners('tx-end');
   ft8Engine.removeAllListeners('psk-text');
+  ft8Engine.removeAllListeners('js8-rx');
+  ft8Engine.removeAllListeners('js8-tx-done');
+
+  // JS8 continuous RX frames. Like psk-text, deliberately NOT routed through
+  // the FT8 'decode' handler — JS8 is a conversation mode and its frames feed
+  // the inbox (js8HandleRx → assembler → lib/js8call-threads.js), not the QSO
+  // state machine. TX rides the shared tx-start dispatch below unchanged.
+  ft8Engine.on('js8-rx', (d) => js8HandleRx(d));
+  ft8Engine.on('js8-tx-done', ({ message }) => {
+    sendCatLog(`[JS8] message fully transmitted: ${message}`);
+    js8PushStatus();
+  });
+  if (ft8Engine._mode === 'JS8') {
+    // A fresh JS8 engine session: reset the reassembler (stale half-messages
+    // from the previous band/session must not greet the new one) and let the
+    // windows know JS8 is up.
+    js8RxAssembler = new Js8RxAssembler({});
+    js8Station = {
+      call: (settings.myCallsign || '').toUpperCase(),
+      grid: (settings.grid || '').toUpperCase(),
+    };
+    js8Threads.setMyCall(js8Station.call);
+    js8PushStatus();
+  }
 
   // PSK31 continuous RX text. Deliberately NOT routed through the 'decode'
   // handler below — none of the FT8 classification / QSO state machine /
@@ -10371,13 +9284,6 @@ function connectSmartSdr() {
   // then only the optimistic echo. Everything downstream (renderer, VFO
   // popout, phone status broadcast) already flows from sendCatPower.
   smartSdr.on('power', sendCatPower);
-  // Peak forward power seen during the current key-down. The only thing that
-  // answers "did we actually radiate" without watching a meter on the radio for
-  // 13 seconds — and PSKReporter silence cannot tell a dead band from a dead
-  // transmitter.
-  smartSdr.on('fwd-power', (w) => {
-    if (js8TxActive && w > _js8PeakFwdW) _js8PeakFwdW = w;
-  });
   smartSdr.on('swr-ratio', (swr) => {
     if (win && !win.isDestroyed()) win.webContents.send('cat-swr-ratio', swr);
     if (vfoPopoutWin && !vfoPopoutWin.isDestroyed()) vfoPopoutWin.webContents.send('cat-swr-ratio', swr);
@@ -10538,11 +9444,6 @@ function connectSmartSdr() {
               sendCatLog(`⚠ DAX channel ${_flexDaxChannel} CONFLICT — another SmartSDR client keeps taking it back; POTACAT can't share a DAX channel. `
                 + `Set a different DAX channel for POTACAT, or close the other client. (No longer fighting for it.)`);
             }
-          } else if (index === js8SliceIndex) {
-            // JS8Call's own receiver, deliberately on its own DAX channel.
-            // "Fixing" it to POTACAT's channel would put both applications on
-            // one channel and silence the one that lost.
-            return;
           } else if (settings.flexDaxAutoFix !== false && !_daxFixAttempted && typeof smartSdr.setSliceDax === 'function') {
             _daxFixAttempted = true;
             _daxFixTimes.push(now);
@@ -10666,15 +9567,6 @@ function startSmartSdrAudio() {
     // consumer can't grow main's IPC backlog into a leak.
     if (remoteAudioWin) {
       audioSafeSend(remoteAudioWin.webContents, 'smartsdr-audio-frame', { pcm, sampleRate });
-    }
-    // JS8Call's sound card. Same frames, played into a virtual cable — but
-    // ONLY when the bridge is actually running. The window also gets created
-    // just to enumerate audio devices for the setup panel, and feeding a window
-    // that is not playing anything makes it a frame sink: the backpressure
-    // guard fills, main starts dropping, and the log fills with "renderer not
-    // keeping up" for a consumer that was never consuming (K3SBP 2026-08-07).
-    if (js8AudioWin && !js8AudioWin.isDestroyed() && js8AudioEnabled()) {
-      audioSafeSend(js8AudioWin.webContents, 'smartsdr-audio-frame', { pcm, sampleRate });
     }
     // VFO popout: local "Radio audio monitor" playback for SmartSDR Direct —
     // the Windows DAX RX device the monitor would otherwise capture is silent
@@ -22265,6 +21157,21 @@ app.whenReady().then(() => {
   }
   settings = loadSettings();
   migrateRigSettings(settings);
+  // JS8 went native (docs/js8-native-plan.md): the bridge-era settings are
+  // retired. Clear them once, loudly, so nobody wonders whether an old cable
+  // config is still doing something. js8HeartbeatMin / js8Submode are the
+  // native keys and survive.
+  {
+    const retired = ['enableJs8Call', 'js8Port', 'js8RigName', 'js8Path',
+      'js8AudioBridge', 'js8AudioRxDevice', 'js8AudioTxDevice'];
+    const found = retired.filter((k) => settings[k] !== undefined);
+    if (found.length) {
+      for (const k of found) delete settings[k];
+      saveSettings(settings);
+      console.log('[JS8] retired bridge-era settings removed (' + found.join(', ')
+        + ') — JS8 is native now: no JS8Call app, no virtual cable. Open the JS8 window and press Start.');
+    }
+  }
   // Multi-op profile migration. If we loaded a legacy settings.json (one
   // with myCallsign but no activeProfile pointer), save it through the
   // splitter to create profiles/<myCallsign>/settings.json + a slimmed
@@ -22357,8 +21264,6 @@ app.whenReady().then(() => {
   // ever flipped on by the user.
   if (settings.myCallsign) connectRbn();
   if (settings.enableMercury) connectMercury();
-  connectJs8Call();   // decides for itself — see js8Enabled()
-  startJs8AudioBridge();   // no-op unless a receive cable is configured
   connectSmartSdr(); // connects if smartSdrSpots, CW keyer, or WSJT-X+Flex
   connectTci();
   connectAntennaGenius();
@@ -24407,9 +23312,7 @@ app.whenReady().then(() => {
       // Reflect state and replay the tail so a reopened window isn't blank
       // mid-session — the same reason the Mercury popout keeps a transcript.
       js8LastStatus = null;
-      sendJs8Status(js8Enabled()
-        ? { connected: !!(js8Client && js8Client.connected), tx: js8TxActive }
-        : { connected: false, error: 'The JS8Call bridge is off — enable it in Settings > Station' });
+      js8PushStatus();
       for (const e of js8Tail) js8PopoutWin.webContents.send('js8call-activity', { ...e, replay: true });
       js8PushThreads(null);
       js8PushHeard();
@@ -24425,7 +23328,45 @@ app.whenReady().then(() => {
     if (w) { w.isMaximized() ? w.unmaximize() : w.maximize(); }
   });
   ipcMain.on('js8call-popout-close', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.close(); });
-  ipcMain.on('js8call-reconnect', () => connectJs8Call());
+  // Start/stop JS8 — it runs as the JTCAT engine, so "start" is just JTCAT
+  // in JS8 mode and every audio route, guard, and popout behavior follows.
+  ipcMain.handle('js8-start', () => {
+    markUserActive();
+    if (js8Engine()) return { ok: true, already: true };
+    if (!settings.myCallsign) {
+      return { ok: false, error: 'Set your callsign in Settings first — JS8 transmissions carry it.' };
+    }
+    try {
+      startJtcat('JS8');
+      return { ok: !!js8Engine() };
+    } catch (err) {
+      return { ok: false, error: String((err && err.message) || err) };
+    }
+  });
+  ipcMain.handle('js8-stop', () => {
+    markUserActive();
+    if (!js8Engine()) return { ok: true, already: true };
+    js8SetHeartbeat(false);
+    stopJtcat();
+    js8PushStatus();
+    return { ok: true };
+  });
+  // Heartbeat: session-only enable, Part-97 attended watchdog (see
+  // js8SetHeartbeat). The interval persists; the switch never does.
+  ipcMain.handle('js8-heartbeat', (_e, opts) => {
+    markUserActive();
+    const o = opts || {};
+    if (o.intervalMin !== undefined) {
+      const n = parseInt(o.intervalMin, 10);
+      if (Number.isFinite(n) && n >= 5 && n <= 60) {
+        settings.js8HeartbeatMin = n;
+        saveSettings(settings);
+      }
+    }
+    if (o.enabled !== undefined) js8SetHeartbeat(!!o.enabled);
+    else js8PushStatus();
+    return { ok: true, enabled: js8HbEnabled, intervalMin: js8HbIntervalMin() };
+  });
   // Transmit. Always operator-initiated — there is no automatic path here, and
   // the reply carries the refusal reason so the popout can show it rather than
   // appearing to have done nothing.
@@ -24433,10 +23374,10 @@ app.whenReady().then(() => {
   // way while the radio sends it another. A bare string still works.
   ipcMain.handle('js8call-send', (_e, arg) => {
     markUserActive();
+    js8HbLastActivity = Date.now();   // sending IS operator activity
     if (arg && typeof arg === 'object') return js8Transmit(arg.text, arg.to);
     return js8Transmit(arg);
   });
-  ipcMain.handle('js8call-heartbeat-text', () => js8HeartbeatText());
   // Conversations. State lives in main so unread survives the window closing.
   ipcMain.handle('js8call-threads', () => ({
     list: js8Threads.list(), unread: js8Threads.totalUnread,
@@ -24444,116 +23385,10 @@ app.whenReady().then(() => {
   }));
   ipcMain.handle('js8call-thread', (_e, id) => {
     js8Threads.setOpen(id);      // opening it is what marks it read
+    js8HbLastActivity = Date.now();   // reading mail IS operator activity
     return { thread: js8Threads.thread(id), list: js8Threads.list(), unread: js8Threads.totalUnread };
   });
   ipcMain.on('js8call-thread-closed', () => js8Threads.setOpen(null));
-  // Ask JS8Call to re-send who it can hear. Cheap, and the rail goes stale fast.
-  ipcMain.on('js8call-refresh-heard', () => {
-    if (js8Client && js8Client.connected) js8Client.send({ type: 'RX.GET_CALL_ACTIVITY' });
-  });
-  // One-click setup: show the plan, apply it, start JS8Call.
-  ipcMain.handle('js8call-plan-setup', (_e, opts) => planJs8Setup(opts || {}));
-  // applyJs8Setup is async (it enumerates audio devices). Awaiting it is not a
-  // style point: a bare `const r = applyJs8Setup()` makes r a Promise, r.ok
-  // undefined, the launch silently skipped — and `return r` still resolves to
-  // {ok:true}, so the panel reported success for something that never ran.
-  // A success path that lies is worse than a failure. (K3SBP 2026-08-06:
-  // settings patched, "Starting JS8Call…", no JS8Call.)
-  ipcMain.handle('js8call-apply-setup', async (_e, opts) => {
-    markUserActive();
-    const r = await applyJs8Setup(opts || {});
-    if (!r.ok) return r;
-    const l = launchJs8Call();
-    return l.ok ? { ...r, launched: !l.already, already: !!l.already }
-                : { ...r, launchError: l.error };
-  });
-  ipcMain.handle('js8call-launch', () => { markUserActive(); return launchJs8Call(); });
-  ipcMain.handle('js8call-launch-smartsdr', () => { markUserActive(); return launchSmartSdrMain(); });
-  // Give JS8Call its own receiver. Deliberate and explicit: this creates a
-  // slice on the operator's radio, so it happens on a click and never as a
-  // side effect of opening a window.
-  ipcMain.handle('js8call-create-slice', async () => { markUserActive(); return createJs8Slice(); });
-  // ── JS8Call audio bridge ──────────────────────────────────────────────────
-  ipcMain.on('js8-audio-ready', () => { markJs8AudioReady(); pushJs8AudioConfig(); });
-  ipcMain.on('js8-audio-devices', (_e, list) => {
-    _js8AudioDevices = Array.isArray(list) ? list : [];
-    const named = _js8AudioDevices.filter((d) => d && d.label).length;
-    sendCatLog(`[JS8Call audio] ${_js8AudioDevices.length} audio devices, ${named} with readable names`
-      + (named === 0 && _js8AudioDevices.length ? ' — names are blank, which means microphone permission was refused' : ''));
-    if (_js8AudioDevicesResolve) { _js8AudioDevicesResolve(_js8AudioDevices); _js8AudioDevicesResolve = null; }
-  });
-  ipcMain.on('js8-audio-status', (_e, st) => {
-    _js8AudioStatus = Object.assign({}, _js8AudioStatus, st || {});
-    if (st && st.loaded) sendCatLog('[JS8Call audio] bridge window ready');
-    else if (st && st.error) sendCatLog('[JS8Call audio] ' + st.error);
-    else if (st && st.firstFrame) sendCatLog(`[JS8Call audio] receive audio flowing into the cable (${st.rate || 24000} Hz)`);
-    else if (st && st.rx === true) sendCatLog('[JS8Call audio] receive cable open');
-    else if (st && st.tx === true) sendCatLog('[JS8Call audio] transmit cable open');
-  });
-  // JS8Call's transmit audio on its way to the radio. NOT gated on
-  // _isEffectivelyTransmitting() like the phone-mic path: for JS8Call this
-  // stream IS the transmission, and POTACAT keys because of it. The bridge
-  // only produces samples while JS8Call is actually sending.
-  ipcMain.on('js8-audio-tx-chunk', (_e, buf) => {
-    if (!js8TxActive) return;                       // only while JS8Call transmits
-    if (!smartSdrAudio || !smartSdrAudio.txReady) return;
-    try {
-      const samples = buf instanceof Float32Array ? buf
-        : new Float32Array(buf.buffer || buf, buf.byteOffset || 0, (buf.byteLength || buf.length) / 4);
-      smartSdrAudio.pushTxAudioChunk(samples);
-    } catch (err) {
-      sendCatLog('[JS8Call audio] TX chunk failed: ' + (err.message || err));
-    }
-  });
-  ipcMain.handle('js8-audio-list-devices', () => listJs8AudioDevices());
-
-  // What the JS8Call window shows: which cables exist, what is chosen, and the
-  // exact reason either direction is unavailable.
-  ipcMain.handle('js8-audio-plan', async () => {
-    const devices = await listJs8AudioDevices();
-    const plan = js8AudioBridgeLib.planAudioBridge({
-      devices,
-      rxDeviceId: settings.js8AudioRxDevice || '',
-      txDeviceId: settings.js8AudioTxDevice || '',
-    });
-    return {
-      ...plan,
-      enabled: !!settings.js8AudioBridge,
-      running: !!_js8AudioStatus.rx,
-      devices,
-    };
-  });
-
-  ipcMain.handle('js8-audio-set', (_e, cfg) => {
-    markUserActive();
-    const c = cfg || {};
-    if ('enabled' in c) settings.js8AudioBridge = !!c.enabled;
-    if ('rxDeviceId' in c) settings.js8AudioRxDevice = String(c.rxDeviceId || '');
-    if ('txDeviceId' in c) settings.js8AudioTxDevice = String(c.txDeviceId || '');
-    saveSettings(settings);
-    if (js8AudioEnabled()) startJs8AudioBridge(); else stopJs8AudioBridge();
-    return { ok: true, enabled: !!settings.js8AudioBridge };
-  });
-
-  ipcMain.handle('js8call-band-state', () => js8BandState());
-  ipcMain.handle('js8call-set-band', (_e, band) => { markUserActive(); return setJs8Band(band); });
-  ipcMain.handle('js8call-remove-slice', () => {
-    markUserActive();
-    removeJs8Slice('you asked to give the receiver back');
-    return { ok: true };
-  });
-  // Re-read the ini on demand so the Settings panel can show the effect of a
-  // change the operator just made in JS8Call, without restarting anything.
-  ipcMain.handle('js8call-check-setup', () => {
-    const setup = readJs8Setup();
-    return {
-      found: !!setup,
-      iniPath: setup ? setup.iniPath : '',
-      settings: setup ? setup.found : null,
-      problems: js8Problems,
-      connected: !!(js8Client && js8Client.connected),
-    };
-  });
 
   ipcMain.on('mercury-popout-open', () => openMercuryPopout());
   ipcMain.on('mercury-popout-minimize', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.minimize(); });
@@ -28459,16 +27294,6 @@ app.whenReady().then(() => {
       (has('myCallsign') && newSettings.myCallsign !== settings.myCallsign) ||
       (has('watchlist') && newSettings.watchlist !== settings.watchlist);
 
-    // JS8Call: same narrow gate as Mercury and WSJT-X below. Both of those have
-    // one because a settings save landing mid-connect double-connects, and this
-    // is not optional — it's just easy to forget until you see it happen.
-    const js8Changed = (has('enableJs8Call') && newSettings.enableJs8Call !== settings.enableJs8Call) ||
-      (has('js8Port') && newSettings.js8Port !== settings.js8Port) ||
-      (has('js8RigName') && newSettings.js8RigName !== settings.js8RigName);
-    // js8Path is deliberately NOT here: it only says where the program lives so
-    // we can start it, and reconnecting the socket over that would drop a live
-    // bridge for a setting the bridge never reads.
-
     // Mercury: relaunch only when a launch-relevant key actually changed, so
     // an unrelated settings save never kills+respawns the modem (the rigctld
     // respawn-race lesson, N4RDX v1.9.8). Audio-device/gain changes also
@@ -28724,14 +27549,18 @@ app.whenReady().then(() => {
       else disconnectMercury();
     }
 
-    if (js8Changed) {
-      if (js8Enabled()) connectJs8Call();
-      else disconnectJs8Call();
-    }
-    // The audio bridge is independent of the API bridge: an operator can run
-    // one without the other, so it gets its own change gate.
-    if (has('js8AudioBridge') || has('js8AudioRxDevice') || has('js8AudioTxDevice')) {
-      if (js8AudioEnabled()) startJs8AudioBridge(); else stopJs8AudioBridge();
+    // JS8 runs natively under JTCAT — a callsign/grid change must reach the
+    // engine's station identity or its next transmission carries stale data.
+    if (has('myCallsign') || has('grid')) {
+      const js8Eng = js8Engine();
+      if (js8Eng) {
+        js8Eng.setStation({ call: newSettings.myCallsign, grid: newSettings.grid });
+      }
+      js8Station = {
+        call: (newSettings.myCallsign || '').toUpperCase(),
+        grid: (newSettings.grid || '').toUpperCase(),
+      };
+      js8Threads.setMyCall(js8Station.call);
     }
 
     // Reconnect SmartSDR if settings changed (also needed for WSJT-X+Flex and CW keyer).
@@ -29799,16 +28628,25 @@ app.whenReady().then(() => {
   });
   ipcMain.on('jtcat-set-mode', (_e, mode) => {
     if (!ft8Engine) return;
-    // PSK31 lives in a different engine class (continuous keyboard mode) —
-    // Ft8Engine.setMode() silently coerces unknown strings to 'FT8', so a
-    // family switch in either direction must rebuild the slice.
-    const isPsk = mode === 'PSK31';
-    const wasPsk = ft8Engine._mode === 'PSK31';
-    if (isPsk !== wasPsk) {
+    // PSK31 and JS8 live in different engine classes — Ft8Engine.setMode()
+    // silently coerces unknown strings to 'FT8', so a family switch in ANY
+    // direction must rebuild the slice. Same-family switches stay cheap.
+    const familyOf = (m) => (m === 'PSK31' ? 'psk' : m === 'JS8' ? 'js8' : 'ft');
+    if (familyOf(mode) !== familyOf(ft8Engine._mode)) {
       startJtcat(mode);
       return;
     }
     ft8Engine.setMode(mode);
+  });
+  // JS8 submode (NORMAL/FAST/TURBO/SLOW/ULTRA). NORMAL is the validated one;
+  // the engine accepts the others but the popout only offers what's proven.
+  ipcMain.on('js8-set-submode', (_e, submode) => {
+    const eng = js8Engine();
+    if (eng && eng.setSubmode(String(submode || 'NORMAL'))) {
+      settings.js8Submode = eng._submodeName;
+      saveSettings(settings);
+      js8PushStatus();
+    }
   });
   // `operator` = a DELIBERATE move from the popout TX box / waterfall —
   // honored even while Hold TX Freq is on, and the value becomes the new
@@ -31251,13 +30089,6 @@ function gracefulCleanup() {
   // radio before the SmartSDR/CAT/keyer connections close — otherwise the
   // radio can stay keyed with no audio (a silent-carrier FCC issue).
   try { handleRemotePtt(false); } catch {}
-  // Hand JS8Call's receiver back BEFORE any rig connection is torn down.
-  // removeJs8Slice needs a live smartSdr, and disconnectSmartSdr() is a dozen
-  // lines below — running it at the end of cleanup silently did nothing and
-  // left a slice behind on every quit (K3SBP 2026-08-07: "slices continue to
-  // be made, but not deleted at close").
-  try { removeJs8Slice('POTACAT closing'); } catch {}
-  try { stopJs8AudioBridge(); } catch {}
   try { if (sstvEngine) sstvEngine.stop(); } catch {}
   // Save QRZ cache to disk
   try {
@@ -31309,9 +30140,6 @@ function gracefulCleanup() {
   } catch {}
   killRigctld();
   try { killMercury(); } catch {}
-  // Drop the JS8Call socket cleanly. We never kill JS8Call itself — it is the
-  // operator's application, not ours, and this phase doesn't launch it.
-  try { disconnectJs8Call(); } catch {}
 }
 
 app.on('before-quit', gracefulCleanup);

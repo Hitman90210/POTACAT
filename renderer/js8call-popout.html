@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <script src="popout-theme-boot.js"></script>
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';">
-  <title>JS8Call</title>
+  <title>JS8</title>
   <script src="popout-theme-bootstrap.js"></script>
   <link rel="stylesheet" href="styles.css">
   <style>
@@ -28,33 +28,19 @@
     .jc-dot.down { background: var(--accent-red, #e94560); }
     .jc-bar b { color: var(--text-primary); font-weight: 600; }
     .jc-bar .jc-btn { padding: 2px 9px; font-size: 10.5px; }
-    .jc-band select { background: var(--bg-tertiary, #1a1a2e); color: var(--text-primary);
-      border: 1px solid var(--border-primary); border-radius: 4px; padding: 2px 6px;
-      font-size: 11px; font-family: inherit; cursor: pointer; }
-    .jc-band[hidden], .jc-acts[hidden] { display: none; }
-    .jc-acts { display: flex; gap: 5px; }
-    /* The one control that must never be mistaken for a status light. */
+    .jc-acts[hidden] { display: none; }
+    .jc-acts { display: flex; gap: 5px; align-items: center; }
     .jc-acts .jc-btn { font-weight: 700; }
-    /* TX is the operator's only warning that JS8Call has taken the radio. */
+    /* The heartbeat toggle is scheduled TX — it must read as a switch. */
+    .jc-btn.hb-on { background: var(--accent-green-btn, #4ecca3); color: #000;
+      border-color: var(--accent-green-btn, #4ecca3); }
+    /* TX is the operator's warning that the radio is keyed for JS8. */
     .jc-tx { margin-left: auto; padding: 2px 8px; border-radius: 3px; font-weight: 700;
       border: 1px solid var(--border-primary); color: var(--text-tertiary, #666); flex: none; }
     .jc-tx.on { background: var(--accent-red, #e94560); color: #fff; border-color: var(--accent-red, #e94560);
       animation: jc-pulse 1s ease-in-out infinite; }
     @keyframes jc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .65; } }
     @media (prefers-reduced-motion: reduce) { .jc-tx.on { animation: none; } }
-
-    /* Bounded, but generous: this is the only place a real fault is explained,
-       and it is hidden entirely while the setup page is up. */
-    #jc-problems { flex-shrink: 0; max-height: 22vh; overflow-y: auto; }
-    #jc-problems[hidden] { display: none; }
-    .jc-prob { padding: 7px 10px; font-size: 12px; border-bottom: 1px solid var(--border-primary);
-      background: var(--bg-tertiary, #1a1a2e); }
-    .jc-prob b { display: block; color: var(--text-primary); font-weight: 600; margin-bottom: 2px; }
-    .jc-prob span { color: var(--text-secondary); }
-    .jc-prob.blocker { border-left: 3px solid var(--accent-red, #e94560); }
-    .jc-prob.conflict { border-left: 3px solid var(--source-sota, #f0a500); }
-    .jc-prob.notice { border-left: 3px solid var(--accent-blue, #4fc3f7); }
-    .jc-prob.warn { border-left: 3px solid var(--border-primary); }
 
     /* --- three columns ----------------------------------------------------- */
     .jc-cols { flex: 1; display: grid; grid-template-columns: 190px minmax(0, 1fr) 176px; min-height: 0; }
@@ -64,8 +50,6 @@
     .jc-railhead { font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
       color: var(--text-tertiary, #666); padding: 8px 10px 5px; font-weight: 600;
       display: flex; align-items: baseline; gap: 6px; }
-    .jc-railhead button { margin-left: auto; background: none; border: none; padding: 0;
-      color: var(--accent-blue, #4fc3f7); font-size: 10px; cursor: pointer; }
     /* Narrow window: the rails are supporting information, the thread is the app. */
     @media (max-width: 720px) { .jc-cols { grid-template-columns: 150px minmax(0, 1fr); } .jc-rail-r { display: none; } }
     @media (max-width: 520px) { .jc-cols { grid-template-columns: minmax(0, 1fr); } .jc-rail-l { display: none; } }
@@ -113,64 +97,22 @@
       font-size: 12px; line-height: 1.65; }
     .jc-empty code { background: var(--bg-tertiary); padding: 1px 5px; border-radius: 3px; }
 
-    /* setup panel */
-    /* A PAGE. It owns the whole window while the bridge is down — the rails
-       have nothing to show without a connection anyway — so it has room to
-       breathe instead of scrolling inside a third of the width. */
+    /* start page — owns the window while JS8 is not running. */
     .jc-setup { flex: 1; min-height: 0; overflow-y: auto; padding: 22px 26px;
       max-width: 68ch; width: 100%; margin: 0 auto; }
     .jc-setup[hidden] { display: none; }
     .jc-cols[hidden] { display: none; }
     .jc-setup h2 { font-size: 15px; margin: 0 0 6px; color: var(--text-primary); font-weight: 600; }
     .jc-setup p { margin: 0 0 12px; font-size: 12.5px; color: var(--text-secondary); line-height: 1.6; }
-    .jc-setup ul { margin: 0 0 14px; padding: 0; list-style: none; font-size: 12px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .jc-setup li { padding: 4px 0 4px 16px; position: relative; color: var(--text-primary);
-      border-bottom: 1px solid var(--border-secondary, #1f1f2e); }
-    .jc-setup li::before { content: '→'; position: absolute; left: 0; color: var(--accent-blue, #4fc3f7); }
     .jc-setup-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .jc-setup-actions label { font-size: 11.5px; color: var(--text-secondary); display: flex;
       align-items: center; gap: 5px; cursor: pointer; }
-    .jc-setup-manual { margin-top: 14px; font-size: 11.5px; line-height: 1.7;
-      border-top: 1px solid var(--border-secondary, #1f1f2e); padding-top: 12px;
-      color: var(--text-secondary); }
-    .jc-setup-manual:empty { display: none; border-top: none; }
-    .jc-setup-manual code { background: var(--bg-tertiary); padding: 1px 5px; border-radius: 3px;
-      color: var(--text-primary); font-family: ui-monospace, monospace; }
-    .jc-setup-manual b { color: var(--text-primary); }
-    .jc-link { color: var(--accent-blue, #4fc3f7); cursor: pointer; text-decoration: underline; }
-    .jc-link:hover { filter: brightness(1.15); }
-    .jc-quiet { color: var(--text-tertiary, #666); font-size: 11px; margin: 0 0 10px !important; }
-    .jc-audio { margin-top: 16px; padding: 12px 14px; border: 1px solid var(--border-primary);
-      border-radius: 5px; background: var(--bg-tertiary, #1a1a2e); }
-    .jc-audio[hidden] { display: none; }
-    .jc-audio h3 { margin: 0 0 5px; font-size: 13px; color: var(--text-primary); font-weight: 600; }
-    .jc-audio p { margin: 0 0 10px; font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
-    .jc-audio label { font-size: 11.5px; color: var(--text-secondary); display: flex;
-      align-items: center; gap: 6px; }
-    .jc-audio select { background: var(--bg-secondary); color: var(--text-primary);
+    .jc-setup select { background: var(--bg-tertiary, #1a1a2e); color: var(--text-primary);
       border: 1px solid var(--border-primary); border-radius: 4px; padding: 4px 6px;
-      font-size: 11px; max-width: 210px; }
-    /* The one diagnosis worth interrupting for: a device that is not there,
-       which JS8Call reports as a format problem. */
-    .jc-setup-note { font-size: 12px; line-height: 1.6; padding: 9px 11px; margin-bottom: 12px;
-      border: 1px solid var(--border-primary); border-left: 3px solid var(--source-sota, #f0a500);
-      border-radius: 4px; background: var(--bg-tertiary, #1a1a2e); color: var(--text-secondary); }
-    .jc-setup-note[hidden] { display: none; }
-    .jc-setup-note b { color: var(--text-primary); }
-    .jc-setup-note code { background: var(--bg-hover); padding: 1px 5px; border-radius: 3px;
-      color: var(--text-primary); font-family: ui-monospace, monospace; font-size: 11px;
-      word-break: break-word; }
-    /* The manual route, folded. Present for whoever needs it, silent for
-       everyone the button above already serves. */
-    .jc-fold-out summary { cursor: pointer; color: var(--text-secondary); font-size: 11.5px;
-      list-style: none; display: inline-flex; align-items: center; gap: 5px; user-select: none; }
-    .jc-fold-out summary::-webkit-details-marker { display: none; }
-    .jc-fold-out summary::before { content: '\25B8'; font-size: 9px; transition: transform .12s ease; }
-    .jc-fold-out[open] summary::before { transform: rotate(90deg); }
-    .jc-fold-out summary:hover { color: var(--text-primary); }
-    .jc-fold-out summary:focus-visible { outline: 2px solid var(--accent-blue, #4fc3f7); outline-offset: 2px; }
-    .jc-fold-out > div { margin-top: 9px; }
+      font-size: 11.5px; font-family: inherit; cursor: pointer; }
+    .jc-quiet { color: var(--text-tertiary, #666); font-size: 11px; margin: 10px 0 0 !important; }
+    .jc-err { color: var(--accent-red, #e94560); font-size: 12px; margin: 10px 0 0; }
+    .jc-err:empty { display: none; }
 
     /* --- compose ----------------------------------------------------------- */
     .jc-compose { border-top: 1px solid var(--border-secondary, #1f1f2e); padding: 8px 12px;
@@ -224,10 +166,9 @@
 </head>
 <body>
   <!-- Shared titlebar from styles.css — same 46x32 borderless buttons and red
-       close hover as every other POTACAT window. The local 22x22 bordered
-       variant this used was inherited from the older log pop-out. -->
+       close hover as every other POTACAT window. -->
   <div class="titlebar">
-    <div class="titlebar-drag"><span class="titlebar-title">POTACAT &mdash; JS8Call</span></div>
+    <div class="titlebar-drag"><span class="titlebar-title">POTACAT &mdash; JS8</span></div>
     <div class="titlebar-controls">
       <button class="titlebar-btn" id="jc-min" title="Minimize">&#x2014;</button>
       <button class="titlebar-btn" id="jc-max" title="Maximize">&#x25A1;</button>
@@ -235,66 +176,56 @@
     </div>
   </div>
 
-  <!-- The control bar. Not a status readout: the band picker retunes JS8Call's
-       OWN receiver, and CQ/HB are station actions that must not depend on a
-       conversation being selected. -->
+  <!-- The control bar. CQ sends now; HB toggles the scheduler (it is a
+       standing commitment to transmit, so it must read as a switch). -->
   <div class="jc-bar">
     <span class="jc-dot" id="jc-dot"></span>
-    <span id="jc-state">Connecting&hellip;</span>
+    <span id="jc-state">JS8 is off</span>
     <b class="mono" id="jc-station"></b>
-    <label class="jc-band" id="jc-band-wrap" hidden>
-      <select id="jc-band" title="Move JS8Call's receiver to another band"></select>
-    </label>
-    <span class="mono num" id="jc-dial"></span>
+    <span class="mono num" id="jc-submode"></span>
     <span class="jc-acts" id="jc-acts" hidden>
-      <button class="jc-btn" id="jc-cq" title="Call CQ on JS8">CQ</button>
-      <button class="jc-btn" id="jc-hb" title="Send a heartbeat">HB</button>
+      <button class="jc-btn" id="jc-cq" title="Call CQ on JS8 now">CQ</button>
+      <button class="jc-btn" id="jc-hb" title="Heartbeat every few minutes while you are at the radio">HB</button>
     </span>
-    <button class="jc-btn" id="jc-retry" title="Re-read JS8Call's settings and reconnect">Retry</button>
+    <button class="jc-btn" id="jc-power" title="Start or stop JS8">Start</button>
     <span class="jc-tx" id="jc-tx">RX</span>
   </div>
 
-  <div id="jc-problems"></div>
-
-  <!-- Setup is a PAGE, not a panel: full width, its own scroll only if it ever
-       needs one. Cramming it into the middle third of a three-column grid is
-       what produced two nested scrollbars in a 250px column. -->
+  <!-- The start page. JS8 is native — there is genuinely nothing to set up,
+       so this is one sentence, one control, one button. -->
   <div class="jc-setup" id="jc-setup">
-    <h2 id="jc-setup-title">Setting up JS8Call</h2>
-    <p id="jc-setup-lede">Checking&hellip;</p>
-    <div class="jc-setup-note" id="jc-setup-note" hidden></div>
-    <p class="jc-quiet" id="jc-setup-slice-why" hidden></p>
-    <ul id="jc-setup-changes"></ul>
+    <h2>JS8</h2>
+    <p id="jc-setup-lede">POTACAT decodes and transmits JS8 itself — no JS8Call
+      application, no virtual audio cables, nothing to install. Messages arrive
+      as conversations and keep counting while this window is closed.</p>
     <div class="jc-setup-actions">
-      <button class="jc-btn go" id="jc-setup-go" hidden>Set up and start JS8Call</button>
-      <button class="jc-btn" id="jc-setup-launch" hidden>Start JS8Call</button>
-      <button class="jc-btn go" id="jc-setup-dax" hidden>Start SmartSDR</button>
-      <button class="jc-btn go" id="jc-setup-slice" hidden>Give JS8Call its own receiver</button>
-      <label id="jc-setup-radio-wrap" hidden><input type="checkbox" id="jc-setup-radio"> <span id="jc-setup-radio-why">also set which audio devices JS8Call uses</span></label>
+      <button class="jc-btn go" id="jc-setup-start">Start JS8</button>
+      <label>Speed
+        <select id="jc-speed">
+          <option value="NORMAL">Normal (15 s)</option>
+          <option value="SLOW" disabled>Slow (30 s) — pending validation</option>
+          <option value="FAST" disabled>Fast (10 s) — pending validation</option>
+          <option value="TURBO" disabled>Turbo (6 s) — pending validation</option>
+          <option value="ULTRA" disabled>Ultra (4 s) — pending validation</option>
+        </select>
+      </label>
+      <label>Heartbeat every
+        <select id="jc-hb-min">
+          <option value="10">10 min</option>
+          <option value="15" selected>15 min</option>
+          <option value="30">30 min</option>
+        </select>
+      </label>
     </div>
-    <!-- A div, not a p: it holds <p> and <details>, and a browser silently
-         closes a <p> at the first block child, orphaning everything after. -->
-    <!-- The DAX-free route: POTACAT is JS8Call's sound card. A peer of the
-         DAX setup above rather than a fallback — on a SmartSDR-less station it
-         is the only one that works. -->
-    <div class="jc-audio" id="jc-audio" hidden>
-      <h3>Skip DAX entirely</h3>
-      <p id="jc-audio-lede"></p>
-      <div class="jc-setup-actions">
-        <label>Receive into <select id="jc-audio-rx"></select></label>
-        <label>Transmit from <select id="jc-audio-tx"></select></label>
-      </div>
-      <div class="jc-setup-actions" style="margin-top:8px;">
-        <button class="jc-btn go" id="jc-audio-on">Use POTACAT as the sound card</button>
-        <button class="jc-btn" id="jc-audio-off" hidden>Turn it off</button>
-      </div>
-      <p class="jc-quiet" id="jc-audio-note"></p>
-    </div>
-
-    <div class="jc-setup-manual" id="jc-setup-manual"></div>
+    <p class="jc-quiet">Uses the radio and audio device JTCAT is set up with, on
+      the band the radio is tuned to. JS8 activity centers on 7.078, 14.078,
+      3.578 and 21.078 MHz. The heartbeat switch lives in the bar above once
+      running; it turns itself off after 30 minutes without you (attended
+      operation).</p>
+    <p class="jc-err" id="jc-setup-err"></p>
   </div>
 
-  <div class="jc-cols" id="jc-cols">
+  <div class="jc-cols" id="jc-cols" hidden>
     <div class="jc-rail jc-rail-l">
       <div class="jc-railhead">Conversations <span id="jc-unread"></span></div>
       <div id="jc-groups"></div>
@@ -317,7 +248,7 @@
     </div>
 
     <div class="jc-rail jc-rail-r">
-      <div class="jc-railhead">Heard now <button id="jc-refresh" title="Ask JS8Call again">refresh</button></div>
+      <div class="jc-railhead">Heard now</div>
       <div id="jc-heard"></div>
     </div>
   </div>

@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Casey Stanton
 //
-// Preload for the JS8Call message view. contextBridge only — no Node reaches
-// the renderer. Mirrors preload-mercury-popout.js.
+// Preload for the JS8 message view. contextBridge only — no Node reaches
+// the renderer. JS8 is native (lib/js8-engine.js): the surface here is
+// start/stop, heartbeat, transmit, and the conversation store. The
+// bridge-era setup/launch/slice/audio-cable channels are gone with the
+// bridge itself.
 const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
@@ -10,22 +13,28 @@ contextBridge.exposeInMainWorld('api', {
 
   // Window chrome (the popout is frameless off macOS).
   minimizeWindow: () => ipcRenderer.send('js8call-popout-minimize'),
+  maximizeWindow: () => ipcRenderer.send('js8call-popout-maximize'),
   closeWindow: () => ipcRenderer.send('js8call-popout-close'),
 
-  // Bridge state: { connected, tx, host, port, error, problems[], station{} }.
+  // Engine state: { running, tx, txQueue, submode, heartbeat, heartbeatMin,
+  // station:{call,grid} }.
   onStatus: (cb) => ipcRenderer.on('js8call-status', (_e, s) => cb(s)),
   // One decoded line. `replay:true` marks the backfill sent on window open.
   onActivity: (cb) => ipcRenderer.on('js8call-activity', (_e, a) => cb(a)),
-  // Every raw API message, for the diagnostics pane.
-  onMessage: (cb) => ipcRenderer.on('js8call-message', (_e, m) => cb(m)),
   onTheme: (cb) => ipcRenderer.on('js8call-popout-theme', (_e, t) => cb(t)),
 
-  reconnect: () => ipcRenderer.send('js8call-reconnect'),
-  // Transmit. Returns {ok, error, text} so a refusal can be shown rather than
-  // silently doing nothing.
-  // Pass the destination separately: main owns the addressing rules.
+  // JS8 lifecycle — it runs as the JTCAT engine, so "start" is JTCAT in JS8
+  // mode and every audio route and guard applies.
+  start: () => ipcRenderer.invoke('js8-start'),
+  stop: () => ipcRenderer.invoke('js8-stop'),
+  // Heartbeat scheduler: {enabled?, intervalMin?}. Session-only enable with
+  // a 30-minute attended watchdog (Part 97) — main owns the policy.
+  heartbeat: (opts) => ipcRenderer.invoke('js8-heartbeat', opts),
+
+  // Transmit. Returns {ok, error, text, frames} so a refusal can be shown
+  // rather than silently doing nothing. Pass the destination separately:
+  // main owns the addressing rules.
   send: (text, to) => ipcRenderer.invoke('js8call-send', { text, to }),
-  heartbeatText: () => ipcRenderer.invoke('js8call-heartbeat-text'),
 
   // Conversations. State is owned by main (lib/js8call-threads.js) so unread
   // counts survive this window closing — an inbox that forgets is a log.
@@ -34,33 +43,8 @@ contextBridge.exposeInMainWorld('api', {
   threadClosed: () => ipcRenderer.send('js8call-thread-closed'),
   onThreads: (cb) => ipcRenderer.on('js8call-threads', (_e, d) => cb(d)),
 
-  // Who is audible right now.
+  // Who is audible right now (built from our own decodes — no one to "ask").
   onHeard: (cb) => ipcRenderer.on('js8call-heard', (_e, list) => cb(list)),
-  refreshHeard: () => ipcRenderer.send('js8call-refresh-heard'),
-  checkSetup: () => ipcRenderer.invoke('js8call-check-setup'),
-
-  // One-click setup: what would change, then do it, then start JS8Call.
-  // planSetup is read-only; applySetup writes JS8Call.ini (backed up first, and
-  // refused while JS8Call runs, because Qt rewrites the file on exit).
-  planSetup: (opts) => ipcRenderer.invoke('js8call-plan-setup', opts),
-  applySetup: (opts) => ipcRenderer.invoke('js8call-apply-setup', opts),
-  launch: () => ipcRenderer.invoke('js8call-launch'),
-  // SmartSDR itself, which brings DAX and CAT with it. Never the helpers
-  // individually: CAT.exe alone opens port 5002, which POTACAT reads as
-  // "SmartSDR launched" and answers by giving up its GUI slot.
-  launchSmartSdr: () => ipcRenderer.invoke('js8call-launch-smartsdr'),
-  // Give JS8Call its own slice on a multi-slice Flex — a real change to the
-  // radio, so it is always a click, never automatic.
-  createSlice: () => ipcRenderer.invoke('js8call-create-slice'),
-  removeSlice: () => ipcRenderer.invoke('js8call-remove-slice'),
-  // Band control for JS8Call's OWN receiver — never the operator's slice.
-  bandState: () => ipcRenderer.invoke('js8call-band-state'),
-  // POTACAT-as-sound-card: the DAX-free route.
-  audioDevices: () => ipcRenderer.invoke('js8-audio-list-devices'),
-  audioPlan: () => ipcRenderer.invoke('js8-audio-plan'),
-  setAudioBridge: (cfg) => ipcRenderer.invoke('js8-audio-set', cfg),
-  setBand: (band) => ipcRenderer.invoke('js8call-set-band', band),
-  maximizeWindow: () => ipcRenderer.send('js8call-popout-maximize'),
 
   openExternal: (url) => ipcRenderer.send('open-external', url),
 

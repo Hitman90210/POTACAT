@@ -3,7 +3,7 @@
 'use strict';
 
 const assert = require('assert');
-const { decideAcquire, decideRelease, canAcquire, isPreemptive, OWNERS } = require('../lib/radio-owner');
+const { decideAcquire, decideRelease, canAcquire, isPreemptive, OWNERS, PREEMPTIVE } = require('../lib/radio-owner');
 
 let pass = 0, fail = 0;
 function test(name, fn) {
@@ -81,50 +81,22 @@ test('sequence: jtcat holds through its TX, mercury blocked until release', () =
   assert.strictEqual(canAcquire(owner, 'jtcat'), false); // JTCAT now blocked
 });
 
-// ---- js8call: the preemptive owner ----
-// JS8Call is a separate application that keys the radio on its own schedule
-// (heartbeat auto-reply, directed queries) and cannot be told to stop mid-frame.
-// The arbiter therefore OBSERVES it rather than gating it: a js8call acquire is
-// a report that the rig is already keyed, and refusing it would only make
-// POTACAT believe the radio is free while it is transmitting — which is exactly
-// when POTACAT keys on top and the Flex re-points tx=1.
-test('js8call is the only preemptive owner', () => {
-  assert.strictEqual(isPreemptive('js8call'), true);
+// ---- preemptive owners: none today, machinery retained ----
+// 'js8call' was the preemptive owner while JS8 was a bridge to the external
+// JS8Call application. Native JS8 (lib/js8-engine.js) transmits through the
+// jtcat dispatch, so nothing preempts today — but the machinery stays for a
+// future externally-keyed integration, and this pins its behavior.
+test('no owner is preemptive today', () => {
+  assert.strictEqual(PREEMPTIVE.length, 0);
   assert.strictEqual(isPreemptive('jtcat'), false);
   assert.strictEqual(isPreemptive('mercury'), false);
-  assert.ok(OWNERS.includes('js8call'), 'and it is a real owner');
+  assert.ok(!OWNERS.includes('js8call'), 'the bridge-era owner is gone');
 });
 
-test('js8call takes the radio from anyone, naming who it displaced', () => {
-  assert.deepStrictEqual(decideAcquire('none', 'js8call'), { ok: true, owner: 'js8call' });
-  assert.deepStrictEqual(decideAcquire('jtcat', 'js8call'),
-    { ok: true, owner: 'js8call', preempted: 'jtcat' });
-  assert.deepStrictEqual(decideAcquire('mercury', 'js8call'),
-    { ok: true, owner: 'js8call', preempted: 'mercury' });
-});
-
-test('POTACAT engines wait js8call out — they never take it back', () => {
-  assert.strictEqual(canAcquire('js8call', 'jtcat'), false);
-  assert.strictEqual(canAcquire('js8call', 'mercury'), false);
-  assert.strictEqual(decideAcquire('js8call', 'jtcat').reason, 'radio in use by js8call');
-});
-
-test('js8call releases like any other owner, and only itself', () => {
-  assert.deepStrictEqual(decideRelease('js8call', 'js8call'), { ok: true, owner: 'none' });
-  assert.strictEqual(decideRelease('js8call', 'jtcat').ok, false, 'jtcat cannot release it');
-  assert.deepStrictEqual(decideRelease('js8call', 'force'), { ok: true, owner: 'none' },
-    'the failsafe still clears it — a stale PTT must never deadlock TX forever');
-});
-
-test('preemption is not permanent: after js8call unkeys, JTCAT proceeds', () => {
-  let owner = 'jtcat';
-  const acq = decideAcquire(owner, 'js8call');   // JS8Call auto-replies mid-QSO
-  owner = acq.owner;
-  assert.strictEqual(acq.preempted, 'jtcat', 'caller must stop JTCAT TX and say why');
-  assert.strictEqual(canAcquire(owner, 'jtcat'), false);
-  owner = decideRelease(owner, 'js8call').owner; // frame ends
-  assert.strictEqual(owner, 'none');
-  assert.strictEqual(canAcquire(owner, 'jtcat'), true);
+test('an unknown owner cannot acquire or preempt', () => {
+  const r = decideAcquire('jtcat', 'js8call');
+  assert.strictEqual(r.ok, false, 'js8call is not a valid owner any more');
+  assert.strictEqual(r.owner, 'jtcat', 'and the current owner keeps the radio');
 });
 
 console.log(`\nRadio-owner arbiter: ${pass} passed, ${fail} failed`);

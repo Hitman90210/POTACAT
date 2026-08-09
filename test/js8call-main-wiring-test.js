@@ -1,24 +1,18 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * Static scan of main.js's JS8Call wiring.
+ * Static scan of main.js's JS8 wiring (native era).
  *
- * WHY A STATIC TEST. On 2026-08-06 planJs8Setup/applyJs8Setup gained an `await`
- * (audio-device enumeration) and became async. One caller was not updated:
+ * JS8 went native in 2026-08 (docs/js8-native-plan.md): the modem is
+ * compiled in, the engine runs under JTCAT, and the whole bridge layer —
+ * TCP client, ini patcher, launcher, slice creator, virtual-audio-cable
+ * windows — was deleted. These guards pin the invariants of that
+ * architecture, the first of which is that the bridge stays deleted: its
+ * failure modes (dead carriers from misrouted cables, half-configured
+ * DAX, one-API-client-at-a-time) all rode in on "just one more require".
  *
- *     const r = applyJs8Setup(opts || {});
- *     if (r.ok) { launchJs8Call(); }
- *     return r;
- *
- * `r` was a Promise, so `r.ok` was undefined and the launch silently never ran
- * — and because ipcMain.handle resolves a returned Promise, the renderer still
- * received {ok:true} and reported "Starting JS8Call…". The settings were
- * patched and no JS8Call appeared. Nothing threw, nothing logged, and the
- * success path lied, which is the only failure mode worse than a crash.
- *
- * There is no runtime test for this without an Electron main process and a
- * JS8Call install, so it is checked in the source. Precedent:
- * test/protocol-demux-parity-test.js.
+ * WHY STATIC: there is no runtime test for main.js wiring without an
+ * Electron main process. Precedent: test/protocol-demux-parity-test.js.
  *
  * Run: node test/js8call-main-wiring-test.js
  */
@@ -29,15 +23,7 @@ const assert = require('assert');
 
 const RAW = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
 
-/**
- * Comments and string literals blanked to spaces, byte offsets preserved so
- * line numbers still line up with the real file.
- *
- * Not optional: the first version of this test matched `applyJs8Setup()`
- * inside the comment that explains this very bug, and reported the fixed code
- * as broken. A source scanner that reads prose as code produces false alarms
- * until someone deletes it, which is worse than having no scanner.
- */
+/** Comments and string literals blanked to spaces, byte offsets preserved. */
 function blankNonCode(src) {
   const out = src.split('');
   let i = 0;
@@ -72,177 +58,122 @@ function test(name, fn) {
   catch (e) { fail++; console.log('  FAIL ' + name + '\n       ' + e.message); }
 }
 
-/** Line numbers make a failure actionable instead of a scavenger hunt. */
-function lineOf(index) {
-  return SRC.slice(0, index).split('\n').length;
-}
-
-/** Every call to `name(` that is not its own definition. */
-function callSites(name) {
-  const out = [];
-  const re = new RegExp('\\b' + name + '\\s*\\(', 'g');
-  let m;
-  while ((m = re.exec(SRC))) {
-    const before = SRC.slice(Math.max(0, m.index - 40), m.index);
-    if (/\b(?:async\s+)?function\s+$/.test(before)) continue;   // the definition
-    out.push({ index: m.index, line: lineOf(m.index), before });
-  }
-  return out;
-}
-
-const ASYNC = ['planJs8Setup', 'applyJs8Setup', 'js8AudioLabels'];
-
-test('the functions this guards are in fact async', () => {
-  for (const fn of ASYNC) {
-    assert.ok(new RegExp('async function ' + fn + '\\b').test(SRC),
-      fn + ' is no longer async — delete it from ASYNC or this test guards nothing');
-  }
-});
-
-test('every call to an async JS8Call function is awaited or returned', () => {
-  const bad = [];
-  for (const fn of ASYNC) {
-    for (const site of callSites(fn)) {
-      // Legitimate: `await fn(`, `return fn(`, `=> fn(`, `.then(` chains.
-      const ok = /\bawait\s+$/.test(site.before)
-        || /\breturn\s+$/.test(site.before)
-        || /=>\s*$/.test(site.before);
-      if (!ok) bad.push(`main.js:${site.line}  ${fn}() — result used as a plain value`);
-    }
-  }
-  assert.deepStrictEqual(bad, [],
-    'a Promise used as an object yields undefined properties, not an error:\n  ' + bad.join('\n  '));
-});
-
-test('the apply-setup IPC handler is async', () => {
-  const m = RAW.match(/ipcMain\.handle\(\s*'js8call-apply-setup'\s*,\s*(async\s*)?\(/);
-  assert.ok(m, "the 'js8call-apply-setup' handler was not found — was it renamed?");
-  assert.ok(m[1], 'the handler must be async: it awaits applyJs8Setup before deciding to launch');
-});
-
-/** The handler body, by brace matching — `indexOf('});')` stops at the first
- *  `{}` argument inside it, which is `applyJs8Setup(opts || {})`. */
-function handlerBody(channel) {
-  // Located in RAW (blankNonCode erases the quoted channel name), brace-matched
-  // in SRC (whose offsets are identical but whose braces are all real code).
-  const at = RAW.indexOf(`ipcMain.handle('${channel}'`);
-  assert.ok(at > 0, `the '${channel}' handler was not found — was it renamed?`);
+function fnBody(name) {
+  const at = SRC.indexOf('function ' + name + '(');
+  assert.ok(at > 0, name + ' not found — was it renamed?');
   let depth = 0, start = -1;
   for (let i = at; i < SRC.length; i++) {
     if (SRC[i] === '{') { if (depth === 0) start = i; depth++; }
     else if (SRC[i] === '}') { depth--; if (depth === 0) return RAW.slice(start, i + 1); }
   }
-  throw new Error('unbalanced braces after ' + channel);
+  throw new Error('unbalanced braces in ' + name);
 }
 
-test('applying the setup still reaches the launch', () => {
-  const handler = handlerBody('js8call-apply-setup');
-  assert.ok(/await\s+applyJs8Setup/.test(handler), 'applyJs8Setup must be awaited');
-  assert.ok(/launchJs8Call\(\)/.test(handler), 'a successful apply must go on to start JS8Call');
+// ── the bridge stays deleted ─────────────────────────────────────────────────
+
+test('main.js requires none of the deleted bridge modules', () => {
+  for (const mod of ['js8call-client', 'js8call-config', 'js8call-process',
+    'js8call-slice', 'js8call-audio', 'js8call-audio-bridge']) {
+    assert.ok(!RAW.includes("require('./lib/" + mod + "')"),
+      'main.js must not require lib/' + mod + ' — the bridge is deleted, not resting');
+  }
+  // The two survivors, by design:
+  assert.ok(RAW.includes("require('./lib/js8call-threads')"),
+    'the conversation layer survived the bridge and must stay');
+  assert.ok(RAW.includes("require('./lib/js8-rx-assembler')"),
+    'the RX assembler replaces the bridge and must stay');
 });
 
-test('every exit from launchJs8Call reports itself', () => {
-  // "Nothing happened" was indistinguishable from "it started" in the CAT log.
-  const start = SRC.indexOf('function launchJs8Call()');
-  assert.ok(start > 0, 'launchJs8Call not found');
-  const body = SRC.slice(start, SRC.indexOf('\n}', start));
-  const returns = (body.match(/\breturn\s*\{/g) || []).length;
-  const logs = (body.match(/sendCatLog\(/g) || []).length;
-  assert.ok(logs >= returns - 1,
-    `launchJs8Call has ${returns} outcomes but only ${logs} log lines — a silent one is invisible`);
+test('the bridge windows and processes are gone', () => {
+  for (const sym of ['js8AudioWin', 'js8Client', 'js8Proc', 'launchJs8Call',
+    'applyJs8Setup', 'planJs8Setup', 'js8KeyForTx', 'js8SliceIndex']) {
+    const re = new RegExp('\\b' + sym + '\\b');
+    assert.ok(!re.test(SRC), sym + ' is bridge-era and must not reappear in code');
+  }
 });
 
-// ── keying on the bridge route ──────────────────────────────────────────────
-
-test('the bridge route is decided before any DAX-route work', () => {
-  const start = SRC.indexOf('function js8KeyForTx(on) {');
-  assert.ok(start > 0, 'js8KeyForTx not found');
-  const head = SRC.slice(start, start + 400);
-  assert.ok(/js8AudioEnabled\(\)/.test(head) && /js8KeyForTxViaBridge/.test(head),
-    'js8KeyForTx must hand off to the bridge branch before touching slices or streams');
+test('the retired settings are actively migrated away', () => {
+  for (const key of ['enableJs8Call', 'js8AudioBridge', 'js8AudioRxDevice',
+    'js8AudioTxDevice', 'js8Port', 'js8RigName', 'js8Path']) {
+    assert.ok(RAW.includes("'" + key + "'"),
+      'the migration list must name ' + key + ' so old profiles get cleaned');
+  }
 });
 
-test('the bridge branch never moves the transmitter or drops its own stream', () => {
-  // Both are correct on the DAX route and wrong here. setTxSlice would point
-  // transmit at a slice that does not exist; releasing the dax_tx stream would
-  // give away the very stream carrying JS8Call's audio — the DAX route releases
-  // it to AVOID a dead carrier, and here that is what causes one.
-  const start = SRC.indexOf('function js8KeyForTxViaBridge(on) {');
-  assert.ok(start > 0, 'js8KeyForTxViaBridge not found');
-  const body = SRC.slice(start, SRC.indexOf('\nfunction js8KeyForTx(on)', start));
-  assert.ok(!/setTxSlice/.test(body), 'the bridge branch must not re-point the transmit slice');
-  assert.ok(!/releaseTxStream/.test(body), 'the bridge branch must keep POTACAT’s dax_tx stream');
-  assert.ok(/js8AudioTxDevice/.test(body),
-    'the bridge branch must refuse to key with no capture cable — that is a dead carrier');
+// ── the engine wiring ────────────────────────────────────────────────────────
+
+test('a mode-family switch rebuilds the slice', () => {
+  // Ft8Engine.setMode coerces unknown strings to FT8 — switching to or from
+  // JS8/PSK31 without a rebuild silently lands on FT8.
+  const at = RAW.indexOf("ipcMain.on('jtcat-set-mode'");
+  assert.ok(at > 0, 'jtcat-set-mode handler missing');
+  const seg = RAW.slice(at, at + 800);
+  assert.ok(/familyOf|isPsk/.test(seg), 'the handler must classify mode families');
+  assert.ok(seg.includes("'JS8'"), 'JS8 must be its own family');
+  assert.ok(seg.includes('startJtcat(mode)'), 'a family change must rebuild');
 });
 
-test('a refused key never unkeys and never reports power', () => {
-  // JS8Call keys into the cable whether or not POTACAT follows, so TX END
-  // arrives after a refusal too. Running the key-up path then dropped a PTT
-  // nobody raised and announced "the radio keyed but no audio reached it"
-  // about a transmission POTACAT had just declined — directly contradicting
-  // its own refusal and sending the operator after audio levels (K3SBP).
-  const start = SRC.indexOf('function js8KeyForTxViaBridge(on) {');
-  const body = SRC.slice(start, SRC.indexOf('\nfunction js8KeyForTx(on)', start));
-  const lines = body.split('\n');
-  const keyLine = lines.findIndex((l) => /handleRemotePtt\(true/.test(l));
-  const flagLine = lines.findIndex((l) => /_js8BridgeKeyed = true/.test(l));
-  assert.ok(keyLine > 0 && flagLine > keyLine,
-    'the keyed flag must be set only after the radio is actually keyed');
-  // Every early return has to happen before the key, or it was not a refusal.
-  lines.forEach((l, i) => {
-    if (/^\s*return;\s*$/.test(l) && i < keyLine) return;      // a refusal: fine
-    assert.ok(!/^\s*return;\s*$/.test(l) || i > flagLine,
-      'return on line ' + i + ' sits between the key and the flag — a keyed radio with the flag clear');
-  });
-  const off = body.slice(body.indexOf('} else {'));
-  assert.ok(off.indexOf('if (!_js8BridgeKeyed) return;') < off.indexOf('handleRemotePtt(false'),
-    'key-up must check the flag before unkeying');
-  assert.ok(off.indexOf('if (!_js8BridgeKeyed) return;') < off.indexOf('js8ReportTxPeak'),
-    'key-up must check the flag before reporting power');
+test('startJtcat wires js8-rx and clears stale listeners', () => {
+  const body = fnBody('startJtcat');
+  assert.ok(body.includes("removeAllListeners('js8-rx')"),
+    'stale js8-rx listeners from the previous cycle must be removed');
+  assert.ok(body.includes("on('js8-rx'"), 'js8-rx must reach js8HandleRx');
+  assert.ok(body.includes('js8HandleRx'), 'the RX consumer must be the shared one');
 });
 
-// ── the popout's setup gate ─────────────────────────────────────────────────
-
-const POPOUT = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'js8call-popout.js'), 'utf8');
-
-test('the DAX prerequisite block yields to the audio bridge', () => {
-  // With POTACAT acting as JS8Call's sound card, DAX and SmartSDR CAT are not
-  // prerequisites for anything — the audio arrives over the network and the
-  // radio is tuned from POTACAT. The blocker returned early regardless, so the
-  // screen read "JS8Call needs two SmartSDR helpers running" directly above its
-  // own panel headed "Skip DAX entirely", and hid every button that starts
-  // JS8Call. The operator had followed the instructions and had nowhere to go
-  // (K3SBP 2026-08-08).
-  const m = POPOUT.match(/if \(\(?p\.daxDown[^)]*\)?[^{]*\{/);
-  assert.ok(m, 'the daxDown/catShimDown branch was not found — has it been renamed?');
-  assert.ok(/bridgeOn/.test(m[0]),
-    'the DAX blocker must be conditional on the bridge being off: ' + m[0]);
+test('js8Transmit routes through the engine and refuses honestly', () => {
+  const body = fnBody('js8Transmit');
+  assert.ok(body.includes('js8Engine()'), 'must resolve the live engine');
+  assert.ok(body.includes('setTxText'), 'TX goes through the frame queue');
+  assert.ok(body.includes('composeDirected'), 'main owns the addressing rules');
+  assert.ok(/refuse\(/.test(body), 'refusals must carry a reason');
+  assert.ok(!body.includes('sendCatFrequency'),
+    'JS8 must never drive the dial — it rides the rig where it is tuned');
 });
 
-test('the bridge state is awaited before the setup branches on it', () => {
-  // refreshAudioBridge is async. Read without awaiting, `enabled` is undefined
-  // and every branch silently takes the no-bridge path — the same shape as the
-  // applyJs8Setup bug this file was written for.
-  const start = POPOUT.indexOf('async function refreshSetupInner()');
-  assert.ok(start > 0, 'refreshSetupInner not found');
-  const body = POPOUT.slice(start, start + 2000);
-  assert.ok(/await\s+refreshAudioBridge\(\)/.test(body),
-    'refreshSetupInner must await refreshAudioBridge() before branching on it');
+// ── the heartbeat scheduler is attended-only ─────────────────────────────────
+
+test('the heartbeat watchdog stops an unattended scheduler', () => {
+  const body = fnBody('js8HbTick');
+  assert.ok(body.includes('JS8_HB_WATCHDOG_MS'),
+    'the 30-minute attended check is the Part-97 line and must gate every tick');
+  assert.ok(body.includes('js8SetHeartbeat(false)'),
+    'an expired watchdog must stop the scheduler, not just skip a beat');
+  // The check must come BEFORE the send.
+  assert.ok(body.indexOf('JS8_HB_WATCHDOG_MS') < body.indexOf('setTxText'),
+    'watchdog before transmission, not after');
 });
 
-test('toggling the bridge redraws the setup screen, not just its own panel', () => {
-  // Enabling the bridge changes which prerequisites apply, so it changes the
-  // heading, the notes and which buttons exist. saveAudioBridge refreshed only
-  // the audio panel, so the screen kept the pre-bridge heading and hid every
-  // launch button until the operator happened to press Retry — with "Receive
-  // audio is flowing" showing two inches below it (K3SBP 2026-08-08).
-  const start = POPOUT.indexOf('async function saveAudioBridge(');
-  assert.ok(start > 0, 'saveAudioBridge not found');
-  const body = POPOUT.slice(start, POPOUT.indexOf('\n  }', start));
-  assert.ok(/refreshSetup\(\)/.test(body),
-    'saveAudioBridge must refresh the whole setup screen, not only the audio panel');
+test('the heartbeat never preempts a message in flight', () => {
+  const body = fnBody('js8HbTick');
+  assert.ok(body.includes('txQueueLength'),
+    'a queued operator message outranks the heartbeat');
 });
 
-console.log(`\nJS8Call main wiring: ${pass} passed, ${fail} failed`);
+test('the heartbeat enable is session-only', () => {
+  // Persisting the switch would re-arm automatic transmissions on the next
+  // launch with nobody at the radio.
+  const body = fnBody('js8SetHeartbeat');
+  assert.ok(!/settings\.[A-Za-z]*[Hh]eartbeat[A-Za-z]*\s*=\s*js8HbEnabled/.test(body) &&
+            !body.includes('js8HeartbeatOn'),
+    'the on/off switch must not be persisted (the interval may be)');
+});
+
+test('operator actions pet the heartbeat watchdog', () => {
+  // Sending a message and reading a thread are the operator being present.
+  const sendAt = RAW.indexOf("ipcMain.handle('js8call-send'");
+  assert.ok(sendAt > 0);
+  assert.ok(RAW.slice(sendAt, sendAt + 400).includes('js8HbLastActivity'),
+    'sending must stamp operator activity');
+});
+
+// ── status honesty ───────────────────────────────────────────────────────────
+
+test('js8PushStatus reports the engine, not a socket', () => {
+  const body = fnBody('js8PushStatus');
+  assert.ok(body.includes('js8Engine()'));
+  assert.ok(body.includes('txQueue'), 'the queue length is what the popout shows');
+});
+
+console.log(`\nJS8 main wiring: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
