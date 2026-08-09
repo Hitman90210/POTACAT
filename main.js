@@ -5217,6 +5217,12 @@ function js8SetHeartbeat(enabled) {
     js8HbLastActivity = Date.now();   // enabling IS operator activity
     js8HbTimer = setInterval(js8HbTick, 30 * 1000);
     sendCatLog(`[JS8] heartbeat ON — @HB HB every ${js8HbIntervalMin()} min while you are here (30 min attended watchdog)`);
+    // Pressing HB SENDS a heartbeat — a button named HB that only arms a
+    // timer is not a heartbeat (Casey 2026-08-09; also JS8Call's own HB
+    // button semantics). Resetting the interval gate makes the immediate
+    // tick transmit regardless of when the last one went out; the tick's
+    // own guards (queued message, radio owner, watchdog) still apply.
+    _js8HbLastSent = 0;
     js8HbTick();
   } else {
     sendCatLog('[JS8] heartbeat OFF');

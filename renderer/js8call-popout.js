@@ -349,11 +349,40 @@
   });
 
   // ── station actions ────────────────────────────────────────────────────────
-  // These SEND (CQ) or schedule sending (HB) — station acts, not compose acts.
+  // These SEND (CQ; HB sends one now AND arms the schedule) — station acts,
+  // not compose acts.
 
   cqBtn.addEventListener('click', function () {
     transmit('CQ CQ CQ', '');
   });
+
+  // ATU — momentary match cycle through the one rig-control dispatcher.
+  // Not a toggle: every press starts a tune (same behavior as the desktop,
+  // JTCAT popout, VFO popout and the mobile device).
+  var atuBtn = el('jc-atu');
+  var atuTimer = null;
+  atuBtn.addEventListener('click', function () {
+    window.api.rigControl({ action: 'atu-tune' });
+    atuBtn.classList.add('tuning');
+    if (atuTimer) clearTimeout(atuTimer);
+    atuTimer = setTimeout(function () { atuBtn.classList.remove('tuning'); atuTimer = null; }, 5000);
+  });
+
+  // ── period countdown (the FT8-style cycle clock) ──────────────────────────
+  // JS8 periods align to wall-clock UTC boundaries; transmissions begin at
+  // the boundary. Local clock math — no wire traffic — same as JTCAT's bar.
+  var SUBMODE_PERIODS = { NORMAL: 15, FAST: 10, TURBO: 6, SLOW: 30, ULTRA: 4 };
+  var cycleEl = el('jc-cycle'), cycleBar = el('jc-cyclebar'), cycleFill = el('jc-cyclefill');
+  var currentSubmode = 'NORMAL';
+  var txNow = false;
+  setInterval(function () {
+    if (!running) return;
+    var periodMs = (SUBMODE_PERIODS[currentSubmode] || 15) * 1000;
+    var into = Date.now() % periodMs;
+    cycleEl.textContent = Math.ceil((periodMs - into) / 1000) + 's';
+    cycleFill.style.width = ((into / periodMs) * 100).toFixed(1) + '%';
+    cycleFill.className = txNow ? 'tx' : '';
+  }, 250);
 
   hbBtn.addEventListener('click', async function () {
     try {
@@ -411,12 +440,17 @@
     var st = (s && s.station) || {};
     stationEl.textContent = st.call || '';
     submodeEl.textContent = up && s.submode ? s.submode : '';
+    if (s && s.submode) currentSubmode = String(s.submode).toUpperCase();
 
     var tx = !!(s && s.tx);
+    txNow = tx;
     var queued = (s && s.txQueue) || 0;
     txEl.className = 'jc-tx' + (tx ? ' on' : '');
     txEl.textContent = tx ? 'TX' : (queued ? queued + ' queued' : 'RX');
     txEl.title = tx ? 'Transmitting this period.' : 'Receiving.';
+
+    // The period clock only means something while the engine runs.
+    cycleEl.hidden = cycleBar.hidden = !up;
 
     hbOn = !!(s && s.heartbeat);
     renderHb();

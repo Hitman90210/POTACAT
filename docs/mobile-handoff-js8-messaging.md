@@ -57,7 +57,9 @@ Everything rides the existing ECHOCAT WS session. Full field shapes are in
   complete station call like `CQ CQ CQ`.
 - `js8-heartbeat`: either field alone is valid. `intervalMin` (5–60)
   persists on the host; `enabled` is session-only there (see Heartbeat
-  below).
+  below). `enabled: true` also TRANSMITS one heartbeat immediately —
+  render the switch as "send now + repeat", not "arm a timer"
+  (2026-08-09).
 - `reqId` is declared on `js8-start`/`js8-stop`/`js8-heartbeat` too
   (2026-08-09, per your gap report): a host-side start failure answers on
   `js8-send-result` with your `reqId`, so it never reads as a failed send.

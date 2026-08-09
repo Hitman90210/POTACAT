@@ -51,6 +51,9 @@ contextBridge.exposeInMainWorld('api', {
   // Who is audible right now (built from our own decodes — no one to "ask").
   onHeard: (cb) => ipcRenderer.on('js8call-heard', (_e, list) => cb(list)),
 
+  // The one rig-control dispatcher — used here for the ATU match cycle.
+  rigControl: (data) => ipcRenderer.invoke('rig-control', data),
+
   openExternal: (url) => ipcRenderer.send('open-external', url),
 
   // Per-window zoom, same convention as the other popouts.

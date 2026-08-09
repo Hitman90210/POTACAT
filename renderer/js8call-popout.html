@@ -35,6 +35,17 @@
     .jc-btn.hb-on { background: var(--accent-green-btn, #4ecca3); color: #000;
       border-color: var(--accent-green-btn, #4ecca3); }
     /* TX is the operator's warning that the radio is keyed for JS8. */
+    /* ATU pulses amber while the match cycle runs — same look as JTCAT's. */
+    .jc-btn.tuning { background: var(--source-sota, #f0a500); color: #000;
+      border-color: var(--source-sota, #f0a500); animation: jc-pulse 1s ease-in-out infinite; }
+    /* Period countdown chip + the FT8-style cycle strip under the bar. */
+    .jc-cycle { padding: 2px 8px; border-radius: 3px; border: 1px solid var(--border-primary);
+      color: var(--text-secondary, #888); flex: none; min-width: 34px; text-align: right; }
+    .jc-cycle[hidden], .jc-cyclebar[hidden] { display: none; }
+    .jc-cyclebar { height: 3px; background: var(--bg-tertiary, #1a1a2e); flex-shrink: 0; }
+    .jc-cyclebar div { height: 100%; width: 0%;
+      background: var(--accent-green-btn, #4ecca3); }
+    .jc-cyclebar div.tx { background: var(--accent-red, #e94560); }
     .jc-tx { margin-left: auto; padding: 2px 8px; border-radius: 3px; font-weight: 700;
       border: 1px solid var(--border-primary); color: var(--text-tertiary, #666); flex: none; }
     .jc-tx.on { background: var(--accent-red, #e94560); color: #fff; border-color: var(--accent-red, #e94560);
@@ -187,9 +198,14 @@
       <button class="jc-btn" id="jc-cq" title="Call CQ on JS8 now">CQ</button>
       <button class="jc-btn" id="jc-hb" title="Heartbeat every few minutes while you are at the radio">HB</button>
     </span>
+    <button class="jc-btn" id="jc-atu" title="Run the radio's antenna tuner match cycle">ATU</button>
     <button class="jc-btn" id="jc-power" title="Start or stop JS8">Start</button>
+    <span class="jc-cycle mono num" id="jc-cycle" hidden title="Time left in the current JS8 period — transmissions begin at the boundary">15s</span>
     <span class="jc-tx" id="jc-tx">RX</span>
   </div>
+  <!-- Period progress: the thin strip under the bar is the FT8-style cycle
+       bar — where we are inside the current 15 s interval. -->
+  <div class="jc-cyclebar" id="jc-cyclebar" hidden><div id="jc-cyclefill"></div></div>
 
   <!-- The start page. JS8 is native — there is genuinely nothing to set up,
        so this is one sentence, one control, one button. -->
