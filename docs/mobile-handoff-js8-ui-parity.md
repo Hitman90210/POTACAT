@@ -76,7 +76,7 @@ parity pieces for you:
   `js8-send-result`. The host resets its RX reassembler on the QSY so a
   half-message from the old band can't corrupt the new one — nothing for
   you to do there.
-- Band list for the picker: render the ten bands above; the host answers
+- Band list for the picker: render the eleven bands above; the host answers
   `{ok:false, error}` for anything it doesn't know.
 
 ---
