@@ -667,6 +667,16 @@ function _applyPopoutTheme(payload) {
     const rst = CW_DIGI_MODES.has(modeSelect.value) ? '599' : '59';
     rstSentInput.value = p.rstSent || rst;
     rstRcvdInput.value = p.rstRcvd || rst;
+    // The EXCHANGE time, when the prefill knows it (JS8: the trailing
+    // session's real times — logging happens after a ragchew, and the tap
+    // time can be off by an hour or, on an old thread, days). The now
+    // defaults set at open stand only when no time is carried.
+    if (p.qsoDate && /^\d{8}$/.test(p.qsoDate)) {
+      dateInput.value = p.qsoDate.slice(0, 4) + '-' + p.qsoDate.slice(4, 6) + '-' + p.qsoDate.slice(6, 8);
+    }
+    if (p.timeOn && /^\d{6}$/.test(p.timeOn)) {
+      timeInput.value = p.timeOn.slice(0, 2) + ':' + p.timeOn.slice(2, 4);
+    }
     if (callInput.value) scheduleLookup();
     rstSentInput.focus();
     rstSentInput.select();

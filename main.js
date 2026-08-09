@@ -14248,7 +14248,14 @@ function connectRemote() {
       return;
     }
     try {
-      const now = new Date();
+      // qsoAt (epoch ms): the EXCHANGE time, not the tap time. JS8 is a
+      // ragchew mode — logging happens after the conversation, and the
+      // prefill's whole point is the trailing session's real times. Also
+      // fixes late write-ups and paper batch entry. Fallback: now, the old
+      // behavior, so every existing caller is unchanged (mobile ask
+      // 2026-08-09, docs/desktop-asks/js8-logging-gaps.md #1).
+      const at = Number(data.qsoAt);
+      const now = Number.isFinite(at) && at > 0 ? new Date(at) : new Date();
       const qsoDate = now.toISOString().slice(0, 10).replace(/-/g, '');
       const qsoTime = now.toISOString().slice(11, 16).replace(/:/g, '');
       const freqKhz = parseFloat(data.freqKhz) || 0;
@@ -14261,6 +14268,10 @@ function connectRemote() {
       // when the spot was tagged with secondary OTA programs during
       // dedup. Desktop popup already does the same. Empty-string
       // safe: buildAdifRecord skips empty fields.
+      // The worked station's grid (ADIF GRIDSQUARE — the writer already
+      // supports it; this field was simply never mapped). JS8 prefills carry
+      // it from the heartbeat capture; FT8 could too (#3 of the same ask).
+      const theirGrid = /^[A-R]{2}[0-9]{2}([A-Xa-x]{2})?$/.test(String(data.theirGrid || '')) ? String(data.theirGrid).toUpperCase() : '';
       const potaRef = data.potaRef || '';
       const sotaRef = data.sotaRef || '';
       const wwffRef = data.wwffRef || '';
@@ -14329,7 +14340,10 @@ function connectRemote() {
         name: qrzName,
         state: parkLocState || (!sig && qrzInfo ? (qrzInfo.state || '') : ''),
         county: !parkLocState && !sig && qrzInfo && qrzInfo.state && qrzInfo.county ? `${qrzInfo.state},${qrzInfo.county}` : '',
-        gridsquare: parkLocGrid || (qrzInfo ? (qrzInfo.grid || '') : ''),
+        // Precedence: what the station SAID on the air (theirGrid — a JS8
+        // heartbeat capture or an FT8 decode) beats a park's location beats
+        // the QRZ database's idea of home.
+        gridsquare: theirGrid || parkLocGrid || (qrzInfo ? (qrzInfo.grid || '') : ''),
         country: qrzInfo ? (qrzInfo.country || '') : '',
       };
 
@@ -14927,11 +14941,11 @@ function connectRemote() {
     js8PushThreads(null);
   });
   remoteServer.on('js8-thread-closed', () => js8Threads.setOpen(null));
-  remoteServer.on('js8-log-prefill', ({ id }) => {
+  remoteServer.on('js8-log-prefill', ({ id, reqId }) => {
     markUserActive();
     js8HbLastActivity = Date.now();   // logging IS operator activity
     const q = js8LogPrefillRemote(id);
-    remoteServer.sendJs8LogPrefill({ id, prefill: q || null,
+    remoteServer.sendJs8LogPrefill({ id, reqId, prefill: q || null,
       error: q ? undefined : 'Nothing in that conversation to log.' });
   });
 
@@ -23736,6 +23750,11 @@ app.whenReady().then(() => {
       mode: 'JS8',
       rstSent: q.rstSent,
       rstRcvd: q.rstRcvd,
+      // The EXCHANGE time, not the tap time — same defect class the mobile
+      // team found in log-qso (#1). The form defaults to now only when a
+      // prefill carries no time.
+      qsoDate: q.qsoDate,
+      timeOn: q.timeOn,
       type: 'dx',
       force: true,
     });

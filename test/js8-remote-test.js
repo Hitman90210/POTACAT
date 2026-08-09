@@ -351,6 +351,19 @@ test('js8-log-prefill is registered BOTH ways and refused for guests', () => {
   assert.strictEqual(reply.prefill.rstSent, '-05');
 });
 
+test('the prefill success emit carries reqId — not just the refusal', () => {
+  // Third instance of the drop-on-success shape (mobile logging-gaps #2):
+  // a declared field that only works on refusals reads as supported and
+  // isn't, which is how the js8-start version went unnoticed.
+  const rs = new RemoteServer();
+  const owner = fakeWs();
+  rs._client = owner;
+  let seen = null;
+  rs.on('js8-log-prefill', (e) => { seen = e; });
+  rs._handleMessage(owner, { type: 'js8-log-prefill', id: 'KN4CRD', reqId: 'L9' }, {});
+  assert.deepStrictEqual(seen, { id: 'KN4CRD', reqId: 'L9' });
+});
+
 test('sendJs8Thread and sendJs8SendResult reach the live client', () => {
   const rs = new RemoteServer();
   const ws = fakeWs();
