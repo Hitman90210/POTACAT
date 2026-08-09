@@ -61,6 +61,24 @@ the conversation view.
 Guest Pass: `rig-control` is already refused for guests server-side; hide
 the button in pass sessions like your other rig controls.
 
+## 4. Band display + picker (NEW wire message — 2026-08-09, post-1.10.0)
+
+First real use found the JS8 surface blind: no band shown, no way to
+change it. Desktop now has a dial readout + band picker in the JS8 bar;
+parity pieces for you:
+
+- `js8-state` gained `dialHz` (number) and `band` (string, e.g. "20m") —
+  band-granular pushes on QSY (the Hz-live stream stays on the radio
+  status you already render). Show the band in your JS8 header.
+- NEW C2S `js8-set-band {band, reqId?}` — tunes the rig to that band's
+  JS8 calling dial (host owns the table: 1842/3578/5357/7078/10130/14078/
+  18104/21078/24922/28078/50318 kHz). Refused for guests on
+  `js8-send-result`. The host resets its RX reassembler on the QSY so a
+  half-message from the old band can't corrupt the new one — nothing for
+  you to do there.
+- Band list for the picker: render the ten bands above; the host answers
+  `{ok:false, error}` for anything it doesn't know.
+
 ---
 
 Desktop cross-references: `renderer/js8call-popout.{html,js}` (the

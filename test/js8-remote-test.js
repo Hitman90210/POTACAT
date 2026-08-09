@@ -364,6 +364,24 @@ test('the prefill success emit carries reqId — not just the refusal', () => {
   assert.deepStrictEqual(seen, { id: 'KN4CRD', reqId: 'L9' });
 });
 
+test('js8-set-band: owner tunes, guest refused', () => {
+  assert.ok(protocol.isKnownType('js8-set-band'));
+  const rs = new RemoteServer();
+  const guest = fakeWs();
+  guest._passSession = { code: 'G' };
+  rs._client = guest;
+  let tuned = null;
+  rs.on('js8-set-band', (e) => { tuned = e; });
+  rs._handleMessage(guest, { type: 'js8-set-band', band: '20m', reqId: 'B1' }, {});
+  assert.strictEqual(tuned, null, 'a guest must not retune the owner radio');
+  assert.strictEqual(guest._sent[0].type, 'js8-send-result');
+  assert.strictEqual(guest._sent[0].reqId, 'B1');
+  const owner = fakeWs();
+  rs._client = owner;
+  rs._handleMessage(owner, { type: 'js8-set-band', band: '40m' }, {});
+  assert.deepStrictEqual(tuned, { band: '40m' });
+});
+
 test('sendJs8Thread and sendJs8SendResult reach the live client', () => {
   const rs = new RemoteServer();
   const ws = fakeWs();

@@ -356,6 +356,53 @@
     transmit('CQ CQ CQ', '');
   });
 
+  // ── band picker + dial readout ─────────────────────────────────────────────
+  // The rig's dial, live, and one-click QSY to a band's JS8 calling
+  // frequency. Mirror of main's JS8_DIAL_KHZ (and jtcat-popout's
+  // JS8_BAND_FREQS) — keep the three in agreement.
+  var JS8_BANDS = [
+    ['160m', 1842], ['80m', 3578], ['60m', 5357], ['40m', 7078],
+    ['30m', 10130], ['20m', 14078], ['17m', 18104], ['15m', 21078],
+    ['12m', 24922], ['10m', 28078], ['6m', 50318],
+  ];
+  var bandEl = el('jc-band'), dialEl = el('jc-dial');
+  var dialHz = 0;
+  var bandByRange = function (hz) {
+    // Nearest-dial classification is enough for highlighting the select —
+    // the dial readout shows the exact truth.
+    var mhz = hz / 1e6, best = '', bestD = Infinity;
+    JS8_BANDS.forEach(function (b) {
+      var d = Math.abs(mhz - b[1] / 1000);
+      if (d < bestD) { bestD = d; best = b[0]; }
+    });
+    return bestD < 0.35 ? best : '';
+  };
+  (function initBand() {
+    var blank = document.createElement('option');
+    blank.value = ''; blank.textContent = 'Band';
+    bandEl.appendChild(blank);
+    JS8_BANDS.forEach(function (b) {
+      var o = document.createElement('option');
+      o.value = b[0];
+      o.textContent = b[0] + ' · ' + (b[1] / 1000).toFixed(3);
+      bandEl.appendChild(o);
+    });
+  })();
+  bandEl.addEventListener('change', function () {
+    if (!bandEl.value) return;
+    window.api.setBand(bandEl.value).then(function (r) {
+      if (r && !r.ok) note(esc(r.error || 'Could not tune.'), 'err');
+    }).catch(function () {});
+  });
+  window.api.onCatFrequency(function (hz) {
+    dialHz = Number(hz) || 0;
+    dialEl.textContent = dialHz ? (dialHz / 1e6).toFixed(3) + ' MHz' : '';
+    var b = bandByRange(dialHz);
+    // Reflect, don't fight: only move the select when the value differs, so
+    // an open dropdown isn't yanked mid-choice.
+    if (b !== bandEl.value && document.activeElement !== bandEl) bandEl.value = b;
+  });
+
   // ATU — momentary match cycle through the one rig-control dispatcher.
   // Not a toggle: every press starts a tune (same behavior as the desktop,
   // JTCAT popout, VFO popout and the mobile device).

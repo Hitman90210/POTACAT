@@ -35,6 +35,10 @@
     .jc-btn.hb-on { background: var(--accent-green-btn, #4ecca3); color: #000;
       border-color: var(--accent-green-btn, #4ecca3); }
     /* TX is the operator's warning that the radio is keyed for JS8. */
+    .jc-band select { background: var(--bg-tertiary, #1a1a2e); color: var(--text-primary);
+      border: 1px solid var(--border-primary); border-radius: 4px; padding: 2px 6px;
+      font-size: 11px; font-family: inherit; cursor: pointer; }
+    #jc-dial { color: var(--accent-blue, #4fc3f7); font-weight: 600; }
     /* ATU pulses amber while the match cycle runs — same look as JTCAT's. */
     .jc-btn.tuning { background: var(--source-sota, #f0a500); color: #000;
       border-color: var(--source-sota, #f0a500); animation: jc-pulse 1s ease-in-out infinite; }
@@ -194,6 +198,10 @@
     <span id="jc-state">JS8 is off</span>
     <b class="mono" id="jc-station"></b>
     <span class="mono num" id="jc-submode"></span>
+    <label class="jc-band">
+      <select id="jc-band" title="Tune the radio to a band's JS8 dial"></select>
+    </label>
+    <span class="mono num" id="jc-dial" title="Radio frequency"></span>
     <span class="jc-acts" id="jc-acts" hidden>
       <button class="jc-btn" id="jc-cq" title="Call CQ on JS8 now">CQ</button>
       <button class="jc-btn" id="jc-hb" title="Heartbeat every few minutes while you are at the radio">HB</button>

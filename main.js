@@ -2056,6 +2056,17 @@ function sendCatFrequency(hz) {
   if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) jtcatPopoutWin.webContents.send('cat-frequency', hz);
   if (sstvPopoutWin && !sstvPopoutWin.isDestroyed()) sstvPopoutWin.webContents.send('cat-frequency', hz);
   if (logPopoutWin && !logPopoutWin.isDestroyed()) logPopoutWin.webContents.send('cat-frequency', hz);
+  // JS8 window: the dial readout + band picker follow the rig live. The
+  // window shipped blind in v1.10.0 ("doesn't show the band I'm on" —
+  // Casey, first real use).
+  if (js8PopoutWin && !js8PopoutWin.isDestroyed()) js8PopoutWin.webContents.send('cat-frequency', hz);
+  // The PHONE's JS8 view wants the band too — but at band granularity, not
+  // per-poll Hz (js8-state is a cached snapshot, not a VFO stream; the VFO
+  // stream is the radio-status broadcast the phone already has).
+  {
+    const b = hz ? (freqToBand(hz / 1e6) || '') : '';
+    if (b !== _js8LastPushedBand) { _js8LastPushedBand = b; js8PushStatus(); }
+  }
   // Logbook popout caches this so "+ New QSO" can auto-fill the Freq
   // field with the rig's current frequency. N4DWJ 2026-06-09 — cruising
   // bands looking for DX wants one fewer field to type per QSO.
@@ -5081,6 +5092,33 @@ function sendJs8Status(s) {
   if (js8PopoutWin && !js8PopoutWin.isDestroyed()) js8PopoutWin.webContents.send('js8call-status', payload);
 }
 
+// Band-granular change detector for pushing js8-state on QSY (set in the
+// cat-frequency fanout; Hz-level streaming stays on the VFO channels).
+let _js8LastPushedBand = '';
+
+/** The JS8 dial per band (kHz) — the JS8Call community calling frequencies.
+ *  Renderer copies: renderer/jtcat-popout.js JS8_BAND_FREQS and the JS8
+ *  window's own table; keep the three in agreement. */
+const JS8_DIAL_KHZ = {
+  '160m': 1842, '80m': 3578, '60m': 5357, '40m': 7078, '30m': 10130,
+  '20m': 14078, '17m': 18104, '15m': 21078, '12m': 24922, '10m': 28078,
+  '6m': 50318,
+};
+
+/** Tune the rig to a band's JS8 dial. Shared by the popout IPC and the
+ *  phone. DIGU like every digital tune; the reassembler resets because
+ *  half a message from the old band must not greet the new one. */
+function js8TuneBand(band) {
+  const freqKhz = JS8_DIAL_KHZ[band];
+  if (!freqKhz) return { ok: false, error: 'Unknown band: ' + band };
+  tuneRadio(freqKhz, 'DIGU');
+  _jtcatExpectedDialHz = Math.round(freqKhz * 1000); // pre-TX dial guard anchor
+  js8RxAssembler = new Js8RxAssembler({});
+  sendCatLog(`[JS8] tuned to ${band} (${(freqKhz / 1000).toFixed(3)} MHz)`);
+  pushActivityState();
+  return { ok: true, freqKhz };
+}
+
 function js8PushStatus() {
   const eng = js8Engine();
   const state = {
@@ -5090,6 +5128,8 @@ function js8PushStatus() {
     submode: eng ? eng._submodeName : (settings.js8Submode || 'NORMAL'),
     heartbeat: js8HbEnabled,
     heartbeatMin: js8HbIntervalMin(),
+    dialHz: _currentFreqHz || 0,
+    band: _currentFreqHz ? (freqToBand(_currentFreqHz / 1e6) || '') : '',
   };
   sendJs8Status({ ...state, connected: state.running }); // legacy popout field
   // Same snapshot to the phone (cached + hydrated at connect).
@@ -14941,6 +14981,12 @@ function connectRemote() {
     js8PushThreads(null);
   });
   remoteServer.on('js8-thread-closed', () => js8Threads.setOpen(null));
+  remoteServer.on('js8-set-band', ({ band }) => {
+    markUserActive();
+    js8HbLastActivity = Date.now();   // retuning IS operator activity
+    js8TuneBand(String(band || ''));
+  });
+
   remoteServer.on('js8-log-prefill', ({ id, reqId }) => {
     markUserActive();
     js8HbLastActivity = Date.now();   // logging IS operator activity
@@ -23740,6 +23786,11 @@ app.whenReady().then(() => {
     return { thread: js8Threads.thread(id), list: js8Threads.list(), unread: js8Threads.totalUnread };
   });
   ipcMain.on('js8call-thread-closed', () => js8Threads.setOpen(null));
+
+  ipcMain.handle('js8-set-band', (_e, band) => {
+    markUserActive();
+    return js8TuneBand(String(band || ''));
+  });
 
   ipcMain.handle('js8-log-prefill', (_e, id) => {
     markUserActive();

@@ -199,6 +199,21 @@ test('the push choke points reach both surfaces', () => {
   }
 });
 
+test('the band tune is one shared function with the right side effects', () => {
+  const body = fnBody('js8TuneBand');
+  assert.ok(body.includes("tuneRadio(freqKhz, 'DIGU')"), 'digital tune like every digi mode');
+  assert.ok(body.includes('_jtcatExpectedDialHz'),
+    'the pre-TX dial guard must anchor to the new dial or JS8 TX gets blocked');
+  assert.ok(body.includes('Js8RxAssembler'),
+    'half a message from the old band must not greet the new one');
+  // Both surfaces call it — no second tune implementation.
+  const ipcAt = RAW.indexOf("ipcMain.handle('js8-set-band'");
+  const remAt = RAW.indexOf("remoteServer.on('js8-set-band'");
+  assert.ok(ipcAt > 0 && remAt > 0);
+  assert.ok(RAW.slice(ipcAt, ipcAt + 300).includes('js8TuneBand'));
+  assert.ok(RAW.slice(remAt, remAt + 300).includes('js8TuneBand'));
+});
+
 // ── status honesty ───────────────────────────────────────────────────────────
 
 test('js8PushStatus reports the engine, not a socket', () => {

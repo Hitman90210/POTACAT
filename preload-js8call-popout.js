@@ -54,6 +54,11 @@ contextBridge.exposeInMainWorld('api', {
   // The one rig-control dispatcher — used here for the ATU match cycle.
   rigControl: (data) => ipcRenderer.invoke('rig-control', data),
 
+  // Band: tune the rig to a band's JS8 dial (main owns the table), and the
+  // live frequency stream every window gets.
+  setBand: (band) => ipcRenderer.invoke('js8-set-band', band),
+  onCatFrequency: (cb) => ipcRenderer.on('cat-frequency', (_e, hz) => cb(hz)),
+
   openExternal: (url) => ipcRenderer.send('open-external', url),
 
   // Per-window zoom, same convention as the other popouts.
