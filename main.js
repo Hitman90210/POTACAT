@@ -5289,6 +5289,18 @@ function computeActivityState() {
   };
 }
 
+// Stale-decode safety tick. The 60 s expiry in computeActivityState only
+// takes effect at the NEXT push — and a decode that died with its signal
+// (no rx-image, no more rx-lines) triggers none, pinning busy.decoding
+// true in the cache forever. The handoff promises clients they never need
+// their own staleness timer; this 30 s tick is what makes that true. The
+// JSON dedupe in pushActivityState keeps it silent while nothing changed.
+setInterval(() => {
+  if (!_sstvDecode) return;
+  if (Date.now() - _sstvDecode.updatedAt > 60 * 1000) _sstvDecode = null;
+  pushActivityState();
+}, 30 * 1000).unref();
+
 /** Debounced push — transitions call this freely; bursts collapse. */
 function pushActivityState() {
   if (_activityTimer) return;
@@ -12468,6 +12480,11 @@ function connectRemote() {
   if (!settings.enableRemote) return;
 
   remoteServer = new RemoteServer();
+  // Seed the activity cache at birth. Without this a phone connecting to a
+  // freshly-launched idle desktop gets NO activity-state despite the hello
+  // advertising the capability — "idle" must be a stated fact, not an
+  // absence the client has to interpret.
+  pushActivityState();
   // Surface our package version in the v1 protocol `hello` so connected
   // clients can show "POTACAT desktop 1.5.13" and decide whether to
   // suggest an update.
@@ -14812,7 +14829,15 @@ function connectRemote() {
     const r = js8Transmit(text, to);
     remoteServer.sendJs8SendResult({ ok: !!r.ok, error: r.error, text: r.text, frames: r.frames, reqId });
   });
-  remoteServer.on('js8-thread-open', ({ id }) => {
+  remoteServer.on('js8-thread-open', ({ id, guest }) => {
+    // A GUEST read is genuinely read-only: no setOpen (that marks the
+    // OWNER's mail read and claims auto-read), no watchdog pet (a guest
+    // browsing is not the control operator being present), no threads push
+    // (nothing changed). The demux already restricted guests to group ids.
+    if (guest) {
+      remoteServer.sendJs8Thread(js8Threads.thread(id));
+      return;
+    }
     js8Threads.setOpen(id);           // opening it is what marks it read
     js8HbLastActivity = Date.now();   // reading mail IS operator activity
     remoteServer.sendJs8Thread(js8Threads.thread(id));

@@ -310,6 +310,17 @@ so the UI gates its controls before content arrives). Guest Pass may browse
 (`js8-thread-open`) but every transmit/lifecycle message answers
 `js8-send-result {ok:false}` with a reason.
 
+**Guest Pass privacy (2026-08-09): group nets only — No DMs.** For a pass
+session, `js8-threads` (hydration and live) carries only `isGroup: true`
+rows, `unread` (and `activity-state.detail.unread`) is recomputed over
+those rows, a changed-thread delta the guest cannot see drops both
+`changed` and `thread`, `js8-thread-open` on a non-group id is refused,
+and a guest's group open is read-only on the host (no mark-read, no
+attended-watchdog credit, no open-thread claim; guest `js8-thread-closed`
+is ignored). The heard rail and engine state are unfiltered — public RF
+and non-private respectively. The predicate is the thread store's own
+`isGroupTarget`.
+
 ### FreeDV (digital voice)
 
 | Message | Dir | Purpose |

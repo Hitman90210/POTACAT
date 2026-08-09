@@ -92,7 +92,8 @@ test('owner lifecycle + heartbeat + thread messages all emit', () => {
   rs._handleMessage(ws, { type: 'js8-stop' }, {});
   assert.strictEqual(seen.length, 5);
   assert.deepStrictEqual(seen[1][1], { enabled: true, intervalMin: 30, reqId: undefined });
-  assert.deepStrictEqual(seen[2][1], { id: 'KN4CRD' });
+  assert.deepStrictEqual(seen[2][1], { id: 'KN4CRD', guest: false },
+    'owner opens carry guest:false so main applies the read-marking path');
 });
 
 // ── guest path: browse yes, transmit no ─────────────────────────────────────
@@ -126,9 +127,11 @@ test('guest start/stop/heartbeat are refused; thread browsing is not', () => {
   rs._handleMessage(ws, { type: 'js8-start' }, {});
   rs._handleMessage(ws, { type: 'js8-stop' }, {});
   rs._handleMessage(ws, { type: 'js8-heartbeat', enabled: true }, {});
-  rs._handleMessage(ws, { type: 'js8-thread-open', id: 'W1AW' }, {});
+  // Group browsing is the allowed read path (a bare callsign is a DM and
+  // gets refused — pinned separately in the privacy section below).
+  rs._handleMessage(ws, { type: 'js8-thread-open', id: '@ALLCALL' }, {});
   assert.deepStrictEqual(emits, { start: 0, stop: 0, hb: 0, open: 1 },
-    'lifecycle refused, read-only browsing allowed');
+    'lifecycle refused, group browsing allowed');
   const refusals = ws._sent.filter((m) => m.type === 'js8-send-result' && m.ok === false);
   assert.strictEqual(refusals.length, 3, 'each refused message answers');
 });
@@ -206,6 +209,120 @@ test('reqId is declared on the lifecycle messages, not merely tolerated', () => 
     const fields = protocol.describe(t).fields || {};
     assert.ok(fields.reqId, t + ' must declare reqId');
   }
+});
+
+// ── Guest Pass privacy: group nets only, No DMs (Casey 2026-08-09) ──────────
+// docs/desktop-asks/js8-guest-pass-dm-privacy.md. Every non-group thread is
+// a private exchange between the OWNER and one station; a pass session must
+// never receive one through ANY door — hydration, live push, thread-open —
+// and must never write owner state (mark-read, watchdog, open claim).
+
+const OWNER_THREADS = {
+  unread: 5,
+  list: [
+    { id: '@ALLCALL', call: '@ALLCALL', isGroup: true, unread: 1, lastText: 'CQ' },
+    { id: '@HB', call: '@HB', isGroup: true, unread: 0, hbCount: 12 },
+    { id: 'KN4CRD', call: 'KN4CRD', isGroup: false, unread: 3, lastText: 'private' },
+    { id: 'W1AW', call: 'W1AW', isGroup: false, unread: 1, lastText: 'also private' },
+  ],
+};
+
+test('guest hydration carries no DM rows and a recomputed unread', () => {
+  const rs = new RemoteServer();
+  rs.broadcastJs8State({ running: true });
+  rs.broadcastJs8Threads(OWNER_THREADS);
+  const guest = fakeWs();
+  guest._passSession = { code: 'G' };
+  guest._sent.length = 0;
+  rs._sendJs8Hydration(guest);
+  const threads = guest._sent.find((m) => m.type === 'js8-threads');
+  assert.ok(threads);
+  assert.ok(threads.list.every((t) => t.isGroup), 'no DM row may reach a guest');
+  assert.strictEqual(threads.unread, 1,
+    'unread recomputed over visible rows — the owner total is itself a disclosure');
+});
+
+test('live thread pushes are shaped per client; the cache stays owner-truth', () => {
+  const rs = new RemoteServer();
+  const guest = fakeWs();
+  guest._passSession = { code: 'G' };
+  rs._client = guest;
+  rs.broadcastJs8Threads({ ...OWNER_THREADS, changed: 'KN4CRD', thread: { id: 'KN4CRD', isGroup: false, messages: [{ text: 'private' }] } });
+  const got = guest._sent.find((m) => m.type === 'js8-threads');
+  assert.ok(got.list.every((t) => t.isGroup));
+  assert.strictEqual(got.changed, undefined, 'a delta the guest cannot see drops BOTH fields');
+  assert.strictEqual(got.thread, undefined);
+  // The hydration cache keeps the owner's full truth for the next paired connect.
+  assert.strictEqual(rs._js8Threads.list.length, 4);
+  assert.strictEqual(rs._js8Threads.unread, 5);
+});
+
+test('a group delta still reaches the guest intact', () => {
+  const rs = new RemoteServer();
+  const guest = fakeWs();
+  guest._passSession = { code: 'G' };
+  rs._client = guest;
+  rs.broadcastJs8Threads({ ...OWNER_THREADS, changed: '@ALLCALL', thread: { id: '@ALLCALL', isGroup: true, messages: [] } });
+  const got = guest._sent.find((m) => m.type === 'js8-threads');
+  assert.strictEqual(got.changed, '@ALLCALL');
+  assert.ok(got.thread);
+});
+
+test('guest js8-thread-open: DM refused, group allowed with the guest flag', () => {
+  const rs = new RemoteServer();
+  const guest = fakeWs();
+  guest._passSession = { code: 'G' };
+  rs._client = guest;
+  const opens = [];
+  rs.on('js8-thread-open', (e) => opens.push(e));
+  rs._handleMessage(guest, { type: 'js8-thread-open', id: 'KN4CRD' }, {});
+  assert.strictEqual(opens.length, 0, 'a DM open must never reach main');
+  assert.strictEqual(guest._sent[0].type, 'js8-send-result');
+  assert.strictEqual(guest._sent[0].ok, false);
+  rs._handleMessage(guest, { type: 'js8-thread-open', id: '@ALLCALL' }, {});
+  assert.deepStrictEqual(opens, [{ id: '@ALLCALL', guest: true }],
+    'main must know it is a guest — the handler writes owner state otherwise');
+});
+
+test('guest js8-thread-closed is swallowed — it would clear the OWNER claim', () => {
+  const rs = new RemoteServer();
+  const guest = fakeWs();
+  guest._passSession = { code: 'G' };
+  rs._client = guest;
+  let closed = 0;
+  rs.on('js8-thread-closed', () => { closed++; });
+  rs._handleMessage(guest, { type: 'js8-thread-closed' }, {});
+  assert.strictEqual(closed, 0);
+});
+
+test('sendJs8Thread refuses to hand a DM body to a pass session', () => {
+  const rs = new RemoteServer();
+  const guest = fakeWs();
+  guest._passSession = { code: 'G' };
+  rs._client = guest;
+  rs.sendJs8Thread({ id: 'KN4CRD', isGroup: false, messages: [{ text: 'private' }] });
+  assert.strictEqual(guest._sent[0].thread, null, 'defense in depth behind the demux gate');
+  rs.sendJs8Thread({ id: '@HB', isGroup: true, messages: [] });
+  assert.ok(guest._sent[1].thread, 'group content still flows');
+});
+
+test('activity-state shapes detail.unread for guests, live and hydrated', () => {
+  const rs = new RemoteServer();
+  rs.broadcastJs8Threads(OWNER_THREADS);
+  const guest = fakeWs();
+  guest._passSession = { code: 'G' };
+  rs._client = guest;
+  rs.broadcastActivityState({ activity: 'js8', auto: false, since: 1, detail: { submode: 'NORMAL', unread: 5 }, busy: { tx: false, decoding: false } });
+  const live = guest._sent.find((m) => m.type === 'activity-state');
+  assert.strictEqual(live.detail.unread, 1, 'the owner total is a live private-mail counter');
+  guest._sent.length = 0;
+  rs._sendActivityHydration(guest);
+  assert.strictEqual(guest._sent[0].detail.unread, 1);
+  // The paired client still gets the owner truth.
+  const owner = fakeWs();
+  rs._client = owner;
+  rs.broadcastActivityState({ activity: 'js8', auto: false, since: 2, detail: { submode: 'NORMAL', unread: 5 }, busy: { tx: false, decoding: false } });
+  assert.strictEqual(owner._sent.find((m) => m.type === 'activity-state').detail.unread, 5);
 });
 
 test('sendJs8Thread and sendJs8SendResult reach the live client', () => {

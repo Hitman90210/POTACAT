@@ -74,14 +74,22 @@ Registry: `lib/echocat-protocol.js`; prose: `docs/echocat-protocol.md`
 ```json
 { "type": "wspr-session", "startedAt": 1754786400000, "count": 47,
   "active": true,
-  "spots": [ { "call": "W1AW", "grid": "FN31", "snr": -21, "freqHz": 14097045,
+  "spots": [ { "call": "W1AW", "grid": "FN31", "snr": -21,
+               "freqMHz": 14.097045, "dt": 0.2, "drift": 0, "dBm": 37,
                "timeUtc": "1432", "distanceMi": 210, "bearing": 64,
                "entity": "United States", "continent": "NA" } ] }
 ```
 
 - The SESSION's accumulated spots — what the desktop popout shows after an
   hour of idle WSPR. Cap 500 (oldest dropped); `count` is the session total
-  (can exceed 500).
+  (can exceed 500). Field note: frequency is **`freqMHz`** (MHz, float) —
+  there is no `freqHz`; `dBm` is the sender's reported power; `dt`/`drift`
+  come from wsprd. Enrichment (`entity`/`continent`/`distanceMi`/`bearing`)
+  is host-side and may be absent when the grid or cty lookup failed.
+- The session starts lazily on the FIRST decoded batch: a WSPR session
+  that has heard nothing yet sends no `wspr-session` at all —
+  `activity-state.detail.sessionCount: 0` is your "running, nothing heard"
+  signal.
 - `active: false` = the session ended (mode changed away / JTCAT stopped)
   but the results are still worth showing — render as "last session".
   A new session replaces the payload wholesale on the next decode batch.
@@ -103,13 +111,24 @@ Registry: `lib/echocat-protocol.js`; prose: `docs/echocat-protocol.md`
 ### Hydration order (all three auth paths — paired legacy, paired hello, Guest Pass)
 
 ```
-auth-ok → spots → status → [js8-state → js8-threads → js8-heard]
+auth-ok → spots → status
         → activity-state → wspr-session → sstv-tx-status
         → sstv-rx-progress (if decoding) → sstv-rx-image (last)
+        → js8-state → js8-threads → js8-heard
+        → (…the rest of the legacy burst)
 ```
 
-Guests receive everything above — it is read-only information. Guest
-CONTROL refusals are unchanged from the JS8 handoff.
+`activity-state` lands immediately after `status` on every path — router
+before content, guaranteed. (Corrected 2026-08-09: an earlier draft showed
+the JS8 trio first and, on the hello path, the router used to arrive after
+the whole JTCAT block; the code now matches this order.)
+
+Guests receive all of the above, with one shaping rule: **JS8 thread data
+is group-nets-only for a pass session** (No DMs — see the JS8 handoff's
+guest section), `js8-threads.unread` and `activity-state.detail.unread`
+are recomputed over the rows the guest can see, and a changed-thread delta
+the guest may not see drops both fields. Guest CONTROL refusals are
+unchanged.
 
 ## UX expectations
 

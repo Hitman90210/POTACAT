@@ -152,14 +152,24 @@ pieces, in priority order:
   thread-opens from the phone count as operator activity on the host.
   Never re-enable automatically after reconnect; never persist the switch
   client-side.
-- **Guest Pass is receive-only.** Guests may browse threads; `js8-start`,
-  `js8-stop`, `js8-heartbeat` and `js8-send` come back as
+- **Guest Pass is receive-only, and group-nets-only — No DMs** (Casey
+  2026-08-09; docs/desktop-asks/js8-guest-pass-dm-privacy.md). Every
+  non-group thread in the store is a private exchange between the owner
+  and one station, and none of it reaches a pass session through ANY door:
+  hydration and live `js8-threads` pushes carry only `isGroup: true` rows
+  with `unread` recomputed over them (a changed-thread delta the guest
+  cannot see drops both fields); `js8-thread-open` on a non-group id is
+  refused via `js8-send-result`; `sendJs8Thread` nulls a DM body as
+  defense in depth; `activity-state.detail.unread` is shaped the same way.
+  A guest's group-thread open is genuinely read-only on the host — no
+  mark-read, no watchdog pet, no open-thread claim — and guest
+  `js8-thread-closed` is swallowed (it would release the OWNER's claim).
+  `js8-start`/`js8-stop`/`js8-heartbeat`/`js8-send` come back as
   `js8-send-result {ok:false, error}`. Disable the controls when your
   session is a guest session, and show the error if a race lets one
   through. (The server refuses regardless — the UI gate is courtesy, the
-  server is the law.) Guests receive the same hydration trio at connect
-  as paired devices (added 2026-08-09 per your gap report — an inbox you
-  may browse arrives without waiting for a live push).
+  server is the law.) Per your gap report, guests receive the hydration
+  trio at connect — shaped by the rule above.
 - **Never compose addressing client-side** (worth repeating: the host owns
   `to` + `text` → on-air form).
 - **No emojis in UI copy**, and say "mobile device", not "phone", in any
