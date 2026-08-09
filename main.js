@@ -30546,7 +30546,17 @@ function gracefulCleanup() {
   try { killMercury(); } catch {}
 }
 
-app.on('before-quit', gracefulCleanup);
+app.on('before-quit', () => {
+  gracefulCleanup();
+  // Shutdown watchdog: if quit stalls after cleanup (a pending async close, a
+  // wedged device handle), the process lingers headless and the NEXT
+  // installer's app-running check trips on it — reported as a false "POTACAT
+  // cannot be closed" loop. Nothing in this app prevents quit, so once
+  // before-quit fires we are committed; force the exit if it hasn't happened.
+  // unref'd so the timer itself never keeps the process alive.
+  const watchdog = setTimeout(() => { try { app.exit(0); } catch {} }, 5000);
+  if (typeof watchdog.unref === 'function') watchdog.unref();
+});
 process.on('SIGINT', () => { gracefulCleanup(); process.exit(0); });
 process.on('SIGTERM', () => { gracefulCleanup(); process.exit(0); });
 
