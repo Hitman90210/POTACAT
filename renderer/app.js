@@ -1150,11 +1150,7 @@ const setTciSpots = document.getElementById('set-tci-spots');
 const tciConfig = document.getElementById('tci-config');
 const setTciHost = document.getElementById('set-tci-host');
 // JS8Call bridge settings
-const setJs8Enable = document.getElementById('set-js8-enable');
 const js8Config = document.getElementById('js8-config');
-const setJs8Path = document.getElementById('set-js8-path');
-const setJs8Port = document.getElementById('set-js8-port');
-const setJs8RigName = document.getElementById('set-js8-rig-name');
 // Mercury (HF data) settings
 const setMercuryEnable = document.getElementById('set-mercury-enable');
 const mercuryConfig = document.getElementById('mercury-config');
@@ -4466,52 +4462,6 @@ if (setAudioSource) {
 setTciSpots.addEventListener('change', () => {
   tciConfig.classList.toggle('hidden', !setTciSpots.checked);
 });
-if (setJs8Enable) {
-  // Checkbox is now an opt-OUT, so it no longer gates the panel below it --
-  // the setup checker stays reachable whether or not you have turned it off.
-  setJs8Enable.addEventListener('change', () => {});
-  const js8PathBrowse = document.getElementById('js8-path-browse');
-  if (js8PathBrowse) js8PathBrowse.addEventListener('click', async () => {
-    const p = await window.api.echocatPickFile({
-      title: 'Select the JS8Call program',
-      filters: [{ name: 'Executables', extensions: ['exe'] }, { name: 'All files', extensions: ['*'] }],
-    });
-    if (p && setJs8Path) setJs8Path.value = p;
-  });
-  // "Check JS8Call setup" — reads its ini live and reports every collision, so
-  // the operator sees the problem here instead of discovering an empty window.
-  const js8CheckBtn = document.getElementById('js8-check-btn');
-  const js8Report = document.getElementById('js8-setup-report');
-  if (js8CheckBtn && js8Report) {
-    js8CheckBtn.addEventListener('click', async () => {
-      js8Report.textContent = 'Checking…';
-      let r;
-      try { r = await window.api.js8CheckSetup(); }
-      catch (err) { js8Report.textContent = 'Could not check: ' + (err.message || err); return; }
-      if (!r || !r.found) {
-        js8Report.innerHTML = '<strong>No JS8Call configuration found.</strong> Install JS8Call and run it once, then check again.';
-        return;
-      }
-      const s = r.settings || {};
-      const lines = [];
-      lines.push('<strong>Found JS8Call' + (s.myCall ? ' — ' + esc(s.myCall) : '') + '</strong>');
-      lines.push('API ' + (s.tcpEnabled ? 'on' : '<em>off</em>') + ' on port ' + (s.tcpPort || 2442)
-        + (s.catPort ? ' · radio via port ' + s.catPort : '')
-        + (s.soundIn ? ' · audio in: ' + esc(s.soundIn) : ''));
-      if (!r.problems || !r.problems.length) {
-        lines.push('<span style="color:var(--accent-green-btn,#4ecca3);">Nothing to fix.</span>');
-      } else {
-        for (const p of r.problems) {
-          const color = p.severity === 'blocker' ? 'var(--accent-red,#e94560)'
-            : p.severity === 'conflict' ? 'var(--source-sota,#f0a500)'
-              : 'var(--text-secondary)';
-          lines.push('<span style="color:' + color + ';">• ' + esc(p.message) + '</span><br><span style="opacity:.8;">&nbsp;&nbsp;' + esc(p.fix || "") + '</span>');
-        }
-      }
-      js8Report.innerHTML = lines.join('<br>');
-    });
-  }
-}
 if (setMercuryEnable) {
   setMercuryEnable.addEventListener('change', () => {
     mercuryConfig.classList.toggle('hidden', !setMercuryEnable.checked);
@@ -14525,13 +14475,6 @@ async function openSettingsDialog(tab) {
   setTciPort.value = s.tciPort || 50001;
   setTciMaxAge.value = s.tciMaxAge != null ? s.tciMaxAge : 15;
   tciConfig.classList.toggle('hidden', !s.tciSpots);
-  if (setJs8Enable) {
-    setJs8Enable.checked = s.enableJs8Call === false;   // ticked = don't read it
-    if (setJs8Path) setJs8Path.value = s.js8Path || '';
-    if (setJs8Port) setJs8Port.value = s.js8Port || '';
-    if (setJs8RigName) setJs8RigName.value = s.js8RigName || '';
-
-  }
   if (setMercuryEnable) {
     setMercuryEnable.checked = s.enableMercury === true;
     setMercuryPath.value = s.mercuryPath || '';
@@ -15301,14 +15244,6 @@ settingsSave.addEventListener('click', async () => {
     tciHost: tciHostVal,
     tciPort: tciPortVal,
     tciMaxAge: tciMaxAgeVal,
-    ...(setJs8Enable ? {
-      // Ticked means DON'T. Unticked stores undefined so the bridge stays on
-      // auto-detect rather than being pinned on for a machine without JS8Call.
-      enableJs8Call: setJs8Enable.checked ? false : undefined,
-      js8Path: (setJs8Path && setJs8Path.value.trim()) || '',
-      js8Port: parseInt(setJs8Port && setJs8Port.value, 10) || 0,
-      js8RigName: (setJs8RigName && setJs8RigName.value.trim()) || '',
-    } : {}),
     ...(setMercuryEnable ? {
       enableMercury: setMercuryEnable.checked,
       mercuryPath: setMercuryPath.value.trim(),

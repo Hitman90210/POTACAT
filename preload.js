@@ -363,7 +363,6 @@ contextBridge.exposeInMainWorld('api', {
   // JS8Call bridge — open the message view, and read JS8Call's own config so
   // Settings can report exactly what needs changing in it.
   js8PopoutOpen: () => ipcRenderer.send('js8call-popout-open'),
-  js8CheckSetup: () => ipcRenderer.invoke('js8call-check-setup'),
   onJs8Status: (cb) => ipcRenderer.on('js8call-status', (_e, s) => cb(s)),
   mercuryListDevices: () => ipcRenderer.invoke('mercury-list-devices'),
   jtcatSetUltracat: (on) => ipcRenderer.send('jtcat-set-ultracat', on),
