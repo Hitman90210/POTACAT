@@ -325,6 +325,32 @@ test('activity-state shapes detail.unread for guests, live and hydrated', () => 
   assert.strictEqual(owner._sent.find((m) => m.type === 'activity-state').detail.unread, 5);
 });
 
+// ── QSO logging over the wire ───────────────────────────────────────────────
+
+test('js8-log-prefill is registered BOTH ways and refused for guests', () => {
+  assert.ok(protocol.isKnownType('js8-log-prefill'));
+  assert.strictEqual(protocol.describe('js8-log-prefill').dir, protocol.Dir.BOTH);
+
+  const rs = new RemoteServer();
+  const guest = fakeWs();
+  guest._passSession = { code: 'G' };
+  rs._client = guest;
+  let emitted = 0;
+  rs.on('js8-log-prefill', () => { emitted++; });
+  rs._handleMessage(guest, { type: 'js8-log-prefill', id: 'KN4CRD', reqId: 'L1' }, {});
+  assert.strictEqual(emitted, 0, 'logging writes the OWNER logbook — refused');
+  assert.strictEqual(guest._sent[0].type, 'js8-send-result');
+  assert.strictEqual(guest._sent[0].reqId, 'L1');
+
+  const owner = fakeWs();
+  rs._client = owner;
+  rs._handleMessage(owner, { type: 'js8-log-prefill', id: 'KN4CRD' }, {});
+  assert.strictEqual(emitted, 1, 'owner request reaches main');
+  rs.sendJs8LogPrefill({ id: 'KN4CRD', prefill: { callsign: 'KN4CRD', rstSent: '-05' } });
+  const reply = owner._sent.find((m) => m.type === 'js8-log-prefill');
+  assert.strictEqual(reply.prefill.rstSent, '-05');
+});
+
 test('sendJs8Thread and sendJs8SendResult reach the live client', () => {
   const rs = new RemoteServer();
   const ws = fakeWs();

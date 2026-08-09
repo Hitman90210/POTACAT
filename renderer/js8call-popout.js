@@ -174,6 +174,21 @@
       (stn && stn.snr !== null && stn.snr !== undefined
         ? '<span class="mono num">' + esc(snrText(stn.snr)) + ' dB</span>' : '') +
       (stn ? '<span style="margin-left:auto;">heard ' + esc(ago(stn.utc)) + ' ago</span>' : '');
+    // The conversation IS the QSO record — log it from where it lives.
+    // Groups are nets, not QSOs, so no button there.
+    if (!th.isGroup) {
+      var logBtn = document.createElement('button');
+      logBtn.className = 'jc-btn';
+      logBtn.textContent = 'Log';
+      logBtn.title = 'Log this conversation as a QSO (reports and times come from the exchange)';
+      logBtn.style.marginLeft = stn ? '8px' : 'auto';
+      logBtn.addEventListener('click', function () {
+        window.api.logThread(th.id).then(function (r) {
+          if (r && !r.ok) note(esc(r.error || 'Nothing to log.'), 'err');
+        }).catch(function () {});
+      });
+      headEl.appendChild(logBtn);
+    }
 
     // The folded net, stated rather than hidden — it is the difference between
     // "quiet band" and "we chose not to show you 40 heartbeats".

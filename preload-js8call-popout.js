@@ -36,6 +36,11 @@ contextBridge.exposeInMainWorld('api', {
   // main owns the addressing rules.
   send: (text, to) => ipcRenderer.invoke('js8call-send', { text, to }),
 
+  // Log this conversation as a QSO. Main extracts the exchange (reports each
+  // way, latest-session times, grid, dial+offset) and opens the standard Log
+  // window prefilled — the same door the spot Log button uses.
+  logThread: (id) => ipcRenderer.invoke('js8-log-prefill', id),
+
   // Conversations. State is owned by main (lib/js8call-threads.js) so unread
   // counts survive this window closing — an inbox that forgets is a log.
   threads: () => ipcRenderer.invoke('js8call-threads'),

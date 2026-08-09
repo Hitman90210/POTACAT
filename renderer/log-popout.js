@@ -661,9 +661,12 @@ function _applyPopoutTheme(payload) {
     selectChip(p.type || 'dx');
     if (p.type && p.type !== 'dx') refInput.value = String(p.reference || '').toUpperCase();
     if (refNameEl) refNameEl.textContent = p.parkName || '';
+    // JS8 (and future digi prefills) carry real signal reports — an SNR each
+    // way, extracted from the conversation itself. Honor them; the 599/59
+    // default is only for prefills that carry none.
     const rst = CW_DIGI_MODES.has(modeSelect.value) ? '599' : '59';
-    rstSentInput.value = rst;
-    rstRcvdInput.value = rst;
+    rstSentInput.value = p.rstSent || rst;
+    rstRcvdInput.value = p.rstRcvd || rst;
     if (callInput.value) scheduleLookup();
     rstSentInput.focus();
     rstSentInput.select();

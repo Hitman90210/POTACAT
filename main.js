@@ -276,6 +276,8 @@ const { MercuryClient } = require('./lib/mercury-client');
 const { Js8Threads } = require('./lib/js8call-threads');
 const js8Addr = require('./lib/js8call-threads');   // composeDirected / isAddressed
 const { Js8RxAssembler } = require('./lib/js8-rx-assembler');
+const { extractQsoFromThread } = require('./lib/js8-qso');
+const wsprDaily = require('./lib/wspr/daily');
 const radioOwnerLib = require('./lib/radio-owner');
 const { attachMercuryRadioBridge } = require('./lib/mercury-radio-bridge');
 const mercuryAudioBridge = require('./lib/mercury-audio-bridge');
@@ -5180,6 +5182,17 @@ function js8Transmit(text, to) {
   return { ok: true, text: t, frames };
 }
 
+/** Log prefill for a JS8 thread — shared by the desktop IPC and the phone.
+ *  The extraction itself is lib/js8-qso.js (pure, tested). */
+function js8LogPrefillRemote(id) {
+  const eng = js8Engine();
+  return extractQsoFromThread(js8Threads.thread(id), {
+    heard: js8Heard,
+    dialHz: _currentFreqHz || 0,
+    submode: eng ? eng._submodeName : (settings.js8Submode || 'NORMAL'),
+  });
+}
+
 // ── heartbeat scheduler ──────────────────────────────────────────────────────
 // "We def need hb" (Casey 2026-08-09). A station transmitting unprompted on
 // a timer is automatic operation, so this carries the same Part-97 posture
@@ -5227,6 +5240,31 @@ let _sstvDecode = null; // { mode, startedAt, updatedAt, line, totalLines }
  *  stays serveable until the next session starts fresh. */
 let _wsprSession = null; // { startedAt, spots: [], count, active }
 const WSPR_SESSION_CAP = 500;
+// Per-UTC-day WSPR counters (lib/wspr/daily.js — pure; this side owns the
+// file). Loaded lazily on first fold so app.getPath is ready.
+let _wsprDailyState = null;
+let _wsprDailySaveTimer = null;
+function wsprDailyPath() { return path.join(app.getPath('userData'), 'wspr-daily.json'); }
+function wsprDailyFold(ev) {
+  if (_wsprDailyState === null) {
+    try { _wsprDailyState = JSON.parse(fs.readFileSync(wsprDailyPath(), 'utf8')); }
+    catch { _wsprDailyState = { days: {}, current: '' }; }
+  }
+  const r = wsprDaily.fold(_wsprDailyState, ev);
+  _wsprDailyState = r.state;
+  if (r.rolledOver) {
+    // Exactly once per rollover — yesterday's report, in one line.
+    sendCatLog('[JTCAT] ' + wsprDaily.summarize(r.rolledOver));
+  }
+  if (!_wsprDailySaveTimer) {
+    _wsprDailySaveTimer = setTimeout(() => {
+      _wsprDailySaveTimer = null;
+      try { fs.writeFileSync(wsprDailyPath(), JSON.stringify(_wsprDailyState)); }
+      catch (e) { console.error('[WSPR] daily save failed:', e.message); }
+    }, 5000);
+  }
+  return r.day;
+}
 let _activityTimer = null;
 let _activityLastJson = '';
 let _activitySince = 0;
@@ -5333,12 +5371,14 @@ function wsprSessionAppend(spots) {
   if (_wsprSession.spots.length > WSPR_SESSION_CAP) {
     _wsprSession.spots.splice(0, _wsprSession.spots.length - WSPR_SESSION_CAP);
   }
+  const day = wsprDailyFold({ nowMs: Date.now(), spots });
   if (remoteServer) {
     remoteServer.broadcastWsprSession({
       startedAt: _wsprSession.startedAt,
       count: _wsprSession.count,
       active: true,
       spots: _wsprSession.spots,
+      today: wsprDaily.todayPayload(day),
     });
   }
   pushActivityState();
@@ -5349,6 +5389,10 @@ function wsprSessionAppend(spots) {
 function wsprSessionEnd() {
   if (!_wsprSession || !_wsprSession.active) return;
   _wsprSession.active = false;
+  // The sit-down moment: the operator stopping WSPR wants the day's answer.
+  if (_wsprDailyState && _wsprDailyState.days && _wsprDailyState.days[_wsprDailyState.current]) {
+    sendCatLog('[JTCAT] ' + wsprDaily.summarize(_wsprDailyState.days[_wsprDailyState.current]) + ' (so far today)');
+  }
   if (remoteServer) {
     remoteServer.broadcastWsprSession({
       startedAt: _wsprSession.startedAt,
@@ -7422,6 +7466,30 @@ function pskrQueueDecodes(data) {
   }
 }
 
+// WSPR receptions to PSKReporter, alongside the FT8/FT4 path. WSPR spots
+// carry their ABSOLUTE RF frequency (freqMHz from wsprd), so no dial math.
+// Same pskrUpload gate, same pending-map dedup (strongest per call).
+function pskrQueueWsprSpots(spots) {
+  if (!settings.pskrUpload) return;
+  const myCall = (settings.myCallsign || '').toUpperCase();
+  const nowSec = Math.floor(Date.now() / 1000);
+  for (const s of (spots || [])) {
+    const call = (s.call || '').toUpperCase();
+    if (!call || call === myCall) continue;
+    if (!/^[A-Z0-9/]{3,}$/.test(call)) continue;
+    if (!Number.isFinite(s.freqMHz) || s.freqMHz <= 0) continue;
+    const rep = {
+      call, freqHz: Math.round(s.freqMHz * 1e6),
+      snr: typeof s.snr === 'number' ? s.snr : 0,
+      mode: 'WSPR',
+      grid: (s.grid && /^[A-R]{2}\d{2}$/i.test(s.grid)) ? s.grid.toUpperCase() : '',
+      timeSec: nowSec,
+    };
+    const prev = _pskrPending.get(call);
+    if (!prev || rep.snr > prev.snr) _pskrPending.set(call, rep);
+  }
+}
+
 function pskrFlush() {
   if (!settings.pskrUpload) { _pskrPending.clear(); return; }
   if (_pskrPending.size === 0) return;
@@ -7443,7 +7511,13 @@ function pskrFlush() {
   const sock = dgram.createSocket('udp4');
   sock.send(datagram, port, PSKR_TX_HOST, (err) => {
     if (err) sendCatLog('[PSKReporter] send failed: ' + err.message);
-    else sendCatLog(`[PSKReporter] reported ${reports.length} decode${reports.length !== 1 ? 's' : ''} to ${PSKR_TX_HOST}:${port}${settings.pskrTest ? ' (TEST)' : ''} — verify at pskreporter.info`);
+    else {
+      sendCatLog(`[PSKReporter] reported ${reports.length} decode${reports.length !== 1 ? 's' : ''} to ${PSKR_TX_HOST}:${port}${settings.pskrTest ? ' (TEST)' : ''} — verify at pskreporter.info`);
+      // Daily counter — SENT, not received: UDP has no ack and the rollup's
+      // field name (sentPskr) keeps that honest.
+      const wsprSent = reports.filter((r) => r.mode === 'WSPR').length;
+      if (wsprSent) wsprDailyFold({ nowMs: Date.now(), sentPskr: wsprSent });
+    }
     try { sock.close(); } catch {}
   });
 }
@@ -8693,6 +8767,7 @@ function startJtcat(mode) {
     if (remoteServer && remoteServer.hasClient()) remoteServer.broadcastJtcatWsprSpots(payload);
     // Session accumulation — the idle-results feed (caches with no client).
     wsprSessionAppend(spots);
+    pskrQueueWsprSpots(spots);
     // "Where am I heard" — refresh the beacon footprint from wspr.live (throttled).
     maybeFetchWsprHeard();
     // Band hopping — QSY to the next band for the upcoming cycle. Fires near
@@ -8710,6 +8785,7 @@ function startJtcat(mode) {
           { dialMHz: ft8Engine._wsprDialMHz, dateYYMMDD, timeHHMM, version: 'POTACAT' }
         );
         if (res.uploaded) sendCatLog(`[JTCAT] WSPR: reported ${res.uploaded} spot${res.uploaded > 1 ? 's' : ''} to wsprnet.org`);
+        if (res.uploaded) wsprDailyFold({ nowMs: Date.now(), uploadedWsprnet: res.uploaded });
         if (res.failed) sendCatLog(`[JTCAT] WSPR: ${res.failed} wsprnet upload(s) failed`);
       } catch (e) {
         sendCatLog('[JTCAT] WSPR wsprnet upload error: ' + (e && e.message || e));
@@ -14845,6 +14921,13 @@ function connectRemote() {
     js8PushThreads(null);
   });
   remoteServer.on('js8-thread-closed', () => js8Threads.setOpen(null));
+  remoteServer.on('js8-log-prefill', ({ id }) => {
+    markUserActive();
+    js8HbLastActivity = Date.now();   // logging IS operator activity
+    const q = js8LogPrefillRemote(id);
+    remoteServer.sendJs8LogPrefill({ id, prefill: q || null,
+      error: q ? undefined : 'Nothing in that conversation to log.' });
+  });
 
   remoteServer.on('jtcat-set-tx-freq', ({ hz }) => {
     // Operator by definition — only the mobile device's TX control sends
@@ -23631,6 +23714,27 @@ app.whenReady().then(() => {
     return { thread: js8Threads.thread(id), list: js8Threads.list(), unread: js8Threads.totalUnread };
   });
   ipcMain.on('js8call-thread-closed', () => js8Threads.setOpen(null));
+
+  ipcMain.handle('js8-log-prefill', (_e, id) => {
+    markUserActive();
+    // ONE extraction implementation for both surfaces (js8LogPrefillRemote →
+    // lib/js8-qso.js) — desktop and mobile can never disagree about what an
+    // exchange said.
+    const q = js8LogPrefillRemote(id);
+    if (!q) return { ok: false, error: 'Nothing in that conversation to log.' };
+    // Route through the standard Log window flow (same door the spot Log
+    // button uses). force:true — a Log click is deliberate.
+    ipcMain.emit('log-popout-open', null, {
+      callsign: q.callsign,
+      freqKhz: q.freqKhz,
+      mode: 'JS8',
+      rstSent: q.rstSent,
+      rstRcvd: q.rstRcvd,
+      type: 'dx',
+      force: true,
+    });
+    return { ok: true, prefill: q };
+  });
 
   ipcMain.on('mercury-popout-open', () => openMercuryPopout());
   ipcMain.on('mercury-popout-minimize', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.minimize(); });
