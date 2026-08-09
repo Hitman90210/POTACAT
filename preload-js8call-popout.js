@@ -27,9 +27,13 @@ contextBridge.exposeInMainWorld('api', {
   // mode and every audio route and guard applies.
   start: () => ipcRenderer.invoke('js8-start'),
   stop: () => ipcRenderer.invoke('js8-stop'),
-  // Heartbeat scheduler: {enabled?, intervalMin?}. Session-only enable with
-  // a 30-minute attended watchdog (Part 97) — main owns the policy.
+  // Heartbeat scheduler (the Auto toggle): {enabled?, intervalMin?}.
+  // Session-only enable, 30-minute attended watchdog (Part 97).
   heartbeat: (opts) => ipcRenderer.invoke('js8-heartbeat', opts),
+  // Send ONE heartbeat now (the HB button), every press.
+  sendHeartbeat: () => ipcRenderer.invoke('js8-send-hb'),
+  // Send-result / refusal channel (SWR trip, radio busy, etc.).
+  onSendResult: (cb) => ipcRenderer.on('js8call-send-result', (_e, r) => cb(r)),
 
   // Transmit. Returns {ok, error, text, frames} so a refusal can be shown
   // rather than silently doing nothing. Pass the destination separately:

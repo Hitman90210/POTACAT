@@ -1349,6 +1349,7 @@ let _swrRatioClearTimer = null;
 // or explicit override). SWR is only measurable DURING TX, so there is
 // deliberately no pre-TX prediction from stale readings.
 let _swrTripped = false;
+let _swrTripMessage = '';       // the operator-readable trip reason, for the JS8 banner
 let _swrTrippedBand = '';       // band at trip time — leaving it clears the latch
 let _swrGuardHits = 0;          // consecutive over-limit frames (debounce = 3)
 let _swrGuardSuppressUntil = 0; // no tripping during/just after an ATU tune
@@ -1361,12 +1362,15 @@ function swrGuardMax() {
 function clearSwrTrip(reason) {
   if (!_swrTripped) return;
   _swrTripped = false;
+  _swrTripMessage = '';
   _swrTrippedBand = '';
   _swrGuardHits = 0;
   sendCatLog(`[SWR GUARD] TX re-enabled (${reason}).`);
   if (win && !win.isDestroyed()) {
     win.webContents.send('app-notice', { message: `TX re-enabled — SWR guard reset (${reason})`, duration: 5000 });
   }
+  // Clear the JS8 window's persistent SWR banner (js8-state.swrTripped).
+  try { js8PushStatus(); } catch { /* pre-init */ }
 }
 
 // An ATU tune transmits its own carrier through the WORST of the match while
@@ -1383,6 +1387,7 @@ function tripSwrGuard(swr) {
   _swrGuardHits = 0;
   _swrTrippedBand = _currentFreqHz ? (freqToBand(_currentFreqHz / 1e6) || '') : '';
   const msg = `TX aborted — SWR ${swr.toFixed(1)}:1 exceeded the ${swrGuardMax().toFixed(1)}:1 limit. Run the ATU or change bands to re-enable TX (or turn off the SWR guard in Settings > My Rigs).`;
+  _swrTripMessage = msg;
   sendCatLog('[SWR GUARD] ' + msg);
   // Kill whatever is transmitting, through the normal teardown paths.
   if (jtcatTuneState.active) stopJtcatTune();
@@ -1399,6 +1404,10 @@ function tripSwrGuard(swr) {
   if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
     jtcatPopoutWin.webContents.send('jtcat-qso-state', { phase: 'error', error: msg });
   }
+  // JS8 window: the persistent SWR banner + ATU affordance. The window
+  // shows no CAT log, so before this a JS8 transmission just died at ~0.5s
+  // with nothing on screen (Casey 2026-08-09).
+  try { js8PushStatus(); } catch { /* pre-init */ }
   // Mobile devices render tune-blocked as a visible error — reuse it.
   if (remoteServer && remoteServer.running) {
     remoteServer.sendToClient({ type: 'tune-blocked', reason: msg });
@@ -5119,6 +5128,38 @@ function js8TuneBand(band) {
   return { ok: true, freqKhz };
 }
 
+/** Is the rig already sitting on a JS8 calling dial (±2 kHz)? Then a
+ *  start-QSY would be an unwanted yank; leave the operator where they are. */
+function js8OnJs8Dial() {
+  if (!_currentFreqHz) return false;
+  const khz = _currentFreqHz / 1000;
+  return Object.values(JS8_DIAL_KHZ).some((d) => Math.abs(khz - d) < 2);
+}
+
+/** The band JS8 should open on: 20m by day, 40m by night — grid-accurate via
+ *  the same sun-times helper Auto-SSTV uses, so it tracks the greyline rather
+ *  than a naive clock split. Casey 2026-08-09: "20m in day, 40m at night."
+ *  Falls back to 20m with no grid set. */
+function js8DefaultBand() {
+  const pos = gridToLatLon(settings.grid);
+  if (!pos) return '20m';
+  const now = new Date();
+  const utcH = now.getUTCHours() + now.getUTCMinutes() / 60;
+  const sun = getSunTimes(pos.lat, pos.lon, now);
+  const daytime = utcH >= sun.sunrise && utcH < sun.sunset;
+  return daytime ? '20m' : '40m';
+}
+
+/** On JS8 start, land on a JS8 calling frequency if the rig isn't already on
+ *  one — the bad UX Casey hit was starting JS8 and sitting on whatever the
+ *  dial happened to be (band picker showing "Band", the net nowhere). */
+function js8QsyOnStart() {
+  if (js8OnJs8Dial()) return;
+  const band = js8DefaultBand();
+  sendCatLog(`[JS8] opening on ${band} (${js8DefaultBand() === '20m' ? 'daytime' : 'night'} default) — rig was off the JS8 dials`);
+  js8TuneBand(band);
+}
+
 function js8PushStatus() {
   const eng = js8Engine();
   const state = {
@@ -5130,6 +5171,11 @@ function js8PushStatus() {
     heartbeatMin: js8HbIntervalMin(),
     dialHz: _currentFreqHz || 0,
     band: _currentFreqHz ? (freqToBand(_currentFreqHz / 1e6) || '') : '',
+    // The SWR-guard latch, so the JS8 window can show a persistent error and
+    // an ATU affordance instead of a transmission that silently died at ~0.5s
+    // (Casey 2026-08-09: "no error showed"). Cleared by ATU/band change.
+    swrTripped: _swrTripped,
+    swrMessage: _swrTripped ? _swrTripMessage : '',
   };
   sendJs8Status({ ...state, connected: state.running }); // legacy popout field
   // Same snapshot to the phone (cached + hydrated at connect).
@@ -5450,25 +5496,65 @@ function wsprSessionEnd() {
 }
 
 let _js8HbLastSent = 0;
+
+/** Build + arm one heartbeat frame. Shared by the manual HB button and the
+ *  repeating scheduler. Returns {ok, error} — the caller surfaces refusals.
+ *  Does NOT gate on the interval or the watchdog (those belong to the
+ *  scheduler, not to a deliberate operator press). */
+function js8QueueHeartbeat() {
+  const eng = js8Engine();
+  if (!eng) return { ok: false, error: 'JS8 is not running.' };
+  if (eng._txActive || eng.txQueueLength > 0) {
+    return { ok: false, error: 'Already transmitting — heartbeat not queued.' };
+  }
+  if (radioOwner !== 'none' && radioOwner !== 'jtcat') {
+    return { ok: false, error: `the radio is busy (${radioOwner}).` };
+  }
+  const grid = String(settings.grid || '').slice(0, 4).toUpperCase();
+  eng.setStation({ call: settings.myCallsign, grid });
+  const frames = eng.setTxText(grid ? `HB ${grid}` : 'HB');
+  if (!frames) return { ok: false, error: 'Set your callsign in Settings first.' };
+  eng._txEnabled = true;
+  _js8HbLastSent = Date.now();
+  return { ok: true };
+}
+
+/** Manual HB press — send one heartbeat NOW, every press (like CQ). Attended
+ *  by definition, so it ignores the interval gate; the SWR guard / radio-owner
+ *  refusals still apply and now surface visibly (Casey 2026-08-09: "let me
+ *  manually send a HB as many times as I want"). */
+function js8SendHeartbeatNow() {
+  js8HbLastActivity = Date.now();
+  if (_swrTripped) {
+    // The transmission would be refused at the dispatch anyway; say why here
+    // rather than let it look like the button did nothing.
+    const r = { ok: false, error: 'SWR guard tripped — run the ATU to re-enable TX.' };
+    if (js8PopoutWin && !js8PopoutWin.isDestroyed()) {
+      js8PopoutWin.webContents.send('js8call-send-result', r);
+    }
+    return r;
+  }
+  const r = js8QueueHeartbeat();
+  if (r.ok) sendCatLog('[JS8] heartbeat sent (manual)');
+  else if (js8PopoutWin && !js8PopoutWin.isDestroyed()) {
+    js8PopoutWin.webContents.send('js8call-send-result', r);
+  }
+  return r;
+}
+
 function js8HbTick() {
   if (!js8HbEnabled) return;
   const eng = js8Engine();
   if (!eng) return;
   if (Date.now() - js8HbLastActivity > JS8_HB_WATCHDOG_MS) {
     js8SetHeartbeat(false);
-    sendCatLog('[JS8] heartbeat stopped — no operator activity for 30 min (Part 97: this must be attended). Toggle it back on when you return.');
+    sendCatLog('[JS8] auto-heartbeat stopped — no operator activity for 30 min (Part 97: this must be attended). Turn it back on when you return.');
     return;
   }
   if (Date.now() - _js8HbLastSent < js8HbIntervalMin() * 60 * 1000) return;
-  if (eng._txActive || eng.txQueueLength > 0) return;    // never preempt a message
-  if (radioOwner !== 'none' && radioOwner !== 'jtcat') return;
-  const grid = String(settings.grid || '').slice(0, 4).toUpperCase();
-  eng.setStation({ call: settings.myCallsign, grid });
-  const frames = eng.setTxText(grid ? `HB ${grid}` : 'HB');
-  if (!frames) return;
-  eng._txEnabled = true;
-  _js8HbLastSent = Date.now();
-  sendCatLog(`[JS8] heartbeat queued: @HB HB ${grid}`);
+  if (_swrTripped) return;                                 // don't beacon into a bad match
+  const r = js8QueueHeartbeat();                           // shares the manual builder
+  if (r.ok) sendCatLog(`[JS8] auto-heartbeat queued (every ${js8HbIntervalMin()} min)`);
 }
 
 /** Stop JTCAT keying because an external transmitter took the radio. */
@@ -8406,6 +8492,17 @@ function startJtcat(mode) {
   // the inbox (js8HandleRx → assembler → lib/js8call-threads.js), not the QSO
   // state machine. TX rides the shared tx-start dispatch below unchanged.
   ft8Engine.on('js8-rx', (d) => js8HandleRx(d));
+  // On-air RX diagnostic: log the first few decode-window firings and then
+  // one a minute. "window fired, 0 decodes" = feed/anchor OK, alignment/SNR
+  // to chase; total silence = the window never fires (feed or anchor). Turns
+  // the next "no decodes" report into data (K3SBP 2026-08-09).
+  ft8Engine.on('decode-ran', (m) => {
+    _js8DecodeRanCount = (_js8DecodeRanCount || 0) + 1;
+    if (_js8DecodeRanCount <= 4 || Date.now() - (_js8DecodeRanLog || 0) > 60000) {
+      _js8DecodeRanLog = Date.now();
+      sendCatLog(`[JS8] decode window fired (k=${m.k}, ${m.decodes} decode${m.decodes === 1 ? '' : 's'})`);
+    }
+  });
   ft8Engine.on('js8-tx-done', ({ message }) => {
     sendCatLog(`[JS8] message fully transmitted: ${message}`);
     js8PushStatus();
@@ -8427,6 +8524,10 @@ function startJtcat(mode) {
       grid: (settings.grid || '').toUpperCase(),
     };
     js8Threads.setMyCall(js8Station.call);
+    // Land on a JS8 calling frequency (20m day / 40m night) unless the rig is
+    // already on one — opening JS8 onto a dead dial was the "shows Band, no
+    // QSY" complaint (Casey 2026-08-09).
+    js8QsyOnStart();
     js8PushStatus();
   }
   // The activity feed follows every engine (re)build.
@@ -14964,6 +15065,11 @@ function connectRemote() {
     js8HbLastActivity = Date.now();   // sending IS operator activity
     const r = js8Transmit(text, to);
     remoteServer.sendJs8SendResult({ ok: !!r.ok, error: r.error, text: r.text, frames: r.frames, reqId });
+  });
+  remoteServer.on('js8-send-hb', ({ reqId } = {}) => {
+    markUserActive();
+    const r = js8SendHeartbeatNow();
+    remoteServer.sendJs8SendResult({ ok: !!r.ok, error: r.error, reqId });
   });
   remoteServer.on('js8-thread-open', ({ id, guest }) => {
     // A GUEST read is genuinely read-only: no setOpen (that marks the
@@ -23764,6 +23870,10 @@ app.whenReady().then(() => {
     else js8PushStatus();
     return { ok: true, enabled: js8HbEnabled, intervalMin: js8HbIntervalMin() };
   });
+  // Manual HB: send one now, every press (momentary, like CQ). Separate from
+  // the Auto scheduler above (Casey 2026-08-09: "let me manually send a HB as
+  // many times as I want").
+  ipcMain.handle('js8-send-hb', () => { markUserActive(); return js8SendHeartbeatNow(); });
   // Transmit. Always operator-initiated — there is no automatic path here, and
   // the reply carries the refusal reason so the popout can show it rather than
   // appearing to have done nothing.
@@ -25556,6 +25666,12 @@ app.whenReady().then(() => {
         break;
       }
       case 'atu-tune': {
+        // Running the tuner is the "match plausibly changed" event that clears
+        // an SWR-guard latch. The Flex setAtu wrap already calls this; the CAT
+        // path (cat.startTune below) did not, so a latched non-Flex rig could
+        // never clear via its own ATU button (Casey 2026-08-09, Flex works —
+        // this is the CAT-rig correctness half). Idempotent; safe to double-call.
+        noteAtuTuneStarted();
         // External RF-sensing tuner (LDG Z-100plus / MFJ) path — emits a low-
         // power CW carrier so the tuner can match. Internal CAT tune is used
         // only when no external tuner is configured on the active rig.

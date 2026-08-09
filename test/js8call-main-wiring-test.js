@@ -134,20 +134,33 @@ test('js8Transmit routes through the engine and refuses honestly', () => {
 // ── the heartbeat scheduler is attended-only ─────────────────────────────────
 
 test('the heartbeat watchdog stops an unattended scheduler', () => {
+  // Frame-building moved to js8QueueHeartbeat (shared with the manual HB
+  // button); the SCHEDULER tick (js8HbTick) still owns the Part-97 gate.
   const body = fnBody('js8HbTick');
   assert.ok(body.includes('JS8_HB_WATCHDOG_MS'),
     'the 30-minute attended check is the Part-97 line and must gate every tick');
   assert.ok(body.includes('js8SetHeartbeat(false)'),
     'an expired watchdog must stop the scheduler, not just skip a beat');
-  // The check must come BEFORE the send.
-  assert.ok(body.indexOf('JS8_HB_WATCHDOG_MS') < body.indexOf('setTxText'),
+  // The watchdog must gate BEFORE the tick reaches the queue helper.
+  assert.ok(body.indexOf('JS8_HB_WATCHDOG_MS') < body.indexOf('js8QueueHeartbeat'),
     'watchdog before transmission, not after');
 });
 
 test('the heartbeat never preempts a message in flight', () => {
-  const body = fnBody('js8HbTick');
-  assert.ok(body.includes('txQueueLength'),
-    'a queued operator message outranks the heartbeat');
+  // The refuse-if-busy guard lives in the shared queue builder, so BOTH the
+  // scheduler and the manual button honor it.
+  const body = fnBody('js8QueueHeartbeat');
+  assert.ok(body.includes('txQueueLength') && body.includes('_txActive'),
+    'a queued or in-flight message outranks any heartbeat');
+});
+
+test('the manual HB button is momentary and repeatable, not a toggle', () => {
+  // Casey 2026-08-09: "let me manually send a HB as many times as I want."
+  const body = fnBody('js8SendHeartbeatNow');
+  assert.ok(body.includes('js8QueueHeartbeat'), 'sends via the shared builder');
+  assert.ok(body.includes('_swrTripped'),
+    'a tripped SWR guard must say why, not look like the button did nothing');
+  assert.ok(body.includes('js8HbLastActivity'), 'a press is operator activity');
 });
 
 test('the heartbeat enable is session-only', () => {

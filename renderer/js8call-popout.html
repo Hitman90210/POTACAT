@@ -50,6 +50,20 @@
     .jc-cyclebar div { height: 100%; width: 0%;
       background: var(--accent-green-btn, #4ecca3); }
     .jc-cyclebar div.tx { background: var(--accent-red, #e94560); }
+    /* SWR error banner — red, persistent, with the ATU recovery right there. */
+    .jc-swr { display: flex; align-items: center; gap: 10px; padding: 7px 12px;
+      background: var(--accent-red, #e94560); color: #fff; font-size: 12px;
+      font-weight: 600; flex-shrink: 0; }
+    .jc-swr[hidden] { display: none; }
+    .jc-swr span { flex: 1; }
+    .jc-swr .jc-btn { background: #fff; color: var(--accent-red, #e94560);
+      border-color: #fff; font-weight: 700; flex: none; }
+    /* The bar ATU pulses red while a trip is latched, so the fix is obvious. */
+    .jc-btn.jc-atu-alert { background: var(--accent-red, #e94560); color: #fff;
+      border-color: var(--accent-red, #e94560); animation: jc-pulse 1s ease-in-out infinite; }
+    /* Auto-HB toggle reads as a switch when on. */
+    .jc-btn.auto-on { background: var(--accent-green-btn, #4ecca3); color: #000;
+      border-color: var(--accent-green-btn, #4ecca3); }
     .jc-tx { margin-left: auto; padding: 2px 8px; border-radius: 3px; font-weight: 700;
       border: 1px solid var(--border-primary); color: var(--text-tertiary, #666); flex: none; }
     .jc-tx.on { background: var(--accent-red, #e94560); color: #fff; border-color: var(--accent-red, #e94560);
@@ -204,7 +218,8 @@
     <span class="mono num" id="jc-dial" title="Radio frequency"></span>
     <span class="jc-acts" id="jc-acts" hidden>
       <button class="jc-btn" id="jc-cq" title="Call CQ on JS8 now">CQ</button>
-      <button class="jc-btn" id="jc-hb" title="Heartbeat every few minutes while you are at the radio">HB</button>
+      <button class="jc-btn" id="jc-hb" title="Send a heartbeat now (every press)">HB</button>
+      <button class="jc-btn" id="jc-hb-auto" title="Auto-heartbeat every few minutes while you're at the radio (stops after 30 min idle)">Auto</button>
     </span>
     <button class="jc-btn" id="jc-atu" title="Run the radio's antenna tuner match cycle">ATU</button>
     <button class="jc-btn" id="jc-power" title="Start or stop JS8">Start</button>
@@ -214,6 +229,14 @@
   <!-- Period progress: the thin strip under the bar is the FT8-style cycle
        bar — where we are inside the current 15 s interval. -->
   <div class="jc-cyclebar" id="jc-cyclebar" hidden><div id="jc-cyclefill"></div></div>
+
+  <!-- SWR-guard error: persistent (the latch persists) until the ATU runs or
+       the band changes. The Flex folds power back but never refuses to key, so
+       a bad match silently aborted TX with nothing on screen before this. -->
+  <div class="jc-swr" id="jc-swr" hidden>
+    <span id="jc-swr-msg">TX blocked — SWR too high.</span>
+    <button class="jc-btn" id="jc-swr-atu">Run ATU</button>
+  </div>
 
   <!-- The start page. JS8 is native — there is genuinely nothing to set up,
        so this is one sentence, one control, one button. -->

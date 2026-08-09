@@ -405,15 +405,11 @@
 
   // ATU — momentary match cycle through the one rig-control dispatcher.
   // Not a toggle: every press starts a tune (same behavior as the desktop,
-  // JTCAT popout, VFO popout and the mobile device).
+  // JTCAT popout, VFO popout and the mobile device). runAtu (defined below,
+  // shared with the SWR banner's Run-ATU button) is the one implementation.
   var atuBtn = el('jc-atu');
   var atuTimer = null;
-  atuBtn.addEventListener('click', function () {
-    window.api.rigControl({ action: 'atu-tune' });
-    atuBtn.classList.add('tuning');
-    if (atuTimer) clearTimeout(atuTimer);
-    atuTimer = setTimeout(function () { atuBtn.classList.remove('tuning'); atuTimer = null; }, 5000);
-  });
+  atuBtn.addEventListener('click', function () { runAtu(); });
 
   // ── period countdown (the FT8-style cycle clock) ──────────────────────────
   // JS8 periods align to wall-clock UTC boundaries; transmissions begin at
@@ -431,7 +427,19 @@
     cycleFill.className = txNow ? 'tx' : '';
   }, 250);
 
+  // HB = send one now, every press (momentary, like CQ). Repeatable — the
+  // whole point (Casey 2026-08-09). Refusals (SWR trip, busy) come back on
+  // the send-result channel.
   hbBtn.addEventListener('click', async function () {
+    try {
+      var r = await window.api.sendHeartbeat();
+      if (r && !r.ok) note(esc(r.error || 'Heartbeat not sent.'), 'err');
+    } catch (e) { /* ignore */ }
+  });
+
+  // Auto = the repeating scheduler toggle (separate from the momentary HB).
+  var hbAutoBtn = el('jc-hb-auto');
+  hbAutoBtn.addEventListener('click', async function () {
     try {
       var r = await window.api.heartbeat({ enabled: !hbOn, intervalMin: hbMinEl.value });
       hbOn = !!(r && r.enabled);
@@ -440,12 +448,27 @@
   });
 
   function renderHb() {
-    hbBtn.className = 'jc-btn' + (hbOn ? ' hb-on' : '');
-    hbBtn.textContent = 'HB';
-    hbBtn.title = hbOn
-      ? 'Heartbeat is on — turns itself off after 30 minutes without you'
-      : 'Heartbeat every few minutes while you are at the radio';
+    hbAutoBtn.className = 'jc-btn' + (hbOn ? ' auto-on' : '');
+    hbAutoBtn.title = hbOn
+      ? 'Auto-heartbeat is on — turns itself off after 30 minutes without you'
+      : 'Auto-heartbeat every few minutes while you are at the radio';
   }
+
+  // SWR-guard banner: persistent while latched, with the ATU recovery in it.
+  var swrBanner = el('jc-swr'), swrMsg = el('jc-swr-msg'), swrAtu = el('jc-swr-atu');
+  function renderSwr(tripped, message) {
+    swrBanner.hidden = !tripped;
+    if (tripped) swrMsg.textContent = message || 'TX blocked — SWR too high. Run the ATU.';
+    // Make the bar ATU button shout while latched, so the fix is obvious.
+    atuBtn.className = 'jc-btn jc-atu' + (tripped ? ' jc-atu-alert' : '');
+  }
+  function runAtu() {
+    window.api.rigControl({ action: 'atu-tune' });
+    atuBtn.classList.add('tuning');
+    if (atuTimer) clearTimeout(atuTimer);
+    atuTimer = setTimeout(function () { atuBtn.classList.remove('tuning'); atuTimer = null; }, 5000);
+  }
+  swrAtu.addEventListener('click', runAtu);
 
   // ── start / stop ───────────────────────────────────────────────────────────
 
@@ -501,6 +524,15 @@
 
     hbOn = !!(s && s.heartbeat);
     renderHb();
+    renderSwr(!!(s && s.swrTripped), s && s.swrMessage);
+
+    // Live dial + band picker from the status snapshot (also arrives via
+    // cat-frequency; either keeps them current).
+    if (s && s.dialHz) {
+      dialEl.textContent = (s.dialHz / 1e6).toFixed(3) + ' MHz';
+      var sb = bandByRange(s.dialHz);
+      if (sb !== bandEl.value && document.activeElement !== bandEl) bandEl.value = sb;
+    }
 
     actsEl.hidden = !up;
     powerBtn.textContent = up ? 'Stop' : 'Start';
@@ -522,6 +554,11 @@
   });
 
   window.api.onActivity(function () { /* the all-traffic pane is a follow-up */ });
+
+  // Refusals from a manual HB / send (SWR trip, radio busy) land here.
+  window.api.onSendResult(function (r) {
+    if (r && !r.ok) note(esc(r.error || 'Not sent.'), 'err');
+  });
 
   window.api.onTheme(function (t) {
     if (typeof window._applyPopoutTheme === 'function') window._applyPopoutTheme(t);

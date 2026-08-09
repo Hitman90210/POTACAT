@@ -85,3 +85,33 @@ Desktop cross-references: `renderer/js8call-popout.{html,js}` (the
 reference implementation of all three), `main.js` `js8SetHeartbeat` (the
 gate reset), `docs/mobile-handoff-js8-messaging.md` (updated in place —
 the heartbeat bullet and this delta agree).
+
+## 5. HB is now momentary send-now; Auto is the scheduler (2026-08-09)
+
+Correcting #1 above and the earlier "enable sends immediately": the HB
+button is now a **momentary send-one-now** (every press, like CQ), and a
+separate **Auto** toggle owns the repeating scheduler. Wire:
+
+- `js8-send-hb {reqId?}` — NEW C2S, send one heartbeat now. Guest-refused.
+- `js8-heartbeat {enabled, intervalMin}` — unchanged; this is the Auto
+  scheduler (session-only enable, 30-min attended watchdog).
+
+Render two controls: HB (momentary) and Auto (toggle, green when on from
+`js8-state.heartbeat`).
+
+## 6. SWR-guard error surfacing (2026-08-09)
+
+The Flex folds power back on a bad match but never refuses to key, so a
+too-high-SWR transmission aborts after ~0.5 s and LATCHES — previously with
+nothing on screen. Now:
+
+- `js8-state` carries `swrTripped` (bool) and `swrMessage` (string). While
+  `swrTripped`, show a persistent error banner with a **Run ATU** action
+  (`rig-control {action:'atu-tune'}`, which clears the latch on Flex and,
+  as of this change, CAT rigs too). Clears when `swrTripped` goes false
+  (ATU run or band change).
+- A refused send/HB also answers on `js8-send-result {ok:false, error}` —
+  the phone already renders that.
+
+Do the same on your main radio screen if you have one — the guard is not
+JS8-specific; any mode's TX can trip it.
