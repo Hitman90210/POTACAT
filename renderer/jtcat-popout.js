@@ -1458,7 +1458,8 @@ function _applyPopoutTheme(payload) {
       }
       return;
     }
-    var cycleSec = mode === 'WSPR' ? 120 : mode === 'FT2' ? 3.8 : mode === 'FT4' ? 7.5 : 15;
+    var cycleSec = mode === 'WSPR' ? 120 : mode === 'FT2' ? 3.8 : mode === 'FT4' ? 7.5 : 15; // JS8 Normal shares FT8's 15
+
     var cycleMs = cycleSec * 1000;
     var msInto = Date.now() % cycleMs;
     var remaining = (cycleMs - msInto) / 1000;
@@ -1504,9 +1505,15 @@ function _applyPopoutTheme(payload) {
     '20m': 14070, '17m': 18100, '15m': 21070, '12m': 24920, '10m': 28120,
     '6m': 50291,
   };
+  // JS8 dial frequencies (kHz) per band — the JS8Call community defaults.
+  var JS8_BAND_FREQS = {
+    '160m': 1842, '80m': 3578, '60m': 5357, '40m': 7078, '30m': 10130,
+    '20m': 14078, '17m': 18104, '15m': 21078, '12m': 24922, '10m': 28078,
+    '6m': 50318,
+  };
   function updateBandFreqs() {
     var m = modeSelect.value;
-    var table = m === 'WSPR' ? WSPR_BAND_FREQS : m === 'PSK31' ? PSK_BAND_FREQS : m === 'FT2' ? FT2_BAND_FREQS : m === 'FT4' ? FT4_BAND_FREQS : FT8_BAND_FREQS;
+    var table = m === 'WSPR' ? WSPR_BAND_FREQS : m === 'PSK31' ? PSK_BAND_FREQS : m === 'JS8' ? JS8_BAND_FREQS : m === 'FT2' ? FT2_BAND_FREQS : m === 'FT4' ? FT4_BAND_FREQS : FT8_BAND_FREQS;
     document.querySelectorAll('.jtcat-band-btn').forEach(function(btn) {
       var band = btn.dataset.band;
       if (table[band]) btn.dataset.freq = table[band];

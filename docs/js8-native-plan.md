@@ -1,8 +1,15 @@
 # POTACAT — Native JS8 (no JS8Call app, no virtual cables)
 
-Status: **planned, nothing built.** Filed 2026-08-08. Supersedes the JS8Call
-*bridge* architecture (`lib/js8call-client.js` + the audio-cable route), which
-stays in the tree and working until Phase 5 removes it.
+Status: **BUILT 2026-08-09 — all phases.** Commits `e38c5f6` (relicense),
+`6602953` (vendor), `9dc8e9a` (modem addon + varicode port + engine),
+`9069da0` (main.js integration + bridge deletion). All five submodes round
+trip through the real modem (`test/js8-native-test.js`); the full station
+loop — text → frames → period-aligned TX → audio → decode → interpreted
+conversation — closes in `test/js8-engine-test.js`. The bridge and its
+virtual-cable route are deleted. **Remaining: on-air validation** (the
+release gate — nothing here has heard a real signal yet) and the follow-ups
+listed at the end. This document is now the record of what was decided and
+why; the phase list below matches what was built.
 
 Decision: **POTACAT relicenses Apache-2.0 → GPLv3 so JS8Call's codec can be
 compiled in.** Casey, 2026-08-08, after rejecting the virtual-cable path three

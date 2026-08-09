@@ -28634,6 +28634,9 @@ app.whenReady().then(() => {
     const familyOf = (m) => (m === 'PSK31' ? 'psk' : m === 'JS8' ? 'js8' : 'ft');
     if (familyOf(mode) !== familyOf(ft8Engine._mode)) {
       startJtcat(mode);
+      // Picking JS8 opens the conversation window — that is where JS8 lives
+      // (the JTCAT decode pane has nothing to show for a conversation mode).
+      if (mode === 'JS8') openJs8Popout();
       return;
     }
     ft8Engine.setMode(mode);
