@@ -5081,15 +5081,19 @@ function sendJs8Status(s) {
 
 function js8PushStatus() {
   const eng = js8Engine();
-  sendJs8Status({
+  const state = {
     running: !!eng,
-    connected: !!eng,   // legacy field name the popout renders as "up"
     tx: !!(eng && eng._txActive),
     txQueue: eng ? eng.txQueueLength : 0,
     submode: eng ? eng._submodeName : (settings.js8Submode || 'NORMAL'),
     heartbeat: js8HbEnabled,
     heartbeatMin: js8HbIntervalMin(),
-  });
+  };
+  sendJs8Status({ ...state, connected: state.running }); // legacy popout field
+  // Same snapshot to the phone (cached + hydrated at connect).
+  if (remoteServer) {
+    remoteServer.broadcastJs8State({ ...state, station: js8Station });
+  }
 }
 
 /**
@@ -5249,18 +5253,23 @@ function js8PushHeard() {
   if (js8PopoutWin && !js8PopoutWin.isDestroyed()) {
     js8PopoutWin.webContents.send('js8call-heard', js8Heard);
   }
+  if (remoteServer) remoteServer.broadcastJs8Heard(js8Heard);
 }
 
 /** Conversation list changed. The open thread rides along so the popout can
- *  re-render both without a round trip. */
+ *  re-render both without a round trip. ONE payload for both surfaces —
+ *  popout and phone must never disagree about the inbox. */
 function js8PushThreads(changedId) {
-  if (!js8PopoutWin || js8PopoutWin.isDestroyed()) return;
-  js8PopoutWin.webContents.send('js8call-threads', {
+  const payload = {
     list: js8Threads.list(),
     unread: js8Threads.totalUnread,
     changed: changedId || null,
     thread: changedId ? js8Threads.thread(changedId) : null,
-  });
+  };
+  if (js8PopoutWin && !js8PopoutWin.isDestroyed()) {
+    js8PopoutWin.webContents.send('js8call-threads', payload);
+  }
+  if (remoteServer) remoteServer.broadcastJs8Threads(payload);
 }
 
 function pushJs8Tail(entry) {
@@ -8133,6 +8142,13 @@ function startJtcat(mode) {
     sendCatLog(`[JS8] message fully transmitted: ${message}`);
     js8PushStatus();
   });
+  if (ft8Engine._mode === 'JS8') {
+    // TX edges reach every JS8 surface (popout pill, phone js8-state.tx).
+    // Registered here — after the removeAllListeners sweep — so they ride
+    // alongside the shared tx-start dispatch below without duplicating it.
+    ft8Engine.on('tx-start', () => js8PushStatus());
+    ft8Engine.on('tx-end', () => js8PushStatus());
+  }
   if (ft8Engine._mode === 'JS8') {
     // A fresh JS8 engine session: reset the reassembler (stale half-messages
     // from the previous band/session must not greet the new one) and let the
@@ -14608,6 +14624,55 @@ function connectRemote() {
   // local popout (power clamp + host TX policy). setWsprBeacon broadcasts the
   // authoritative jtcat-wspr-beacon-state back, so the phone confirms/reverts.
   remoteServer.on('jtcat-wspr-beacon', (opts) => applyWsprBeaconControl(opts));
+
+  // ─── JS8 from the phone ─────────────────────────────────────────────────
+  // Every handler reuses the exact function the desktop popout's IPC calls —
+  // the phone is a peer surface, not a second implementation. Refusals ride
+  // back on js8-send-result so the phone shows "why not" instead of nothing.
+  remoteServer.on('js8-start', () => {
+    markUserActive();
+    if (js8Engine()) { js8PushStatus(); return; }
+    if (!settings.myCallsign) {
+      remoteServer.sendJs8SendResult({ ok: false, error: 'Set your callsign in Settings on the desktop first.' });
+      return;
+    }
+    try { startJtcat('JS8'); } catch (err) {
+      remoteServer.sendJs8SendResult({ ok: false, error: String((err && err.message) || err) });
+    }
+  });
+  remoteServer.on('js8-stop', () => {
+    markUserActive();
+    if (!js8Engine()) return;
+    js8SetHeartbeat(false);
+    stopJtcat();
+    js8PushStatus();
+  });
+  remoteServer.on('js8-heartbeat', ({ enabled, intervalMin }) => {
+    markUserActive();
+    if (intervalMin !== undefined) {
+      const n = parseInt(intervalMin, 10);
+      if (Number.isFinite(n) && n >= 5 && n <= 60) {
+        settings.js8HeartbeatMin = n;
+        saveSettings(settings);
+      }
+    }
+    if (enabled !== undefined) js8SetHeartbeat(!!enabled);
+    else js8PushStatus();
+  });
+  remoteServer.on('js8-send', ({ text, to, reqId }) => {
+    markUserActive();
+    js8HbLastActivity = Date.now();   // sending IS operator activity
+    const r = js8Transmit(text, to);
+    remoteServer.sendJs8SendResult({ ok: !!r.ok, error: r.error, text: r.text, frames: r.frames, reqId });
+  });
+  remoteServer.on('js8-thread-open', ({ id }) => {
+    js8Threads.setOpen(id);           // opening it is what marks it read
+    js8HbLastActivity = Date.now();   // reading mail IS operator activity
+    remoteServer.sendJs8Thread(js8Threads.thread(id));
+    // The list changed (unread cleared) — every surface must agree.
+    js8PushThreads(null);
+  });
+  remoteServer.on('js8-thread-closed', () => js8Threads.setOpen(null));
 
   remoteServer.on('jtcat-set-tx-freq', ({ hz }) => {
     // Operator by definition — only the mobile device's TX control sends

@@ -260,6 +260,34 @@ for the history.
 | `jtcat-waterfall` | C→S | Request the spectrum stream (start/stop). |
 | `jtcat-start-multi-remote` | C→S | Multi-slice JTCAT (Flex). |
 
+### JS8 (native HF messaging)
+
+JS8 is decoded and transmitted by POTACAT itself (`lib/js8-engine.js` under
+JTCAT — no JS8Call application involved). The phone is a full peer of the
+desktop JS8 window: the conversation store lives in MAIN
+(`lib/js8call-threads.js`), so unread counts, groups and thread contents are
+one truth pushed to every surface. Gated by the `js8` entry in the server
+hello's `capabilities`.
+
+| Message | Dir | Purpose |
+|---|---|---|
+| `js8-start` | C→S | Start JS8 (JTCAT rebuilds onto the JS8 engine). Refused for Guest Pass. |
+| `js8-stop` | C→S | Stop JS8 (also turns the heartbeat off). Refused for Guest Pass. |
+| `js8-heartbeat` | C→S | `{enabled?, intervalMin?}` — toggle the HB scheduler and/or persist the interval (5–60 min). Enable is session-only on the host with a 30-minute attended watchdog (Part 97); the host may therefore turn it off on its own — watch `js8-state.heartbeat`. Refused for Guest Pass. |
+| `js8-send` | C→S | `{text, to?, reqId?}` — transmit. The HOST composes the addressed form from `text`+`to` (callsign or `@GROUP`); the phone never implements addressing. `reqId` echoes back on the result. Refused for Guest Pass. |
+| `js8-send-result` | S→C | `{ok, error?, text?, frames?, reqId?}` — verdict for a send (also carries Guest Pass refusals and host-side start errors). `text` is the composed on-air form; `frames` how many 15 s periods it will take. |
+| `js8-thread-open` | C→S | `{id}` — open a conversation. Marks it read ON THE HOST (the one unread truth) and answers with `js8-thread`. Allowed for guests (read-only). |
+| `js8-thread-closed` | C→S | Release the open-thread claim (stops auto-read of new arrivals). |
+| `js8-thread` | S→C | `{thread}` — one conversation's full content: `{id, call, isGroup, hbCount, messages:[{dir:'in'\|'out', text, snr?, offset?, utc}]}`. `thread` is null for an unknown id. |
+| `js8-state` | S→C | Engine snapshot: `{running, tx, txQueue, submode, heartbeat, heartbeatMin, station:{call, grid}}`. Cached and hydrated at connect. `txQueue` = frames still waiting for their period. |
+| `js8-threads` | S→C | Conversation list push: `{list, unread, changed?, thread?}`. `list` rows: `{id, call, isGroup, unread, lastUtc, lastText, lastDir, hbCount, count}`. When one thread changed, `changed` carries its id and `thread` its full content so an open view updates without a round trip. Cached (list+unread only) and hydrated at connect. |
+| `js8-heard` | S→C | `{list}` — stations audible now: `{call, snr, utc(ms epoch), grid}`, newest first, cap 40. Cached and hydrated at connect. |
+
+Sequencing at connect: `js8-state` → `js8-threads` → `js8-heard` (state first
+so the UI gates its controls before content arrives). Guest Pass may browse
+(`js8-thread-open`) but every transmit/lifecycle message answers
+`js8-send-result {ok:false}` with a reason.
+
 ### FreeDV (digital voice)
 
 | Message | Dir | Purpose |

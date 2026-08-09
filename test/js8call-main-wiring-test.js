@@ -167,6 +167,38 @@ test('operator actions pet the heartbeat watchdog', () => {
     'sending must stamp operator activity');
 });
 
+// ── the phone is a peer, not a second implementation ─────────────────────────
+
+test('every remote JS8 handler reuses the popout path', () => {
+  // remoteServer.on('js8-send') must call js8Transmit, not re-implement it;
+  // same for heartbeat and lifecycle. Two implementations of "send" is how
+  // the phone and the desktop end up addressing the same message differently.
+  const at = RAW.indexOf("remoteServer.on('js8-start'");
+  assert.ok(at > 0, 'remote js8-start handler missing');
+  const seg = RAW.slice(at, at + 3500);
+  for (const call of ['startJtcat(\'JS8\')', 'js8SetHeartbeat', 'js8Transmit',
+    'js8Threads.setOpen', 'stopJtcat()']) {
+    assert.ok(seg.includes(call), 'remote JS8 handlers must reuse ' + call);
+  }
+  assert.ok(seg.includes('sendJs8SendResult'),
+    'refusals must ride back to the phone, not vanish');
+});
+
+test('remote sends and reads pet the heartbeat watchdog too', () => {
+  const at = RAW.indexOf("remoteServer.on('js8-send'");
+  assert.ok(at > 0);
+  assert.ok(RAW.slice(at, at + 400).includes('js8HbLastActivity'),
+    'a phone send is operator activity');
+});
+
+test('the push choke points reach both surfaces', () => {
+  for (const fn of ['js8PushStatus', 'js8PushThreads', 'js8PushHeard']) {
+    const body = fnBody(fn);
+    assert.ok(/remoteServer/.test(body),
+      fn + ' must broadcast to the phone — one payload, every surface');
+  }
+});
+
 // ── status honesty ───────────────────────────────────────────────────────────
 
 test('js8PushStatus reports the engine, not a socket', () => {
