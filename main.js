@@ -8486,6 +8486,7 @@ function startJtcat(mode) {
   ft8Engine.removeAllListeners('psk-text');
   ft8Engine.removeAllListeners('js8-rx');
   ft8Engine.removeAllListeners('js8-tx-done');
+  ft8Engine.removeAllListeners('decode-ran');
 
   // JS8 continuous RX frames. Like psk-text, deliberately NOT routed through
   // the FT8 'decode' handler — JS8 is a conversation mode and its frames feed
@@ -8495,11 +8496,14 @@ function startJtcat(mode) {
   // On-air RX diagnostic: log the first few decode-window firings and then
   // one a minute. "window fired, 0 decodes" = feed/anchor OK, alignment/SNR
   // to chase; total silence = the window never fires (feed or anchor). Turns
-  // the next "no decodes" report into data (K3SBP 2026-08-09).
+  // the next "no decodes" report into data (K3SBP 2026-08-09). Counters are
+  // closure-local so each JS8 session logs its own first few firings.
+  let js8DecodeRanCount = 0;
+  let js8DecodeRanLog = 0;
   ft8Engine.on('decode-ran', (m) => {
-    _js8DecodeRanCount = (_js8DecodeRanCount || 0) + 1;
-    if (_js8DecodeRanCount <= 4 || Date.now() - (_js8DecodeRanLog || 0) > 60000) {
-      _js8DecodeRanLog = Date.now();
+    js8DecodeRanCount += 1;
+    if (js8DecodeRanCount <= 4 || Date.now() - js8DecodeRanLog > 60000) {
+      js8DecodeRanLog = Date.now();
       sendCatLog(`[JS8] decode window fired (k=${m.k}, ${m.decodes} decode${m.decodes === 1 ? '' : 's'})`);
     }
   });
