@@ -15836,6 +15836,12 @@ function broadcastRemoteRadioStatus() {
     nr: _currentNrState,
     anf: _currentAnfState,
     apf: _currentApfState,
+    // Preamp/ATT were missed in the batch above — same stuck-toggle failure:
+    // the mobile toggle settles on this echo, so without these it never
+    // learns they're ON and every tap re-sends `true` (N4RDX IC-706MK2G,
+    // 2026-08-03: could turn Pre/ATT on from ECHOCAT but never off).
+    preamp: _currentPreampState,
+    att: _currentAttState,
     // Ladder positions for rigs with IPO/AMP1/AMP2 + 6/12/18 dB. The phone
     // reads capabilities.preampSteps/attSteps to know the ladder and sends a
     // step back through the same set-preamp/set-att actions; a build that
@@ -25842,7 +25848,9 @@ app.whenReady().then(() => {
         if (flexNeedsApi) { _flexWarnOnce('VOX requires SmartSDR API — not connected'); break; }
         const on = !!data.value;
         if (flexSdr()) smartSdr.setVox(on);
-        else if (cat && cat.connected && typeof cat.setVox === 'function') cat.setVox(on);
+        else if (cat && cat.connected && typeof cat.setVox === 'function') {
+          if (cat.setVox(on) === false) break;
+        }
         _currentVoxState = on;
         broadcastRigState();
         break;
@@ -25905,7 +25913,9 @@ app.whenReady().then(() => {
         if (flexNeedsApi) { _flexWarnOnce('Monitor requires SmartSDR API — not connected'); break; }
         const on = !!data.value;
         if (flexSdr()) smartSdr.setMonitor(on);
-        else if (cat && cat.connected && typeof cat.setMonitor === 'function') cat.setMonitor(on);
+        else if (cat && cat.connected && typeof cat.setMonitor === 'function') {
+          if (cat.setMonitor(on) === false) break;
+        }
         _currentMonState = on;
         broadcastRigState();
         break;
@@ -25923,7 +25933,9 @@ app.whenReady().then(() => {
         if (flexNeedsApi) { _flexWarnOnce('RIT requires SmartSDR API — not connected'); break; }
         const on = !!data.value;
         if (flexSdr()) smartSdr.setRit(0, on);
-        else if (cat && cat.connected && typeof cat.setRit === 'function') cat.setRit(on);
+        else if (cat && cat.connected && typeof cat.setRit === 'function') {
+          if (cat.setRit(on) === false) break;
+        }
         _currentRitState = on;
         broadcastRigState();
         break;

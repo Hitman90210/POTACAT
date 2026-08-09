@@ -1304,6 +1304,30 @@ test('rigctld setNrLevel Yaesu -> w RL0nn; (1..15 depth scale)', () => {
   assert.strictEqual(writes[0], 'w RL008;\n');
 });
 
+// N4RDX (IC-706MK2G, 2026-08-03): comp/VOX never existed in this codec, so
+// the desktop toggles either latched while sending NOTHING (pre-1.9.22) or
+// went dead (1.9.22 loud refusal). These pin the hamlib funcs.
+test('rigctld setCompressor -> U COMP 1/0', () => {
+  const { codec, writes } = captureWrites(RigctldCodec, RIGCTLD_MODEL);
+  codec.setCompressor(true);
+  codec.setCompressor(false);
+  assert.deepStrictEqual(writes, ['U COMP 1\n', 'U COMP 0\n']);
+});
+
+test('rigctld setVox -> U VOX 1/0', () => {
+  const { codec, writes } = captureWrites(RigctldCodec, RIGCTLD_MODEL);
+  codec.setVox(true);
+  codec.setVox(false);
+  assert.deepStrictEqual(writes, ['U VOX 1\n', 'U VOX 0\n']);
+});
+
+test('rigctld Yaesu-raw comp/VOX refuse (false, nothing written) — no lie latch', () => {
+  const { codec, writes } = captureWrites(RigctldCodec, RIGCTLD_YAESU_MODEL);
+  assert.strictEqual(codec.setCompressor(true), false);
+  assert.strictEqual(codec.setVox(true), false);
+  assert.deepStrictEqual(writes, []);
+});
+
 test('dump_caps probe adopts the rig\'s real preamp/ATT dB steps', () => {
   const { codec, writes } = captureWrites(RigctldCodec, RIGCTLD_MODEL);
   codec.probeCaps();
@@ -1406,6 +1430,19 @@ test('supported control returns true and reaches the codec', () => {
   const { rig } = stubRig({ setNoiseReduction: (on) => calls.push(on) });
   assert.strictEqual(rig.setNoiseReduction(true), true);
   assert.deepStrictEqual(calls, [true]);
+});
+
+test('codec per-connection refusal (returns false) propagates as loud refusal', () => {
+  // rigctld Yaesu-raw has the comp/VOX methods but refuses at call time —
+  // the controller must surface that identically to a missing method so
+  // main.js never latches state for a command that was never sent.
+  const { rig } = stubRig({ setCompressor: () => false, setVox: () => false });
+  const logs = [];
+  rig.on('log', (m) => logs.push(m));
+  assert.strictEqual(rig.setCompressor(true), false);
+  assert.strictEqual(rig.setVox(true), false);
+  assert.ok(logs.some((l) => l.includes('Compressor is not supported')), `got: ${logs.join(' | ')}`);
+  assert.ok(logs.some((l) => l.includes('VOX is not supported')), `got: ${logs.join(' | ')}`);
 });
 
 test('watchdog: silent polls flip status to disconnected (stale)', () => {

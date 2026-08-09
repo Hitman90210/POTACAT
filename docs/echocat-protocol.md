@@ -110,6 +110,8 @@ The `status` message is a kitchen-sink snapshot. The canonical fields are:
 | `txState` | boolean | true while transmitting |
 | `rigType` | string | "flex", "yaesu", "icom", "kenwood", "rigctld", "wsjtx" |
 | `nb` | boolean | Noise blanker on/off |
+| `preamp` | boolean | Preamp on/off. ADDED 2026-08-03 (was missing — the mobile toggle settling on this echo could never learn it was on, so it re-sent `true` forever and couldn't turn it off; N4RDX) |
+| `att` | boolean | Attenuator on/off. ADDED 2026-08-03, same fix as `preamp` |
 | `atu` | boolean | ATU enabled |
 | `vfo` | string | "A" or "B" — READBACK-fed since 2026-08-03 (Kenwood `IF;` / rigctld `v`, polled every cycle), so it now follows front-panel and custom-CAT VFO changes instead of only POTACAT-initiated ones |
 | `split` | boolean | rig split on/off, readback-fed (Kenwood `IF;` P12 / rigctld `s`). NEW 2026-08-03 — absent from older desktops. Live split is commanded via `rig-control {action:'set-split', value}`; the similarly-named `set-enable-split` only toggles the spot-tune setting |
