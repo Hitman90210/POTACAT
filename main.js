@@ -14577,12 +14577,11 @@ function connectRemote() {
 
   remoteServer.on('jtcat-set-mode', ({ mode }) => {
     if (!ft8Engine) return;
-    // Same family-switch rule as the popout's jtcat-set-mode: PSK31 is a
-    // different engine class and Ft8Engine.setMode coerces unknown strings
-    // to FT8, so crossing FT-family <-> PSK rebuilds the slice.
-    const isPsk = mode === 'PSK31';
-    const wasPsk = ft8Engine._mode === 'PSK31';
-    if (isPsk !== wasPsk) {
+    // Same family-switch rule as the popout's jtcat-set-mode: PSK31 and JS8
+    // are different engine classes and Ft8Engine.setMode coerces unknown
+    // strings to FT8, so crossing families rebuilds the slice.
+    const familyOf = (m) => (m === 'PSK31' ? 'psk' : m === 'JS8' ? 'js8' : 'ft');
+    if (familyOf(mode) !== familyOf(ft8Engine._mode)) {
       startJtcat(mode);
       return;
     }
