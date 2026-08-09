@@ -260,6 +260,28 @@ for the history.
 | `jtcat-waterfall` | C→S | Request the spectrum stream (start/stop). |
 | `jtcat-start-multi-remote` | C→S | Multi-slice JTCAT (Flex). |
 
+### Activity ("now") feed + idle-session results
+
+What the station is doing right now, so a client can open INTO the running
+activity (idle WSPR, JS8, an SSTV decode worth waiting out) instead of a
+stale tab. Gated by the `activity` entry in the server hello's
+`capabilities`. All of it is cached server-side **even with no client
+connected** — the caches exist precisely for the results accumulated while
+nobody was watching — and hydrated on every auth path (paired legacy,
+paired hello, Guest Pass), `activity-state` first so the client can route
+before content arrives.
+
+| Message | Dir | Purpose |
+|---|---|---|
+| `activity-state` | S→C | `{activity, auto, since, detail, busy}`. `activity`: `idle`\|`jtcat`\|`js8`\|`psk31`\|`wspr`\|`sstv`\|`freedv` — ONE primary activity (a `secondary` field may grow later). `auto` = idle-triggered (Auto-RX) vs operator-started. `since` = ms epoch the current activity began. `detail` is per-activity (wspr: `{dialMHz, hopping, sessionCount}`; js8: `{submode, unread}`; jtcat: `{mode}`; sstv decoding: `{mode, decoding:true}`; sstv armed: `{armed:true, freqKhz}`). `busy` answers "should I wait": `{tx, decoding, progress?, etaMs?}` — during an SSTV decode, `progress` (0–1) and `etaMs` come from observed line pace. Debounced ~150 ms; pushed on every lifecycle edge (engine start/stop/mode, SSTV vis/line/image, PTT edges, Auto-RX transitions, FreeDV lifecycle). |
+| `wspr-session` | S→C | `{startedAt, count, active, spots}` — the WSPR session's ACCUMULATED spots (cap 500, oldest dropped; `count` is the session total). This is what the desktop popout shows after an hour of idle WSPR. `active:false` = the session ended (mode changed away) but its results remain serveable; a new session replaces it on the next decode batch. `jtcat-wspr-spots` (latest 2-minute batch, replace-the-list) is unchanged. |
+
+SSTV additions (existing messages, new behavior): `sstv-tx-status`,
+`sstv-rx-progress` (only while `mode:'decoding'`) and the LAST
+`sstv-rx-image` are now cached and replayed at connect, so a client opening
+mid-decode sees the partial state and one opening between decodes sees the
+idle session's last picture.
+
 ### JS8 (native HF messaging)
 
 JS8 is decoded and transmitted by POTACAT itself (`lib/js8-engine.js` under

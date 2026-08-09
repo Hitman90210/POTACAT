@@ -5211,6 +5211,142 @@ function js8SetHeartbeat(enabled) {
   js8PushStatus();
 }
 
+// ─── Activity state — the "now" feed ────────────────────────────────────────
+// One answer to "what is this station doing", for a mobile app that opens
+// into the running activity instead of a stale tab (Casey 2026-08-09: idle
+// WSPR fills the desktop with spots; the phone showed none of it, and a
+// mid-SSTV-decode is worth waiting out — if you can see it). Cached and
+// hydrated FIRST on the remote so it can route before content arrives.
+//
+// One PRIMARY activity by design. Multi-slice coexistence can grow a
+// `secondary` field later without breaking the shape.
+
+/** In-progress SSTV decode, tracked from rx-vis → rx-line → rx-image. */
+let _sstvDecode = null; // { mode, startedAt, updatedAt, line, totalLines }
+/** WSPR session accumulation. active flips false when WSPR stops; the data
+ *  stays serveable until the next session starts fresh. */
+let _wsprSession = null; // { startedAt, spots: [], count, active }
+const WSPR_SESSION_CAP = 500;
+let _activityTimer = null;
+let _activityLastJson = '';
+let _activitySince = 0;
+let _activityLastName = '';
+
+function computeActivityState() {
+  const now = Date.now();
+  // A decode whose line ticks stopped a minute ago died with its signal —
+  // never let a stale one pin "decoding" (and "wait for it") forever.
+  const dec = _sstvDecode && now - _sstvDecode.updatedAt < 60 * 1000 ? _sstvDecode : null;
+  const eng = jtcatManager && jtcatManager.running ? jtcatManager.engine : null;
+  const mode = eng ? eng._mode : null;
+
+  let activity = 'idle';
+  let detail = {};
+  if (dec) {
+    activity = 'sstv';
+    detail = { mode: dec.mode, decoding: true };
+  } else if (mode === 'WSPR') {
+    activity = 'wspr';
+    detail = {
+      dialMHz: settings.wsprDial || null,
+      hopping: !!jtcatWsprHopEnabled,
+      sessionCount: _wsprSession && _wsprSession.active ? _wsprSession.count : 0,
+    };
+  } else if (mode === 'JS8') {
+    activity = 'js8';
+    detail = { submode: eng._submodeName || 'NORMAL', unread: js8Threads.totalUnread };
+  } else if (mode === 'PSK31') {
+    activity = 'psk31';
+    detail = {};
+  } else if (mode) {
+    activity = 'jtcat';
+    detail = { mode };
+  } else if (autoSstvActive) {
+    activity = 'sstv';
+    detail = { armed: true, freqKhz: autoSstvCurrentFreq || null };
+  } else if (freedvEngine) {
+    activity = 'freedv';
+    detail = {};
+  }
+
+  // The busy block answers "should I wait before taking the radio".
+  const busy = { tx: false, decoding: !!dec };
+  try { busy.tx = _isEffectivelyTransmitting(); } catch { /* pre-init */ }
+  if (dec && dec.totalLines > 0 && dec.line > 0) {
+    const progress = dec.line / dec.totalLines;
+    busy.progress = Math.round(progress * 1000) / 1000;
+    // ETA from observed pace — mode-agnostic, honest for every SSTV mode.
+    if (progress > 0.03) {
+      busy.etaMs = Math.round(((now - dec.startedAt) * (1 - progress)) / progress);
+    }
+  }
+
+  return {
+    activity,
+    auto: !!(autoSstvActive || autoIdleJtcatActive),
+    detail,
+    busy,
+  };
+}
+
+/** Debounced push — transitions call this freely; bursts collapse. */
+function pushActivityState() {
+  if (_activityTimer) return;
+  _activityTimer = setTimeout(() => {
+    _activityTimer = null;
+    if (!remoteServer) return;
+    const state = computeActivityState();
+    if (state.activity !== _activityLastName) {
+      _activityLastName = state.activity;
+      _activitySince = Date.now();
+    }
+    state.since = _activitySince;
+    const key = JSON.stringify(state);
+    if (key === _activityLastJson) return;
+    _activityLastJson = key;
+    remoteServer.broadcastActivityState(state);
+  }, 150);
+}
+
+/** Append a WSPR cycle's decodes to the session and push the session feed.
+ *  Called from the wspr-spots handler; a session that was marked inactive
+ *  (mode changed away) starts fresh on the next batch. */
+function wsprSessionAppend(spots) {
+  if (!spots || !spots.length) return;
+  if (!_wsprSession || !_wsprSession.active) {
+    _wsprSession = { startedAt: Date.now(), spots: [], count: 0, active: true };
+  }
+  _wsprSession.spots.push(...spots);
+  _wsprSession.count += spots.length;
+  if (_wsprSession.spots.length > WSPR_SESSION_CAP) {
+    _wsprSession.spots.splice(0, _wsprSession.spots.length - WSPR_SESSION_CAP);
+  }
+  if (remoteServer) {
+    remoteServer.broadcastWsprSession({
+      startedAt: _wsprSession.startedAt,
+      count: _wsprSession.count,
+      active: true,
+      spots: _wsprSession.spots,
+    });
+  }
+  pushActivityState();
+}
+
+/** WSPR stopped (mode change / jtcat stop): the session's results remain
+ *  serveable, but new decodes start a fresh session. */
+function wsprSessionEnd() {
+  if (!_wsprSession || !_wsprSession.active) return;
+  _wsprSession.active = false;
+  if (remoteServer) {
+    remoteServer.broadcastWsprSession({
+      startedAt: _wsprSession.startedAt,
+      count: _wsprSession.count,
+      active: false,
+      spots: _wsprSession.spots,
+    });
+  }
+}
+
 let _js8HbLastSent = 0;
 function js8HbTick() {
   if (!js8HbEnabled) return;
@@ -8161,6 +8297,9 @@ function startJtcat(mode) {
     js8Threads.setMyCall(js8Station.call);
     js8PushStatus();
   }
+  // The activity feed follows every engine (re)build.
+  pushActivityState();
+  if (ft8Engine._mode !== 'WSPR') wsprSessionEnd();
 
   // PSK31 continuous RX text. Deliberately NOT routed through the 'decode'
   // handler below — none of the FT8 classification / QSO state machine /
@@ -8540,6 +8679,8 @@ function startJtcat(mode) {
     // Relay to a connected phone/web client (spots carry dBm + distance/bearing
     // + DXCC, already enriched, so mobile renders without recomputing).
     if (remoteServer && remoteServer.hasClient()) remoteServer.broadcastJtcatWsprSpots(payload);
+    // Session accumulation — the idle-results feed (caches with no client).
+    wsprSessionAppend(spots);
     // "Where am I heard" — refresh the beacon footprint from wspr.live (throttled).
     maybeFetchWsprHeard();
     // Band hopping — QSY to the next band for the upcoming cycle. Fires near
@@ -9148,6 +9289,8 @@ function stopJtcat() {
   if (jtcatManager) {
     jtcatManager.stopAll();
   }
+  wsprSessionEnd();       // results stay serveable; next session starts fresh
+  pushActivityState();    // the "now" feed follows every stop
   if (jtcatTuneState.active) stopJtcatTune();
   if (jtcatPskRxTimer) {
     clearTimeout(jtcatPskRxTimer);
@@ -14602,6 +14745,8 @@ function connectRemote() {
       return;
     }
     ft8Engine.setMode(mode); // accepts 'WSPR'
+    if (mode !== 'WSPR') wsprSessionEnd();
+    pushActivityState();
   });
 
   // PSK31 one-shot Send from the phone — same contract as the popout's
@@ -14837,7 +14982,7 @@ function connectRemote() {
     } else {
       startAutoSstvTimer();
     }
-    if (remoteServer && remoteServer.hasClient()) {
+    if (remoteServer) {
       remoteServer.broadcastSstvTxStatus({ state: autoSstvActive ? 'auto-rx' : 'rx' });
     }
     sendCatLog(`[Echo CAT] Phone toggled auto-SSTV: ${enabled ? 'enabled' : 'disabled'}`);
@@ -14852,7 +14997,7 @@ function connectRemote() {
     if (sstvPopoutWin && !sstvPopoutWin.isDestroyed()) {
       sstvPopoutWin.webContents.send('sstv-abort-tx');
     }
-    if (remoteServer && remoteServer.hasClient()) {
+    if (remoteServer) {
       remoteServer.broadcastSstvTxStatus({ state: 'rx' });
     }
   });
@@ -15286,6 +15431,7 @@ function restoreFlexTxDax() {
 }
 
 function handleRemotePtt(state, opts = {}) {
+  pushActivityState();   // busy.tx edges reach the activity feed (debounced)
   // SWR-guard latch backstop — covers every PTT source (voice macros, mobile
   // device PTT, naked PTT) in one place. Releases (state=false) always pass.
   if (state && _swrTripped) {
@@ -19911,9 +20057,10 @@ function triggerAutoSstv() {
       if (openJtcatPopout) openJtcatPopout();
       sendCatLog('[Auto-RX] PSK31 receive started — ' + band + ' (' + (dialKhz / 1000).toFixed(3) + ' MHz)');
     }
-    if (remoteServer && remoteServer.hasClient()) {
+    if (remoteServer) {
       remoteServer.broadcastSstvTxStatus({ state: 'auto-rx' });
     }
+    pushActivityState();
     return;
   }
   autoSstvActive = true;
@@ -19924,9 +20071,10 @@ function triggerAutoSstv() {
   if (cat && cat.connected) cat.tune(autoSstvBand.freqKhz * 1000, autoSstvBand.mode);
   if (openSstvPopout) openSstvPopout();
   sendCatLog('[Auto-SSTV] Activated — tuned to ' + autoSstvCurrentFreq + ' kHz');
-  if (remoteServer && remoteServer.hasClient()) {
+  if (remoteServer) {
     remoteServer.broadcastSstvTxStatus({ state: 'auto-rx', freqKhz: autoSstvCurrentFreq });
   }
+  pushActivityState();
 }
 
 function cancelAutoSstv() {
@@ -19955,6 +20103,7 @@ function cancelAutoSstv() {
   sendCatLog('[Auto-SSTV] Cancelled — restored ' + (autoSstvPrevFreq ? (autoSstvPrevFreq / 1000) + ' kHz' : 'previous frequency'));
   autoSstvPrevFreq = null;
   autoSstvPrevMode = null;
+  pushActivityState();
 }
 
 function generateTelemetryId() {
@@ -20499,6 +20648,7 @@ function tuneRadio(freqKhz, mode, brng, { clearXit, origin } = {}) {
       else if (m.includes('1600')) codecMode = '1600';
 
       freedvEngine = new FreedvEngine();
+      pushActivityState();
       freedvEngine.on('rx-speech', (data) => {
         if (win && !win.isDestroyed()) win.webContents.send('freedv-rx-speech', data);
       });
@@ -20561,6 +20711,7 @@ function tuneRadio(freqKhz, mode, brng, { clearXit, origin } = {}) {
     sendCatLog('[FreeDV] Auto-stopped (tuned to non-FreeDV mode)');
     freedvEngine.stop();
     freedvEngine = null;
+    pushActivityState();
     if (win && !win.isDestroyed()) win.webContents.send('freedv-auto-stop');
     // Unmute ECHOCAT audio
     _freedvAudioMuted = false;
@@ -23578,7 +23729,7 @@ app.whenReady().then(() => {
       if (settings.audioSource === 'icom-network' &&
           !(ICOM_NETWORK_TX_AUDIO_ENABLED && _icomNetworkTransport && _icomNetworkTransport.txReady)) {
         sendCatLog('[SSTV] Icom Network TX blocked before PTT: RS-BA1 TX audio stream is not ready. Reconnect Icom Network / RS-BA1 or use a local/USB audio source for this transmit.');
-        if (remoteServer && remoteServer.hasClient()) {
+        if (remoteServer) {
           remoteServer.broadcastSstvTxStatus({ state: autoSstvActive ? 'auto-rx' : 'rx' });
         }
         return;
@@ -23650,7 +23801,7 @@ app.whenReady().then(() => {
               // only the popout-driven path fires the equivalent
               // broadcast (via sstv-tx-complete IPC at the bottom
               // of this file). K3SBP 2026-05-31.
-              if (remoteServer && remoteServer.hasClient()) {
+              if (remoteServer) {
                 remoteServer.broadcastSstvTxStatus({
                   state: autoSstvActive ? 'auto-rx' : 'rx',
                 });
@@ -23662,7 +23813,7 @@ app.whenReady().then(() => {
               // Same banner-clear on failure — leaving mobile stuck
               // on TRANSMITTING after an error would be worse than
               // dropping back to RX without a notification.
-              if (remoteServer && remoteServer.hasClient()) {
+              if (remoteServer) {
                 remoteServer.broadcastSstvTxStatus({
                   state: autoSstvActive ? 'auto-rx' : 'rx',
                 });
@@ -23694,7 +23845,7 @@ app.whenReady().then(() => {
             .then(() => {
               handleRemotePtt(false);
               sendCatLog('[SSTV] TX complete (Icom Network)');
-              if (remoteServer && remoteServer.hasClient()) {
+              if (remoteServer) {
                 remoteServer.broadcastSstvTxStatus({
                   state: autoSstvActive ? 'auto-rx' : 'rx',
                 });
@@ -23703,7 +23854,7 @@ app.whenReady().then(() => {
             .catch((err) => {
               handleRemotePtt(false);
               sendCatLog(`[SSTV] Icom Network TX failed: ${err.message}`);
-              if (remoteServer && remoteServer.hasClient()) {
+              if (remoteServer) {
                 remoteServer.broadcastSstvTxStatus({
                   state: autoSstvActive ? 'auto-rx' : 'rx',
                 });
@@ -23720,7 +23871,7 @@ app.whenReady().then(() => {
         }
       }, delay);
       // Notify ECHOCAT with duration so phone can show progress
-      if (remoteServer && remoteServer.hasClient()) {
+      if (remoteServer) {
         remoteServer.broadcastSstvTxStatus({ state: 'tx', durationSec: outDurSec });
       }
     });
@@ -23728,6 +23879,8 @@ app.whenReady().then(() => {
     sstvEngine.on('rx-vis', (data) => {
       sendCatLog(`[SSTV] VIS detected: ${data.modeName} (mode 0x${(data.mode || 0).toString(16)}) — locking onto signal`);
       _sstvLastActivityMs = Date.now();
+      _sstvDecode = { mode: data.modeName || '', startedAt: Date.now(), updatedAt: Date.now(), line: 0, totalLines: 0 };
+      pushActivityState();
       if (sstvPopoutWin && !sstvPopoutWin.isDestroyed()) {
         sstvPopoutWin.webContents.send('sstv-rx-vis', data);
       }
@@ -23742,7 +23895,15 @@ app.whenReady().then(() => {
         });
       }
       // Throttled progress to ECHOCAT (every 10 lines)
-      if (remoteServer && remoteServer.hasClient() && data.line % 10 === 0) {
+      if (_sstvDecode) {
+        _sstvDecode.line = data.line;
+        _sstvDecode.totalLines = data.totalLines;
+        _sstvDecode.updatedAt = Date.now();
+        if (data.line % 10 === 0) pushActivityState();
+      }
+      // Ungated on hasClient: the server caches progress for hydration, so
+      // a phone connecting mid-decode lands inside it (idle-results feed).
+      if (remoteServer && data.line % 10 === 0) {
         remoteServer.broadcastSstvProgress({
           progress: data.line / data.totalLines,
           line: data.line,
@@ -23754,6 +23915,8 @@ app.whenReady().then(() => {
 
     sstvEngine.on('rx-image', (data) => {
       const stats = data.stats || {};
+      _sstvDecode = null;
+      pushActivityState();
       // Weak-tier decodes (2026-07-07): show the operator the noisy image —
       // MMSSTV always paints something — but keep the gallery/auto-save
       // clean for unattended operation.
@@ -23783,7 +23946,9 @@ app.whenReady().then(() => {
         });
       }
       // Send to ECHOCAT phone
-      if (remoteServer && remoteServer.hasClient()) {
+      // Ungated on hasClient: the LAST completed image is cached for
+      // hydration — the idle session's results exist to be seen later.
+      if (remoteServer) {
         try {
           const { nativeImage } = require('electron');
           const rgba = new Uint8ClampedArray(data.imageData);
@@ -24061,7 +24226,7 @@ app.whenReady().then(() => {
     if (sstvPopoutWin && !sstvPopoutWin.isDestroyed()) {
       sstvPopoutWin.webContents.send('sstv-tx-status', { state: 'rx' });
     }
-    if (remoteServer && remoteServer.hasClient()) {
+    if (remoteServer) {
       remoteServer.broadcastSstvTxStatus({ state: 'rx' });
     }
   });
@@ -28706,6 +28871,8 @@ app.whenReady().then(() => {
       return;
     }
     ft8Engine.setMode(mode);
+    if (mode !== 'WSPR') wsprSessionEnd();
+    pushActivityState();
   });
   // JS8 submode (NORMAL/FAST/TURBO/SLOW/ULTRA). NORMAL is the validated one;
   // the engine accepts the others but the popout only offers what's proven.
@@ -29370,6 +29537,7 @@ app.whenReady().then(() => {
   ipcMain.on('freedv-start', (_e, mode) => {
     if (freedvEngine) freedvEngine.stop();
     freedvEngine = new FreedvEngine();
+      pushActivityState();
     freedvEngine.on('rx-speech', (data) => {
       if (win && !win.isDestroyed()) win.webContents.send('freedv-rx-speech', data);
     });
@@ -29396,7 +29564,8 @@ app.whenReady().then(() => {
   });
 
   ipcMain.on('freedv-stop', () => {
-    if (freedvEngine) { freedvEngine.stop(); freedvEngine = null; }
+    if (freedvEngine) { freedvEngine.stop(); freedvEngine = null;
+    pushActivityState(); }
   });
 
   ipcMain.on('freedv-set-mode', (_e, mode) => {

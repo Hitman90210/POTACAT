@@ -161,22 +161,28 @@ test('a guest auth gets the JS8 hydration trio, state first', () => {
   // js8-thread-open is deliberately ungated for guests — but browsing needs
   // an inbox to browse. The pass path used to stop at `status`, leaving the
   // guest's JS8 surface blank until the next live push (many minutes on a
-  // quiet band). This drives the REAL pass-auth send block: the exact
-  // hydration lines, not a reimplementation.
+  // quiet band). Hydration now flows through the SHARED helper so every
+  // auth path gets it by construction — assert the guest path calls it,
+  // and drive the helper itself for content + order.
   const src = require('fs').readFileSync(
     require('path').join(__dirname, '..', 'lib', 'remote-server.js'), 'utf8');
-  // The guest block is the one between the pass-auth status push and the
-  // "Guest Pass authenticated" log line.
   const at = src.indexOf('Guest Pass authenticated:');
   assert.ok(at > 0);
   const before = src.slice(Math.max(0, at - 1600), at);
   assert.ok(before.includes("type: 'status'"), 'anchored at the pass-auth status push');
-  const stateAt = before.indexOf("type: 'js8-state'");
-  const threadsAt = before.indexOf("type: 'js8-threads'");
-  const heardAt = before.indexOf("type: 'js8-heard'");
-  assert.ok(stateAt > 0, 'guest auth must hydrate js8-state');
-  assert.ok(threadsAt > stateAt, 'threads after state');
-  assert.ok(heardAt > threadsAt, 'heard after threads — same order as paired auth');
+  assert.ok(before.includes('_sendJs8Hydration(ws)'),
+    'guest auth must hydrate JS8 via the shared helper');
+
+  const rs = new RemoteServer();
+  const ws = fakeWs();
+  rs.broadcastJs8State({ running: true });
+  rs.broadcastJs8Threads({ list: [], unread: 0 });
+  rs.broadcastJs8Heard([{ call: 'W1AW', snr: -8, utc: 1, grid: '' }]);
+  ws._sent.length = 0; // ignore the live pushes; test the hydration replay
+  rs._sendJs8Hydration(ws);
+  const types = ws._sent.map((m) => m.type);
+  assert.deepStrictEqual(types, ['js8-state', 'js8-threads', 'js8-heard'],
+    'state first, then content — the order the UI gates on');
 });
 
 test('lifecycle emits carry reqId so start failures attribute to the tap', () => {
