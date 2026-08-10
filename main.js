@@ -5238,7 +5238,15 @@ function js8HandleRx(d) {
 
   // Heard rail: any completed message proves the station is reachable now.
   if (msg.from && !msg.from.startsWith('<')) {
-    const grid = msg.isHeartbeat ? (msg.text.match(/\b[A-R]{2}[0-9]{2}\b/) || [''])[0] : '';
+    // Grids only ride heartbeats and CQs in JS8 ("HB FN20" / "CQ EM73") —
+    // directed traffic carries none. Scrape from both, and MERGE with what we
+    // already knew: a later gridless message must never wipe a learned grid
+    // (it did until 2026-08-10 — the map showed "1 of 6 mapped" on a band
+    // where every station had heartbeated earlier; K3SBP).
+    const scrapeFrom = msg.isHeartbeat || /^\s*CQ\b/i.test(msg.text || '') ? msg.text : '';
+    const scraped = (String(scrapeFrom).match(/\b[A-R]{2}[0-9]{2}\b/) || [''])[0];
+    const prev = js8Heard.find((h) => h.call === msg.from);
+    const grid = scraped || (prev && prev.grid) || '';
     js8Heard = [{ call: msg.from, snr: msg.snr, utc: Date.now(), grid }]
       .concat(js8Heard.filter((h) => h.call !== msg.from)).slice(0, 40);
     js8PushHeard();
