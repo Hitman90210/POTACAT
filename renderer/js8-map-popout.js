@@ -74,13 +74,25 @@
       var lines = ['<b>' + call + '</b> &middot; ' + grid];
       if (e.heard) lines.push('I hear them: ' + (e.heard.snr > 0 ? '+' : '') + e.heard.snr + ' dB &middot; ' + ago(e.heard.utc));
       if (e.heardBy) lines.push('They hear me: ' + (e.heardBy.snr > 0 ? '+' : '') + e.heardBy.snr + ' dB &middot; ' + ago(e.heardBy.utc));
-      // Plot at -360/0/+360 so markers survive scrolling past the antimeridian.
+      // Plot at -360/0/+360 so markers survive scrolling past the antimeridian —
+      // but draw the reach line ONLY to the copy nearest home, or the two far
+      // wraps paint "around the earth" horizontals (K3SBP 2026-08-10).
+      var bestOff = 0;
+      if (home) {
+        var bestD = Infinity;
+        [-360, 0, 360].forEach(function (off) {
+          var d = Math.abs((pos[1] + off) - home[1]);
+          if (d < bestD) { bestD = d; bestOff = off; }
+        });
+      }
       [-360, 0, 360].forEach(function (off) {
         var m = L.circleMarker([pos[0], pos[1] + off], {
           radius: 6, color: color, fillColor: color, fillOpacity: 0.85, weight: both ? 2.5 : 1.5,
         }).bindPopup(lines.join('<br>'));
         layer.addLayer(m);
-        if (home) layer.addLayer(L.polyline([home, [pos[0], pos[1] + off]], { color: color, weight: 1, opacity: 0.35 }));
+        if (home && off === bestOff) {
+          layer.addLayer(L.polyline([home, [pos[0], pos[1] + off]], { color: color, weight: 1, opacity: 0.35 }));
+        }
       });
     });
 
