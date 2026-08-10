@@ -1209,6 +1209,8 @@ let js8TxHeld = false;          // operator pinned the offset (clicked waterfall
 // accumulating while the window is closed — the whole point of an inbox.
 let js8Threads = new Js8Threads({});
 let js8Heard = [];              // stations audible now, for the right rail
+let js8HeardBy = [];            // stations that reported hearing US (SNR replies) — the other half of the reachability map
+let js8MapWin = null;           // the Heartbeat Map window
 // Multi-frame RX reassembly (the MessageBuffer role; lib/js8-rx-assembler.js)
 let js8RxAssembler = new Js8RxAssembler({});
 // The exclusive radio TX/audio path can be held by at most one mode engine at a
@@ -5193,6 +5195,8 @@ function js8PushStatus() {
     heartbeatMin: js8HbIntervalMin(),
     hbAck: js8HbAck,                       // ⚙ auto-reply to heartbeats (session-only)
     swrAutoTune: !!settings.swrAutoTune,   // ⚙ run the ATU once on an SWR-guard trip
+    aprsGate: !!settings.js8AprsGate,      // ⚙ RF→APRS-IS gateway opt-in
+    aprsGateUp: !!(aprsGate && aprsGate.verified),
     dialHz: _currentFreqHz || 0,
     band: _currentFreqHz ? (freqToBand(_currentFreqHz / 1e6) || '') : '',
     // Audio-passband offsets for the waterfall markers. JS8 offsets are
@@ -5254,11 +5258,84 @@ function js8HandleRx(d) {
       sendCatLog(`[JS8] message for you from ${msg.from}: ${msg.text}`
         + (msg.checksumValid === false ? ' (checksum FAILED — text may be incomplete)' : ''));
     }
+    // Reachability, the other direction: an SNR report addressed to US
+    // ("K3SBP SNR -07", an HB ACK or a SNR? answer) is a station saying it
+    // hears us — the blue half of the Heartbeat Map.
+    const me = (settings.myCallsign || '').toUpperCase();
+    if (msg.to === me && msg.from) {
+      const m = /\bSNR\s+([+-]?\d{1,2})\b/i.exec(msg.text || '');
+      if (m) {
+        js8HeardBy = [{ call: msg.from, snr: parseInt(m[1], 10), utc: Date.now(), grid: '' }]
+          .concat(js8HeardBy.filter((h) => h.call !== msg.from)).slice(0, 40);
+        js8PushMapData();
+      }
+    }
   }
 
   // ⚙ HB ACK — auto-reply to a decoded heartbeat with the sender's SNR, if the
   // operator opted in. Automatic TX, so heavily guarded (see js8MaybeAckHeartbeat).
   if (js8HbAck && msg.isHeartbeat) js8MaybeAckHeartbeat(msg);
+
+  // ⚙ APRS-IS gateway — RF→internet only, never keys the radio. A station
+  // transmitting "@APRSIS CMD ..." over JS8 is asking any listening gateway
+  // to forward its packet to the APRS backbone; if the operator opted in, we
+  // are that gateway.
+  if (msg.to === '@APRSIS') js8GateAprs(msg);
+}
+
+// ── JS8 → APRS-IS gateway ────────────────────────────────────────────────────
+let aprsGate = null;                 // AprsIsClient when the gate is up
+let _aprsGateStamps = [];            // global rate window
+const _aprsGatePerCall = new Map();  // per-source last-gated ms
+
+function connectAprsGate() {
+  if (aprsGate || !settings.js8AprsGate || !settings.myCallsign) return;
+  const { AprsIsClient } = require('./lib/aprs-is');
+  aprsGate = new AprsIsClient({ call: settings.myCallsign, version: app.getVersion() });
+  aprsGate.on('connected', () => sendCatLog('[APRS-IS] connected — logging in'));
+  aprsGate.on('verified', () => { sendCatLog('[APRS-IS] login verified — gateway active'); js8PushStatus(); });
+  aprsGate.on('disconnected', () => { sendCatLog('[APRS-IS] disconnected'); js8PushStatus(); });
+  aprsGate.on('error', (err) => sendCatLog('[APRS-IS] ' + (err.message || err)));
+  aprsGate.connect();
+}
+function disconnectAprsGate() {
+  if (!aprsGate) return;
+  try { aprsGate.disconnect(); } catch { /* gone */ }
+  aprsGate = null;
+  js8PushStatus();
+}
+
+/** Gate one decoded @APRSIS directed message to APRS-IS. Rate-limited (per
+ *  source 1/min, global 10/min) and fully logged — everything forwarded under
+ *  the operator's callsign must be visible to them. */
+function js8GateAprs(msg) {
+  if (!settings.js8AprsGate || !aprsGate || !aprsGate.verified) return;
+  const src = String(msg.from || '').toUpperCase();
+  if (!src || src.startsWith('<') || src.startsWith('@')) return;
+  const now = Date.now();
+  if (now - (_aprsGatePerCall.get(src) || 0) < 60000) return;           // per-source: 1/min
+  _aprsGateStamps = _aprsGateStamps.filter((t) => now - t < 60000);
+  if (_aprsGateStamps.length >= 10) {                                    // global: 10/min
+    sendCatLog('[APRS-IS] rate limit reached — not gating ' + src);
+    return;
+  }
+  const { buildGatePacket, buildPositionPacket } = require('./lib/aprs-is');
+  const text = String(msg.text || '').replace(/^@APRSIS\s*/i, '').trim();
+  const gate = settings.myCallsign.toUpperCase();
+  let packet = null;
+  let what = '';
+  const cmd = /^CMD\s+(.+)$/is.exec(text);
+  const grid = /^GRID\s+([A-R]{2}[0-9]{2}(?:[A-X]{2})?)\b/i.exec(text);
+  if (cmd) { packet = buildGatePacket(src, gate, cmd[1]); what = 'CMD'; }
+  else if (grid) { packet = buildPositionPacket(src, gate, grid[1], 'JS8'); what = 'GRID ' + grid[1].toUpperCase(); }
+  if (!packet) return;   // not a gateable form — never guess at raw payloads
+  if (aprsGate.send(packet)) {
+    _aprsGatePerCall.set(src, now);
+    _aprsGateStamps.push(now);
+    // The full packet in the log IS the audit trail: everything gated under
+    // the operator's call, visible in session.log and the CAT panel.
+    sendCatLog(`[APRS-IS] gated ${what} from ${src}: ${packet}`);
+  }
 }
 
 /** Send a heartbeat acknowledgement (the sender's SNR back to them) when HB ACK
@@ -5689,6 +5766,20 @@ function js8PushHeard() {
     js8PopoutWin.webContents.send('js8call-heard', js8Heard);
   }
   if (remoteServer) remoteServer.broadcastJs8Heard(js8Heard);
+  js8PushMapData();
+}
+
+/** Reachability snapshot for the Heartbeat Map: both directions, merged by the
+ *  renderer. heardBy grids are backfilled from the heard rail (an SNR reply
+ *  carries no grid of its own). */
+function js8PushMapData() {
+  if (!js8MapWin || js8MapWin.isDestroyed()) return;
+  const gridOf = (call) => { const h = js8Heard.find((x) => x.call === call); return (h && h.grid) || ''; };
+  js8MapWin.webContents.send('js8-map-data', {
+    home: { call: (settings.myCallsign || '').toUpperCase(), grid: (settings.grid || '').toUpperCase().slice(0, 4) },
+    heard: js8Heard,
+    heardBy: js8HeardBy.map((h) => ({ ...h, grid: h.grid || gridOf(h.call) })),
+  });
 }
 
 /** Conversation list changed. The open thread rides along so the popout can
@@ -8645,6 +8736,7 @@ function startJtcat(mode) {
     // already on one — opening JS8 onto a dead dial was the "shows Band, no
     // QSY" complaint (Casey 2026-08-09).
     js8QsyOnStart();
+    connectAprsGate();   // no-op unless the ⚙ gateway opt-in is set
     js8PushStatus();
   }
   // The activity feed follows every engine (re)build.
@@ -9686,6 +9778,7 @@ function stopJtcat() {
   }
   wsprSessionEnd();       // results stay serveable; next session starts fresh
   pushActivityState();    // the "now" feed follows every stop
+  disconnectAprsGate();  // the gate listens for JS8 decodes; no engine, no gate
   // ...and so does the JS8 surface. _js8State is a cache with no "get state"
   // message by design, so a stop that skips this (desktop's own JTCAT stop, a
   // JS8->FT8 mode change, a QSY off the digital slot) strands it reading
@@ -24062,6 +24155,28 @@ app.whenReady().then(() => {
     });
   }
   ipcMain.on('js8call-popout-open', () => openJs8Popout());
+
+  // --- JS8 Heartbeat Map (RX-only reachability: heard / heard-by / both) ---
+  ipcMain.on('js8-map-popout', () => {
+    if (js8MapWin && !js8MapWin.isDestroyed()) { js8MapWin.focus(); return; }
+    js8MapWin = new BrowserWindow({
+      width: 700, height: 500, title: 'JS8 Heartbeat Map',
+      backgroundColor: getThemeWindowBg(), frame: false,
+      icon: getIconPath(),
+      webPreferences: { preload: path.join(__dirname, 'preload-js8-map-popout.js'), contextIsolation: true, nodeIntegration: false },
+    });
+    js8MapWin.setMenuBarVisibility(false);
+    js8MapWin.loadFile(path.join(__dirname, 'renderer', 'js8-map-popout.html'), { query: { theme: settings.lightMode ? 'light' : 'dark', variant: settings.darkVariant || 'navy' } });
+    js8MapWin.on('closed', () => { js8MapWin = null; });
+    js8MapWin.webContents.on('did-finish-load', () => {
+      if (!js8MapWin || js8MapWin.isDestroyed()) return;
+      js8MapWin.webContents.send('js8call-popout-theme', { theme: settings.lightMode ? 'light' : 'dark', variant: settings.darkVariant || 'navy' });
+    });
+  });
+  ipcMain.on('js8-map-ready', () => js8PushMapData());
+  ipcMain.on('js8-map-minimize', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.minimize(); });
+  ipcMain.on('js8-map-maximize', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) { w.isMaximized() ? w.unmaximize() : w.maximize(); } });
+  ipcMain.on('js8-map-close', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.close(); });
   ipcMain.on('js8call-popout-minimize', (e) => { const w = BrowserWindow.fromWebContents(e.sender); if (w) w.minimize(); });
   ipcMain.on('js8call-popout-maximize', (e) => {
     const w = BrowserWindow.fromWebContents(e.sender);
@@ -24119,6 +24234,16 @@ app.whenReady().then(() => {
     js8HbLastActivity = Date.now();
     if (js8HbAck) js8HbAcked.clear();
     sendCatLog('[JS8] heartbeat auto-reply (HB ACK) ' + (js8HbAck ? 'ON' : 'off'));
+    js8PushStatus();
+  });
+  // ⚙ RF→APRS-IS gateway. Internet-only (never keys the radio), so persisting
+  // the opt-in is safe — unlike the automatic-TX toggles.
+  ipcMain.on('js8-set-aprs-gate', (_e, on) => {
+    markUserActive();
+    settings.js8AprsGate = !!on;
+    saveSettings(settings);
+    if (settings.js8AprsGate && js8Engine()) connectAprsGate();
+    else if (!settings.js8AprsGate) disconnectAprsGate();
     js8PushStatus();
   });
   // ⚙ Auto-tune the ATU once when the SWR guard trips — a persisted setting.

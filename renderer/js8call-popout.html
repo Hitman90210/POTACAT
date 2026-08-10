@@ -302,6 +302,7 @@
       <button class="jc-btn" id="jc-hb" title="Send a heartbeat now (every press)">HB</button>
       <button class="jc-btn" id="jc-hb-auto" title="Auto-heartbeat every few minutes while you're at the radio (stops after 30 min idle)">Auto</button>
     </span>
+    <button class="jc-btn" id="jc-map" title="Heartbeat Map — who you hear, who hears you">Map</button>
     <button class="jc-btn jc-halt" id="jc-halt" title="Stop transmitting now — cuts the current frame and drops PTT" disabled>Halt</button>
     <button class="jc-btn" id="jc-atu" title="Run the radio's antenna tuner match cycle">ATU</button>
     <button class="jc-btn" id="jc-power" title="Start or stop JS8">Start</button>
@@ -409,6 +410,11 @@
         <span class="jc-opt-label">Auto-heartbeat every <input id="jc-opt-hbmin" type="number" min="5" max="60" value="15"> min</span>
         <span class="jc-opt-help">Interval for the bar's Auto heartbeat once you switch it on.</span>
       </label>
+      <div class="jc-opt-section">APRS</div>
+      <button id="jc-opt-aprs-gate" class="jc-opt-row">
+        <span class="jc-opt-label">APRS-IS gateway <span id="jc-aprs-gate-state" class="jc-opt-help" style="display:inline;"></span></span>
+        <span class="jc-opt-help">Forward other stations' "@APRSIS" JS8 messages (SMS, email, position reports) to the APRS internet backbone under your callsign. Receive + internet only — this never transmits. Every gated packet is written to the log. Few gateways exist, so opting in makes JS8's APRS features work better for everyone.</span>
+      </button>
       <div class="jc-opt-section">SWR guard</div>
       <button id="jc-opt-swr-autotune" class="jc-opt-row">
         <span class="jc-opt-label">Auto-tune on high SWR</span>

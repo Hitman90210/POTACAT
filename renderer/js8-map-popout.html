@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <script src="popout-theme-boot.js"></script>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://*.tile.openstreetmap.org; connect-src 'self' https://*.tile.openstreetmap.org;">
+  <title>JS8 Heartbeat Map</title>
+  <script src="popout-theme-bootstrap.js"></script>
+  <link rel="stylesheet" href="../node_modules/leaflet/dist/leaflet.css">
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: var(--bg-primary); color: var(--text-primary); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    body { display: flex; flex-direction: column; }
+    .map-container { flex: 1; width: 100%; height: 100%; }
+    /* Legend: the two directions of reachability. */
+    .jm-legend { position: absolute; bottom: 10px; left: 10px; z-index: 1000;
+      background: var(--bg-secondary); border: 1px solid var(--border-primary); border-radius: 6px;
+      padding: 7px 10px; font-size: 11px; line-height: 1.7; box-shadow: 0 2px 10px rgba(0,0,0,.4); }
+    .jm-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: baseline; }
+    .jm-count { position: absolute; top: 42px; right: 10px; z-index: 1000;
+      background: var(--bg-secondary); border: 1px solid var(--border-primary); border-radius: 6px;
+      padding: 5px 10px; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <div class="titlebar">
+    <div class="titlebar-drag"><span class="titlebar-title">JS8 Heartbeat Map</span></div>
+    <div class="titlebar-controls">
+      <button class="titlebar-btn" id="tb-min" title="Minimize">&#x2014;</button>
+      <button class="titlebar-btn" id="tb-max" title="Maximize">&#x25A1;</button>
+      <button class="titlebar-btn titlebar-close" id="tb-close" title="Close">&#x2715;</button>
+    </div>
+  </div>
+  <div id="map" class="map-container"></div>
+  <div class="jm-legend">
+    <span class="jm-dot" style="background:#4ecca3;"></span>I hear them<br>
+    <span class="jm-dot" style="background:#4fc3f7;"></span>They hear me<br>
+    <span class="jm-dot" style="background:#f0a500;"></span>Both ways
+  </div>
+  <div class="jm-count" id="jm-count">Listening&hellip;</div>
+
+  <script src="../node_modules/leaflet/dist/leaflet.js"></script>
+  <script src="js8-map-popout.js"></script>
+</body>
+</html>

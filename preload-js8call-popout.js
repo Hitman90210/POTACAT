@@ -63,6 +63,9 @@ contextBridge.exposeInMainWorld('api', {
   setBand: (band) => ipcRenderer.invoke('js8-set-band', band),
   onCatFrequency: (cb) => ipcRenderer.on('cat-frequency', (_e, hz) => cb(hz)),
 
+  // Heartbeat Map window (RX-only reachability).
+  openMap: () => ipcRenderer.send('js8-map-popout'),
+
   // Halt TX — reuses the JTCAT halt path (works on the JS8 slice now that
   // Js8Engine has setTxMessage); cuts the on-air frame and drops PTT.
   halt: () => ipcRenderer.send('jtcat-halt-tx'),
@@ -74,6 +77,7 @@ contextBridge.exposeInMainWorld('api', {
   // SWR auto-tune = run the ATU once on an SWR-guard trip (persisted setting).
   setHbAck: (on) => ipcRenderer.send('js8-set-hback', !!on),
   setSwrAutoTune: (on) => ipcRenderer.send('js8-set-swr-autotune', !!on),
+  setAprsGate: (on) => ipcRenderer.send('js8-set-aprs-gate', !!on),
 
   // Clock-drift monitor (shared with JTCAT — same NTP measurement). JS8 is
   // time-locked, so an off PC clock silently zeroes decodes.

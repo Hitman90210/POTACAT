@@ -724,6 +724,12 @@
     swrAutoRow.classList.toggle('active', on);
     if (window.api.setSwrAutoTune) window.api.setSwrAutoTune(on);
   });
+  var aprsGateRow = el('jc-opt-aprs-gate'), aprsGateState = el('jc-aprs-gate-state');
+  aprsGateRow.addEventListener('click', function () {
+    var on = !aprsGateRow.classList.contains('active');
+    aprsGateRow.classList.toggle('active', on);
+    if (window.api.setAprsGate) window.api.setAprsGate(on);
+  });
   hbMinInput.addEventListener('change', function () {
     var n = parseInt(hbMinInput.value, 10);
     if (n >= 5 && n <= 60 && window.api.heartbeat) window.api.heartbeat({ intervalMin: n });
@@ -765,6 +771,9 @@
 
   // ── Halt ─────────────────────────────────────────────────────────────────────
   haltBtn.addEventListener('click', function () { if (window.api.halt) window.api.halt(); });
+
+  // ── Heartbeat Map ───────────────────────────────────────────────────────────
+  el('jc-map').addEventListener('click', function () { if (window.api.openMap) window.api.openMap(); });
 
   // ── wire-up ────────────────────────────────────────────────────────────────
 
@@ -816,6 +825,8 @@
     // Gear toggles mirror main's authoritative state.
     hbAckRow.classList.toggle('active', !!(s && s.hbAck));
     swrAutoRow.classList.toggle('active', !!(s && s.swrAutoTune));
+    aprsGateRow.classList.toggle('active', !!(s && s.aprsGate));
+    aprsGateState.textContent = (s && s.aprsGate) ? (s.aprsGateUp ? '— connected' : '— connecting…') : '';
     if (s && s.heartbeatMin && document.activeElement !== hbMinInput) hbMinInput.value = s.heartbeatMin;
     if (up !== was && !up) lastDecodeTs = 0;   // a fresh session starts unheard
 
