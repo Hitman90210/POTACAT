@@ -235,5 +235,21 @@ test('js8PushStatus reports the engine, not a socket', () => {
   assert.ok(body.includes('txQueue'), 'the queue length is what the popout shows');
 });
 
+// ── open = start, close = stop (the JTCAT model) ─────────────────────────────
+
+test('opening the JS8 window auto-starts it; closing stops it', () => {
+  const body = fnBody('openJs8Popout');
+  // Open = start, gated on a callsign and on not already running.
+  assert.ok(/did-finish-load[\s\S]*startJtcat\('JS8'\)/.test(body),
+    'opening the window must auto-start JS8 (Casey: the manual Start was not easy)');
+  assert.ok(/!js8Engine\(\)\s*&&\s*settings\.myCallsign/.test(body),
+    'auto-start must be gated on not-running AND a callsign being set');
+  // Close = stop, unless a remote client may be driving JS8.
+  assert.ok(/on\('closed'[\s\S]*stopJtcat\(\)/.test(body),
+    'closing the window must stop JS8 and free the radio');
+  assert.ok(/on\('closed'[\s\S]*hasClient/.test(body),
+    'stop-on-close must be skipped when a remote client may be using JS8');
+});
+
 console.log(`\nJS8 main wiring: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

@@ -23966,7 +23966,18 @@ app.whenReady().then(() => {
         settings.js8PopoutBounds = js8PopoutWin.getBounds(); saveSettings(settings);
       }
     });
-    js8PopoutWin.on('closed', () => { js8PopoutWin = null; stopJs8Spectrum(); });
+    js8PopoutWin.on('closed', () => {
+      js8PopoutWin = null;
+      stopJs8Spectrum();
+      // Close = stop, like the JTCAT popout — free the radio/slice when the
+      // window goes away. Skipped if a remote client (phone) is connected and
+      // may be driving JS8, so we don't kill a session the operator is running
+      // from their device.
+      const remoteMaybeUsingJs8 = remoteServer && remoteServer.hasClient && remoteServer.hasClient();
+      if (js8Engine() && !remoteMaybeUsingJs8) {
+        try { js8SetHeartbeat(false); stopJtcat(); } catch (err) { sendCatLog('[JS8] stop on close failed: ' + (err.message || err)); }
+      }
+    });
     js8PopoutWin.webContents.on('did-finish-load', () => {
       if (!js8PopoutWin || js8PopoutWin.isDestroyed()) return;
       js8PopoutWin.webContents.send('js8call-popout-theme', { theme: settings.lightMode ? 'light' : 'dark', variant: settings.darkVariant || 'navy' });
@@ -23983,6 +23994,14 @@ app.whenReady().then(() => {
       if (jtcatLastClock) js8PopoutWin.webContents.send('jtcat-clock', jtcatLastClock);
       if (typeof settings.jtcatRxGain === 'number') js8PopoutWin.webContents.send('jtcat-set-rx-gain', settings.jtcatRxGain);
       startJs8Spectrum();
+      // Open = start, exactly like the JTCAT popout (Casey 2026-08-10: JS8's
+      // manual Start didn't feel "easy"). Auto-start decoding when the window
+      // opens, if it isn't already running and a callsign is set (JS8 TX carries
+      // it). No callsign → stay stopped; the bar's Start gives the clear error.
+      if (!js8Engine() && settings.myCallsign) {
+        try { startJtcat('JS8'); } catch (err) { sendCatLog('[JS8] auto-start on open failed: ' + (err.message || err)); }
+        js8PushStatus();
+      }
     });
     js8PopoutWin.webContents.on('before-input-event', (_e, input) => {
       if (input.key === 'F12' && input.type === 'keyDown') js8PopoutWin.webContents.toggleDevTools();
