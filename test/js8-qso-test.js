@@ -14,6 +14,7 @@
 
 const assert = require('assert');
 const { extractQsoFromThread, lastSession, fmtSnr, SESSION_GAP_MS } = require('../lib/js8-qso');
+const { adifModeSubmode } = require('../lib/adif-writer');
 
 let pass = 0, fail = 0;
 function test(name, fn) {
@@ -96,6 +97,25 @@ test('a positive SNR formats with its sign', () => {
   assert.strictEqual(fmtSnr(5), '+05');
   assert.strictEqual(fmtSnr(-12), '-12');
   assert.strictEqual(fmtSnr(0), '+00');
+});
+
+// The extractor tags the JS8 SPEED as `submode` (e.g. NORMAL). That is NOT the
+// ADIF submode — JS8 must always log MODE=MFSK / SUBMODE=JS8 or LoTW/QRZ reject
+// it. Guard that the extraction output, fed straight to the ADIF mapper, is
+// always valid even if a caller forwards the speed.
+test('a JS8 QSO always maps to ADIF MFSK/JS8, whatever the speed', () => {
+  const thread = { id: 'W1AW', call: 'W1AW', isGroup: false,
+    messages: [m('in', 'W1AW: K3SBP -12', 0, { snr: -12 }), m('out', 'K3SBP: W1AW -08 R', 8)] };
+  const q = extractQsoFromThread(thread, { submode: 'NORMAL' });
+  assert.strictEqual(q.mode, 'JS8');            // display keeps JS8
+  const adif = adifModeSubmode(q.mode, q.submode);
+  assert.strictEqual(adif.mode, 'MFSK', 'MODE=JS8 is rejected by LoTW');
+  assert.strictEqual(adif.submode, 'JS8');
+  // And every speed collapses the same way.
+  for (const sp of ['NORMAL', 'FAST', 'TURBO', 'SLOW', 'ULTRA', '', undefined]) {
+    const a = adifModeSubmode('JS8', sp);
+    assert.strictEqual(a.mode + '/' + a.submode, 'MFSK/JS8', 'speed ' + sp);
+  }
 });
 
 console.log(`\nJS8 QSO extraction: ${pass} passed, ${fail} failed`);
