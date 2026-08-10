@@ -725,10 +725,22 @@
 
     var tx = !!(s && s.tx);
     txNow = tx;
-    var queued = (s && s.txQueue) || 0;
+    var queued = (s && s.txQueue) || 0;   // frames NOT yet started
+    var total = (s && s.txTotal) || 0;    // frames in the whole message
     txEl.className = 'jc-tx' + (tx ? ' on' : '');
-    txEl.textContent = tx ? 'TX' : (queued ? queued + ' queued' : 'RX');
-    txEl.title = tx ? 'Transmitting this period.' : 'Receiving.';
+    if (tx) {
+      // A multi-frame message keys for several periods — show which one we're on
+      // so it doesn't just "keep keying up" with no sense of progress.
+      var cur = total > 1 ? (total - queued) : 0;
+      txEl.textContent = total > 1 ? ('TX ' + cur + '/' + total) : 'TX';
+      txEl.title = total > 1 ? ('Transmitting ' + cur + ' of ' + total + ' — about ' + ((total - cur + 1) * (SUBMODE_PERIODS[currentSubmode] || 15)) + 's left.') : 'Transmitting this period.';
+    } else if (queued) {
+      txEl.textContent = total > 1 ? (total + ' tx queued') : (queued + ' queued');
+      txEl.title = 'Queued — sends at the next period.';
+    } else {
+      txEl.textContent = 'RX';
+      txEl.title = 'Receiving.';
+    }
     // Halt is a reserved slot, disabled when there's nothing on air or queued —
     // never mounted conditionally (a control that appears as you reach for it
     // reflows the row). Merge-over-previous: absent fields leave it alone.

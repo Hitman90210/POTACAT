@@ -1203,6 +1203,8 @@ let js8LastStatus = null;       // last status pushed to the renderer (dedupe)
 let js8PopoutWin = null;        // the message-view window
 let js8Tail = [];               // recent activity for replay on popout open (cap 300)
 let js8Station = {};            // { call, grid } — ours, from settings
+let js8QuietFreq = 1500;        // last auto-detected clear TX offset (Hz)
+let js8TxHeld = false;          // operator pinned the offset (clicked waterfall) → don't auto-pick
 // Conversation state lives in MAIN, not the renderer, so unread counts keep
 // accumulating while the window is closed — the whole point of an inbox.
 let js8Threads = new Js8Threads({});
@@ -5171,6 +5173,7 @@ function js8PushStatus() {
     running: !!eng,
     tx: !!(eng && eng._txActive),
     txQueue: eng ? eng.txQueueLength : 0,
+    txTotal: eng ? eng._txTotal : 0,   // frames in the current message, for "TX 1/3" progress
     submode: eng ? eng._submodeName : (settings.js8Submode || 'NORMAL'),
     heartbeat: js8HbEnabled,
     heartbeatMin: js8HbIntervalMin(),
@@ -5266,6 +5269,9 @@ function js8Transmit(text, to) {
     return refuse(`the radio is busy (${radioOwner}).`);
   }
   eng.setStation({ call: settings.myCallsign, grid: settings.grid });
+  // A CQ is a broadcast (no addressee) — pick a clear offset like FT8 does.
+  // Directed messages stay on the current offset (a QSO shouldn't wander).
+  if (!to && /^\s*CQ\b/i.test(String(text || ''))) js8AutoPickQuietFreq(eng);
   const frames = eng.setTxText(t);
   if (!frames) return refuse('nothing in that message can be encoded.');
   eng._txEnabled = true;
@@ -5510,6 +5516,41 @@ let _js8HbLastSent = 0;
  *  repeating scheduler. Returns {ok, error} — the caller surfaces refusals.
  *  Does NOT gate on the interval or the watchdog (those belong to the
  *  scheduler, not to a deliberate operator press). */
+/** The quietest ~50 Hz slot in the JS8 passband, for auto-picking a clear TX
+ *  offset the way FT8 does. Reads the engine's spectrum ring directly, so it
+ *  works whether or not the waterfall popout is open. Returns a Hz offset in
+ *  200..2800, or null when there's no audio to analyze. */
+function js8ComputeQuietFreq() {
+  const eng = js8Engine();
+  if (!eng || !eng._specBuffer) return null;
+  let bins;
+  try { bins = computeSpectrumBins(eng._specBuffer, eng._specOffset || 0, SPECTRUM_BIN_COUNT); }
+  catch { return null; }
+  if (!bins || !bins.length) return null;
+  const hzPerBin = 3000 / bins.length;                    // passband 0..3000 Hz
+  const win = Math.max(1, Math.round(50 / hzPerBin));     // ~50 Hz window
+  const lo = Math.round(200 / hzPerBin);
+  const hi = Math.round(2800 / hzPerBin) - win;
+  let best = Infinity, bestBin = Math.round(1500 / hzPerBin);
+  for (let b = lo; b <= hi; b++) {
+    let e = 0;
+    for (let j = 0; j < win; j++) e += bins[b + j];
+    if (e < best) { best = e; bestBin = b + Math.floor(win / 2); }
+  }
+  const hz = Math.round((bestBin * hzPerBin) / 10) * 10;
+  return Math.max(200, Math.min(2800, hz));
+}
+
+/** Move TX to a clear offset for a broadcast (CQ/HB) — JS8 decodes the whole
+ *  passband, so this never loses the receiver, it just avoids keying on top of
+ *  someone. Skipped once the operator has pinned an offset by clicking the
+ *  waterfall, so a conversation doesn't wander. */
+function js8AutoPickQuietFreq(eng) {
+  if (js8TxHeld) return;
+  const q = js8ComputeQuietFreq();
+  if (q) { js8QuietFreq = q; eng.setTxFreq(q); }
+}
+
 function js8QueueHeartbeat() {
   const eng = js8Engine();
   if (!eng) return { ok: false, error: 'JS8 is not running.' };
@@ -5521,6 +5562,7 @@ function js8QueueHeartbeat() {
   }
   const grid = String(settings.grid || '').slice(0, 4).toUpperCase();
   eng.setStation({ call: settings.myCallsign, grid });
+  js8AutoPickQuietFreq(eng);   // a heartbeat is a broadcast — put it on a clear spot
   const text = grid ? `HB ${grid}` : 'HB';
   const frames = eng.setTxText(text);
   if (!frames) return { ok: false, error: 'Set your callsign in Settings first.' };
@@ -8543,6 +8585,8 @@ function startJtcat(mode) {
       grid: (settings.grid || '').toUpperCase(),
     };
     js8Threads.setMyCall(js8Station.call);
+    js8TxHeld = false;         // fresh session: resume auto-picking a clear TX offset
+    js8QuietFreq = 1500;
     // Land on a JS8 calling frequency (20m day / 40m night) unless the rig is
     // already on one — opening JS8 onto a dead dial was the "shows Band, no
     // QSY" complaint (Casey 2026-08-09).
@@ -24028,6 +24072,7 @@ app.whenReady().then(() => {
     const eng = js8Engine();
     if (!eng) return { ok: false };
     eng.setTxFreq(Number(hz) || 1500);
+    js8TxHeld = true;   // operator chose a spot — stop auto-picking a quiet one
     js8PushStatus();
     return { ok: true, txOffset: Math.round(eng._txFreq) };
   });

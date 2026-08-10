@@ -135,10 +135,12 @@ async function main() {
     const n = engine.setTxText('KN4CRD MSG HELLO FROM POTACAT');
     assert.ok(n >= 2, 'long message must span frames, got ' + n);
     assert.strictEqual(engine.txQueueLength, n);
+    assert.strictEqual(engine._txTotal, n, '_txTotal drives the "TX 1/N" progress badge');
     // Frames stay queued until TX is enabled — arming is deliberate.
     assert.strictEqual(engine._txEnabled, false);
     engine.setTxText(''); // clear
     assert.strictEqual(engine.txQueueLength, 0);
+    assert.strictEqual(engine._txTotal, 0, 'clearing the queue zeroes the total');
     report('multi-frame messages queue one frame per period, disarmed by default');
   } catch (err) { report('multi-frame messages queue one frame per period, disarmed by default', err); }
 
