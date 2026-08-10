@@ -15398,6 +15398,10 @@ function connectRemote() {
     sendCatLog('[JS8] heartbeat auto-reply (HB ACK) ' + (js8HbAck ? 'ON' : 'off') + ' (remote)');
     js8PushStatus();
   });
+  remoteServer.on('js8-set-groups', ({ groups } = {}) => {
+    markUserActive();
+    ipcMain.emit('js8-set-groups', null, groups);   // one implementation (parse+persist+push)
+  });
   remoteServer.on('js8-set-aprs-gate', ({ enabled } = {}) => {
     markUserActive();
     settings.js8AprsGate = !!enabled;
