@@ -20183,13 +20183,40 @@ function isNewerVersion(current, latest) {
   return false;
 }
 
+let _macSignedCache = null;
+/**
+ * Is this macOS build signed with a Developer ID (and thus notarized)?
+ * Squirrel.Mac refuses to apply an update unless the running app carries a
+ * valid Developer ID signature, so an ad-hoc/unsigned build must NOT offer
+ * auto-updates (they'd download and then fail at the swap). Self-detecting so
+ * the feature turns on the instant a signed build ships and stays off for
+ * unsigned dev/ad-hoc builds — no manual flag to flip, no risk to existing
+ * users. Cached; only ever runs on macOS. Non-mac returns true (irrelevant).
+ */
+function macBuildIsSigned() {
+  if (process.platform !== 'darwin') return true;
+  if (_macSignedCache !== null) return _macSignedCache;
+  _macSignedCache = false;
+  try {
+    const { spawnSync } = require('child_process');
+    // /Applications/POTACAT.app/Contents/MacOS/POTACAT → the .app bundle.
+    const appPath = process.execPath.replace(/\/Contents\/MacOS\/[^/]+$/, '');
+    const r = spawnSync('codesign', ['-dv', '--verbose=2', appPath],
+      { encoding: 'utf8', timeout: 5000 });
+    const out = (r.stderr || '') + (r.stdout || ''); // codesign writes to stderr
+    _macSignedCache = /Authority=Developer ID Application/.test(out);
+  } catch { _macSignedCache = false; }
+  return _macSignedCache;
+}
+
 function checkForUpdates() {
-  // macOS: our DMGs are ad-hoc signed (no paid Developer ID), so
-  // electron-updater's download → quitAndInstall path fails Gatekeeper
-  // validation and gives the user a "Downloading… → Upgrade" flash with
-  // no actual update. Force the manual / portable path on macOS until
-  // we get notarized builds. WZ1H on v1.5.23 caught this. K3SBP 2026-05-15.
-  const macOsAutoUpdateUnsupported = process.platform === 'darwin';
+  // macOS auto-update requires a Developer ID signature + notarization —
+  // Squirrel.Mac rejects the update swap otherwise (an ad-hoc DMG gave a
+  // "Downloading… → Upgrade" flash with no actual update; WZ1H v1.5.23,
+  // K3SBP 2026-05-15). So gate on the running build ACTUALLY being signed:
+  // signed → electron-updater; ad-hoc/unsigned → the manual GitHub-notify
+  // fallback, exactly as before. Windows/Linux are unaffected.
+  const macOsAutoUpdateUnsupported = process.platform === 'darwin' && !macBuildIsSigned();
   if (autoUpdater.isUpdaterActive() && !macOsAutoUpdateUnsupported) {
     // Installed build — use electron-updater
     autoUpdater.checkForUpdates().catch(() => {});

@@ -126,12 +126,24 @@ jobs:
         run: node scripts/fetch-cloudflared.js --platform=mac --arch=arm64
       - name: Build macOS dmg (arm64)
         run: npx electron-builder --mac --arm64 --publish never
+        # Signing + notarization are GATED on these secrets. Absent (today) =>
+        # empty strings => electron-builder ad-hoc signs and scripts/notarize.js
+        # skips, i.e. the current unsigned build, unchanged. Present => a
+        # Developer ID signed + notarized build with working auto-update.
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       - uses: actions/upload-artifact@v4
         with:
           name: dist-macos-arm64
           path: |
             dist/POTACAT-*-arm64.dmg
             dist/POTACAT-*-arm64.dmg.blockmap
+            dist/POTACAT-*-arm64*.zip
+            dist/POTACAT-*-arm64*.zip.blockmap
             dist/latest-mac.yml
           if-no-files-found: error
 
@@ -209,12 +221,21 @@ jobs:
         # electron-builder writes a separate latest-mac-x64.yml so the
         # auto-updater can serve the right binary per host arch.
         run: npx electron-builder --mac --x64 --publish never
+        # Same signing gate as the arm64 job — inert without the secrets.
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       - uses: actions/upload-artifact@v4
         with:
           name: dist-macos-x64
           path: |
             dist/POTACAT-*.dmg
             dist/POTACAT-*.dmg.blockmap
+            dist/POTACAT-*.zip
+            dist/POTACAT-*.zip.blockmap
             dist/latest-mac*.yml
           if-no-files-found: error
 
@@ -494,12 +515,12 @@ jobs:
               --title "$TITLE" \
               --notes-file "$NOTES_FILE" \
               dist/POTACAT-Setup-*.exe dist/POTACAT-Portable-*.exe \
-              dist/POTACAT-*.dmg \
+              dist/POTACAT-*.dmg dist/POTACAT-*.zip \
               dist/POTACAT-*.AppImage dist/potacat_*.deb dist/potacat-*.rpm \
               dist/latest*.yml 2>/dev/null || \
             gh release upload "$TAG" \
               dist/POTACAT-Setup-*.exe dist/POTACAT-Portable-*.exe \
-              dist/POTACAT-*.dmg \
+              dist/POTACAT-*.dmg dist/POTACAT-*.zip \
               dist/POTACAT-*.AppImage dist/potacat_*.deb dist/potacat-*.rpm \
               dist/latest*.yml --clobber
           else
@@ -507,12 +528,12 @@ jobs:
               --title "$TITLE" \
               --generate-notes \
               dist/POTACAT-Setup-*.exe dist/POTACAT-Portable-*.exe \
-              dist/POTACAT-*.dmg \
+              dist/POTACAT-*.dmg dist/POTACAT-*.zip \
               dist/POTACAT-*.AppImage dist/potacat_*.deb dist/potacat-*.rpm \
               dist/latest*.yml 2>/dev/null || \
             gh release upload "$TAG" \
               dist/POTACAT-Setup-*.exe dist/POTACAT-Portable-*.exe \
-              dist/POTACAT-*.dmg \
+              dist/POTACAT-*.dmg dist/POTACAT-*.zip \
               dist/POTACAT-*.AppImage dist/potacat_*.deb dist/potacat-*.rpm \
               dist/latest*.yml --clobber
           fi
