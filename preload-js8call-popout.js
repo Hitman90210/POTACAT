@@ -78,6 +78,9 @@ contextBridge.exposeInMainWorld('api', {
   setHbAck: (on) => ipcRenderer.send('js8-set-hback', !!on),
   setSwrAutoTune: (on) => ipcRenderer.send('js8-set-swr-autotune', !!on),
   setAprsGate: (on) => ipcRenderer.send('js8-set-aprs-gate', !!on),
+  setGroups: (raw) => ipcRenderer.send('js8-set-groups', raw),
+  // Outbound SMS/email via APRS — main builds the packet and transmits.
+  sendSms: (kind, to, text) => ipcRenderer.invoke('js8-send-sms', { kind, to, text }),
 
   // Clock-drift monitor (shared with JTCAT — same NTP measurement). JS8 is
   // time-locked, so an off PC clock silently zeroes decodes.

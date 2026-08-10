@@ -734,6 +734,39 @@
     swrAutoRow.classList.toggle('active', on);
     if (window.api.setSwrAutoTune) window.api.setSwrAutoTune(on);
   });
+  // Joined @NETS — persisted on change/Enter; status echo refills when idle.
+  var groupsInput = el('jc-opt-groups');
+  groupsInput.addEventListener('change', function () {
+    if (window.api.setGroups) window.api.setGroups(groupsInput.value);
+  });
+  // Outbound SMS/email via APRS. Airtime estimate updates as you type: the
+  // on-air text is "@APRSIS CMD :GATE:body{NN" and JS8 NORMAL moves ~10
+  // chars/frame, 15 s each — the honesty matters more than the precision.
+  var smsKind = el('jc-sms-kind'), smsTo = el('jc-sms-to'), smsText = el('jc-sms-text'),
+      smsEst = el('jc-sms-est'), smsSend = el('jc-sms-send');
+  smsKind.addEventListener('change', function () {
+    smsTo.placeholder = smsKind.value === 'email' ? 'name@example.com' : '+1 555 123 4567';
+  });
+  function smsEstimate() {
+    var len = 30 + smsTo.value.length + smsText.value.length;   // envelope + addressee overhead
+    var frames = Math.max(1, Math.ceil(len / 10));
+    smsEst.textContent = smsText.value
+      ? '~' + frames + ' frames · ~' + Math.round(frames * 15 / 60 * 10) / 10 + ' min on air'
+      : 'One-way text to a phone or email via the APRS network.';
+  }
+  smsTo.addEventListener('input', smsEstimate);
+  smsText.addEventListener('input', smsEstimate);
+  smsSend.addEventListener('click', async function (e) {
+    e.preventDefault();
+    smsSend.disabled = true;
+    try {
+      var r = await window.api.sendSms(smsKind.value, smsTo.value, smsText.value);
+      smsEst.textContent = (r && r.ok) ? 'On the air — needs a listening APRS gateway to deliver.' : ((r && r.error) || 'Not sent.');
+      if (r && r.ok) smsText.value = '';
+    } catch (err) { smsEst.textContent = 'Not sent.'; }
+    smsSend.disabled = false;
+  });
+
   var aprsGateRow = el('jc-opt-aprs-gate'), aprsGateState = el('jc-aprs-gate-state');
   aprsGateRow.addEventListener('click', function () {
     var on = !aprsGateRow.classList.contains('active');
@@ -838,6 +871,7 @@
     swrAutoRow.classList.toggle('active', !!(s && s.swrAutoTune));
     aprsGateRow.classList.toggle('active', !!(s && s.aprsGate));
     aprsGateState.textContent = (s && s.aprsGate) ? (s.aprsGateUp ? '— connected' : '— connecting…') : '';
+    if (s && Array.isArray(s.groups) && document.activeElement !== groupsInput) groupsInput.value = s.groups.join(', ');
     if (s && s.heartbeatMin && document.activeElement !== hbMinInput) hbMinInput.value = s.heartbeatMin;
     if (up !== was && !up) lastDecodeTs = 0;   // a fresh session starts unheard
 

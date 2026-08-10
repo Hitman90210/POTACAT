@@ -5201,6 +5201,8 @@ function js8PushStatus() {
     swrAutoTune: !!settings.swrAutoTune,   // ⚙ run the ATU once on an SWR-guard trip
     aprsGate: !!settings.js8AprsGate,      // ⚙ RF→APRS-IS gateway opt-in
     aprsGateUp: !!(aprsGate && aprsGate.verified),
+    groups: js8CustomGroups(),             // joined @NETS (⚙ gear)
+    mailUnread: _js8Mailbox ? _js8Mailbox.unread : 0,   // count only — content stays owner-side
     dialHz: _currentFreqHz || 0,
     band: _currentFreqHz ? (freqToBand(_currentFreqHz / 1e6) || '') : '',
     // Audio-passband offsets for the waterfall markers. JS8 offsets are
@@ -5269,6 +5271,22 @@ function js8HandleRx(d) {
     if (mine && !r.folded) {
       sendCatLog(`[JS8] message for you from ${msg.from}: ${msg.text}`
         + (msg.checksumValid === false ? ' (checksum FAILED — text may be incomplete)' : ''));
+    }
+    // Mail: "MSG <text>" / "MSG TO:<us> <text>" addressed to us is a message
+    // LEFT for this station — store it (survives restarts), tell every surface.
+    const meCall = (settings.myCallsign || '').toUpperCase();
+    if (msg.to === meCall) {
+      const { parseMailFor } = require('./lib/js8-mailbox');
+      const mail = parseMailFor(meCall, msg.text);
+      if (mail) {
+        const row = js8Mailbox().add({ from: msg.from, to: meCall, text: mail.text });
+        if (row) {
+          js8MailboxSave();
+          sendCatLog(`[JS8 MAIL] stored #${row.id} from ${row.from}: ${row.text}`);
+          if (win && !win.isDestroyed()) win.webContents.send('app-notice', { message: `JS8 mail from ${row.from}: ${row.text}`, duration: 10000 });
+          js8PushStatus();   // mailUnread rides js8-state to every surface
+        }
+      }
     }
     // Reachability, the other direction: an SNR report addressed to US
     // ("K3SBP SNR -07", an HB ACK or a SNR? answer) is a station saying it
@@ -5361,12 +5379,10 @@ function js8MaybeAckHeartbeat(msg) {
   const call = String(msg.from || '').toUpperCase();
   if (!call || call.startsWith('<') || call.startsWith('@')) return;    // need a real station
   if (call === String(settings.myCallsign || '').toUpperCase()) return; // not our own heartbeat
-  if (Date.now() - js8HbLastActivity > JS8_HB_WATCHDOG_MS) {
-    js8HbAck = false;
-    sendCatLog('[JS8] heartbeat auto-reply stopped — no operator activity for 30 min (attended operation). Turn it back on when you return.');
-    js8PushStatus();
-    return;
-  }
+  // NO idle watchdog here (Casey 2026-08-10: "reply until I turn it off").
+  // HB ACK is response-to-interrogation — answering a station that called the
+  // net — not unattended beaconing; JS8Call's own autoreply runs the same way.
+  // Session-only remains the backstop: it is OFF at every launch.
   if (_swrTripped) return;                                       // don't beacon into a bad match
   if (eng._txActive || eng.txQueueLength > 0) return;            // not while we're already sending
   if (radioOwner !== 'none' && radioOwner !== 'jtcat') return;   // radio is busy
@@ -5379,13 +5395,40 @@ function js8MaybeAckHeartbeat(msg) {
   if (r && r.ok) sendCatLog(`[JS8] HB ACK → ${call} (SNR ${rpt})`);
 }
 
+/** The custom @GROUPS the operator has joined (settings.js8Groups, ⚙ gear). */
+function js8CustomGroups() {
+  return (Array.isArray(settings.js8Groups) ? settings.js8Groups : [])
+    .map((g) => String(g || '').toUpperCase().trim())
+    .filter((g) => /^@[A-Z0-9/]{2,15}$/.test(g));
+}
+
 /** Is this interpreted frame addressed to us (directly or via a group)? */
 function js8IsForMe(d) {
   const to = (d.directed && d.directed[1]) || '';
   if (!to) return false;
   const me = (settings.myCallsign || '').toUpperCase();
   if (to === me) return true;
-  return to === '@ALLCALL' || to === '@HB' || to === '@CQ';
+  if (to === '@ALLCALL' || to === '@HB' || to === '@CQ') return true;
+  return js8CustomGroups().includes(to);   // joined nets count as "for me"
+}
+
+// ── JS8 mailbox (receive-only store-and-forward, v1) ─────────────────────────
+let _js8Mailbox = null;
+let _js8MailboxSaveTimer = null;
+function js8Mailbox() {
+  if (_js8Mailbox) return _js8Mailbox;
+  const { Js8Mailbox } = require('./lib/js8-mailbox');
+  _js8Mailbox = new Js8Mailbox({});
+  try { _js8Mailbox.load(fs.readFileSync(path.join(app.getPath('userData'), 'js8-mailbox.json'), 'utf8')); }
+  catch { /* first run */ }
+  return _js8Mailbox;
+}
+function js8MailboxSave() {
+  clearTimeout(_js8MailboxSaveTimer);
+  _js8MailboxSaveTimer = setTimeout(() => {
+    try { fs.writeFileSync(path.join(app.getPath('userData'), 'js8-mailbox.json'), JSON.stringify(js8Mailbox().toJSON())); }
+    catch (err) { console.error('[JS8 MAIL] save failed:', err.message); }
+  }, 1500);
 }
 
 /**
@@ -24275,6 +24318,29 @@ app.whenReady().then(() => {
     if (settings.js8AprsGate && js8Engine()) connectAprsGate();
     else if (!settings.js8AprsGate) disconnectAprsGate();
     js8PushStatus();
+  });
+  // ⚙ Joined groups (@NETS). Persisted; comma-separated from the gear editor.
+  ipcMain.on('js8-set-groups', (_e, raw) => {
+    markUserActive();
+    settings.js8Groups = String(raw || '').split(',')
+      .map((g) => { g = g.trim().toUpperCase(); return g && !g.startsWith('@') ? '@' + g : g; })
+      .filter((g) => /^@[A-Z0-9/]{2,15}$/.test(g));
+    saveSettings(settings);
+    js8PushStatus();
+  });
+  // Outbound SMS/email via APRS: MAIN builds the packet (padding + sequence
+  // are where users silently fail) and rides the normal @APRSIS transmit.
+  let _js8AprsSeq = 0;
+  ipcMain.handle('js8-send-sms', (_e, { kind, to, text } = {}) => {
+    markUserActive();
+    const { buildSmsMessage, buildEmailMessage } = require('./lib/aprs-is');
+    const seq = (_js8AprsSeq = (_js8AprsSeq % 99) + 1);
+    const body = String(text || '').slice(0, 67);
+    const packet = kind === 'email'
+      ? buildEmailMessage(settings.js8EmailGateway || 'EMAIL-2', to, body, seq)
+      : buildSmsMessage(settings.js8SmsGateway || 'SMSGTE', to, body, seq);
+    if (!packet) return { ok: false, error: kind === 'email' ? 'Enter a valid email address and message.' : 'Enter a valid phone number and message.' };
+    return js8Transmit('CMD ' + packet, '@APRSIS');
   });
   // ⚙ Auto-tune the ATU once when the SWR guard trips — a persisted setting.
   ipcMain.on('js8-set-swr-autotune', (_e, on) => {

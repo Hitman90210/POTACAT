@@ -404,11 +404,25 @@
       <div class="jc-opt-section">Heartbeat</div>
       <button id="jc-opt-hback" class="jc-opt-row">
         <span class="jc-opt-label">Reply to heartbeats (HB ACK)</span>
-        <span class="jc-opt-help">When another station's heartbeat is decoded, automatically send them their signal report. This is automatic transmission: it turns itself off after 30 minutes without you, won't key into a bad match or interrupt a QSO, ACKs each station once, and starts OFF at every launch.</span>
+        <span class="jc-opt-help">When another station's heartbeat is decoded, automatically send them their signal report — and keep doing so until you turn this off. It won't key into a bad match or interrupt a QSO, ACKs each station at most once per 30 minutes, and starts OFF at every launch.</span>
       </button>
       <label class="jc-opt-row jc-opt-num-row">
         <span class="jc-opt-label">Auto-heartbeat every <input id="jc-opt-hbmin" type="number" min="5" max="60" value="15"> min</span>
         <span class="jc-opt-help">Interval for the bar's Auto heartbeat once you switch it on.</span>
+      </label>
+      <div class="jc-opt-section">Groups</div>
+      <label class="jc-opt-row jc-opt-num-row">
+        <span class="jc-opt-label">Joined nets <input id="jc-opt-groups" type="text" placeholder="@TXNET, @EMCOMM" style="width:150px;font-size:11px;padding:1px 4px;border-radius:4px;border:1px solid var(--border-primary);background:var(--bg-tertiary);color:var(--text-primary);"></span>
+        <span class="jc-opt-help">Comma-separated @GROUPS to monitor. Messages to a joined net count as "for you" — they light the conversation rail and notify, and guests on your Guest Pass can follow them.</span>
+      </label>
+      <div class="jc-opt-section">Messaging</div>
+      <label class="jc-opt-row jc-opt-num-row">
+        <span class="jc-opt-label">
+          <select id="jc-sms-kind" style="font-size:11px;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border-primary);border-radius:4px;"><option value="sms">SMS</option><option value="email">Email</option></select>
+          <input id="jc-sms-to" type="text" placeholder="+1 555 123 4567" style="width:118px;font-size:11px;padding:1px 4px;border-radius:4px;border:1px solid var(--border-primary);background:var(--bg-tertiary);color:var(--text-primary);">
+        </span>
+        <input id="jc-sms-text" type="text" maxlength="67" placeholder="Message (67 max)" style="margin-top:4px;width:100%;font-size:11px;padding:2px 4px;border-radius:4px;border:1px solid var(--border-primary);background:var(--bg-input,#0f1419);color:var(--text-primary);">
+        <span class="jc-opt-help"><span id="jc-sms-est">One-way text to a phone or email via the APRS network.</span> <button id="jc-sms-send" class="jc-btn go" style="font-size:10.5px;padding:1px 8px;margin-left:6px;">Send</button></span>
       </label>
       <div class="jc-opt-section">APRS</div>
       <button id="jc-opt-aprs-gate" class="jc-opt-row">

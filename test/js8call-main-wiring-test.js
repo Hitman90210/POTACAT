@@ -253,10 +253,12 @@ test('opening the JS8 window auto-starts it; closing stops it', () => {
 
 // ── HB ACK auto-reply is attended + guarded (it is automatic TX) ─────────────
 
-test('HB ACK auto-reply is attended, guarded, and session-only', () => {
+test('HB ACK auto-reply is guarded and session-only', () => {
   const body = fnBody('js8MaybeAckHeartbeat');
-  assert.ok(body.includes('JS8_HB_WATCHDOG_MS'),
-    'the 30-min attended watchdog must gate automatic heartbeat replies (Part 97)');
+  // Casey 2026-08-10: HB ACK replies until turned OFF — response-to-
+  // interrogation, not beaconing, so NO idle self-disarm. Session-only stays.
+  assert.ok(!body.includes('JS8_HB_WATCHDOG_MS'),
+    'HB ACK must not self-disarm on idle — it replies until the operator turns it off');
   assert.ok(body.includes('_swrTripped'), 'never ACK into a tripped SWR match');
   assert.ok(body.includes('js8HbAcked'), 'ACK a given station at most once per window');
   assert.ok(body.includes('_txActive') && body.includes('txQueueLength'),
