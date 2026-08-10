@@ -26,8 +26,6 @@
       textEl = el('jc-text'), sendBtn = el('jc-send'), onairEl = el('jc-onair'),
       heardEl = el('jc-heard');
 
-  var setupEl = el('jc-setup'), setupStart = el('jc-setup-start'),
-      setupErr = el('jc-setup-err'), speedEl = el('jc-speed'), hbMinEl = el('jc-hb-min');
 
   // Instruments + new bar controls (waterfall, band-activity, meters, clock).
   var rxageEl = el('jc-rxage'), haltBtn = el('jc-halt'),
@@ -485,7 +483,8 @@
   var hbAutoBtn = el('jc-hb-auto');
   hbAutoBtn.addEventListener('click', async function () {
     try {
-      var r = await window.api.heartbeat({ enabled: !hbOn, intervalMin: hbMinEl.value });
+      // Interval defaults to the setting (15 min); no pre-flight picker now.
+      var r = await window.api.heartbeat({ enabled: !hbOn });
       hbOn = !!(r && r.enabled);
       renderHb();
     } catch (e) { /* status push will correct us */ }
@@ -517,29 +516,26 @@
   // ── start / stop ───────────────────────────────────────────────────────────
 
   async function startJs8() {
-    setupErr.textContent = '';
-    setupStart.disabled = powerBtn.disabled = true;
+    powerBtn.disabled = true;
     var r;
     try { r = await window.api.start(); }
     catch (e) { r = { ok: false, error: String(e && e.message) }; }
-    setupStart.disabled = powerBtn.disabled = false;
-    if (!(r && r.ok)) {
-      setupErr.textContent = (r && r.error) || 'JS8 did not start.';
-      return;
-    }
-    var min = parseInt(hbMinEl.value, 10);
-    if (min) { try { await window.api.heartbeat({ intervalMin: min }); } catch (e) {} }
+    powerBtn.disabled = false;
+    // Errors (no callsign, radio busy) show on the on-air line — the operating
+    // UI is up, so there's a place to say why instead of a setup-page banner.
+    if (!(r && r.ok)) note(esc((r && r.error) || 'JS8 did not start.'), 'err');
   }
 
-  setupStart.addEventListener('click', startJs8);
+  // The one Start/Stop — the inline bar button, like the FT8 window.
   powerBtn.addEventListener('click', function () {
     if (running) window.api.stop();
     else startJs8();
   });
 
   function showRunning(on) {
-    setupEl.hidden = on;
-    colsEl.hidden = !on;
+    // Messaging UI is always up (no setup wall); the waterfall + meters appear
+    // when the engine runs, so there's no dead black canvas while stopped.
+    colsEl.hidden = false;
     instrumentsEl.hidden = !on;
     if (on) resizeWaterfall();   // the canvas had zero size while hidden
     renderRxAge();
@@ -839,7 +835,7 @@
     if (!trafficList.childElementCount) {
       var ph = document.createElement('div');
       ph.className = 'jc-traffic-empty';
-      ph.textContent = 'Listening — decodes appear here as they arrive.';
+      ph.textContent = 'Decodes appear here once JS8 is running.';
       trafficList.appendChild(ph);
     }
     showThreadView(false);   // start on the band-activity view, no conversation open

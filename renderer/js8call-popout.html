@@ -323,41 +323,9 @@
     <button class="jc-btn" id="jc-swr-atu">Run ATU</button>
   </div>
 
-  <!-- The start page. JS8 is native — there is genuinely nothing to set up,
-       so this is one sentence, one control, one button. -->
-  <div class="jc-setup" id="jc-setup">
-    <h2>JS8</h2>
-    <p id="jc-setup-lede">POTACAT decodes and transmits JS8 itself — no JS8Call
-      application, no virtual audio cables, nothing to install. Messages arrive
-      as conversations and keep counting while this window is closed.</p>
-    <div class="jc-setup-actions">
-      <button class="jc-btn go" id="jc-setup-start">Start JS8</button>
-      <label>Speed
-        <select id="jc-speed">
-          <option value="NORMAL">Normal (15 s)</option>
-          <option value="SLOW" disabled>Slow (30 s) — pending validation</option>
-          <option value="FAST" disabled>Fast (10 s) — pending validation</option>
-          <option value="TURBO" disabled>Turbo (6 s) — pending validation</option>
-          <option value="ULTRA" disabled>Ultra (4 s) — pending validation</option>
-        </select>
-      </label>
-      <label>Heartbeat every
-        <select id="jc-hb-min">
-          <option value="10">10 min</option>
-          <option value="15" selected>15 min</option>
-          <option value="30">30 min</option>
-        </select>
-      </label>
-    </div>
-    <p class="jc-quiet">Uses the radio and audio device JTCAT is set up with, on
-      the band the radio is tuned to. JS8 activity centers on 7.078, 14.078,
-      3.578 and 21.078 MHz. The heartbeat switch lives in the bar above once
-      running; it turns itself off after 30 minutes without you (attended
-      operation).</p>
-    <p class="jc-err" id="jc-setup-err"></p>
-  </div>
-
-  <div class="jc-cols" id="jc-cols" hidden>
+  <!-- No setup wall — JS8 is native, so the operating UI is always up and the
+       bar's Start/Stop runs the engine, exactly like the FT8 window. -->
+  <div class="jc-cols" id="jc-cols">
     <div class="jc-rail jc-rail-l">
       <div class="jc-railhead">Conversations <span id="jc-unread"></span></div>
       <div id="jc-groups"></div>
