@@ -1417,7 +1417,21 @@ function tripSwrGuard(swr) {
   if (remoteServer && remoteServer.running) {
     remoteServer.sendToClient({ type: 'tune-blocked', reason: msg });
   }
+  // ⚙ Optional self-heal (settings.swrAutoTune): run the Flex ATU once to
+  // re-match instead of making the operator do it. Time-gated to one attempt
+  // per minute — the tune clears the latch, so without this gate a still-bad
+  // match would trip → tune → trip forever. If it trips again inside the
+  // minute, it latches and the operator intervenes. Flex-only (the guard is).
+  if (settings.swrAutoTune && flexSdr() && Date.now() - _swrLastAutoTune > 60000) {
+    _swrLastAutoTune = Date.now();
+    sendCatLog('[SWR GUARD] auto-tuning the ATU to re-match (one shot — latches if it trips again).');
+    setTimeout(() => {
+      try { noteAtuTuneStarted(); smartSdr.setAtu(true); }   // clears the latch + suppresses tripping during the sweep
+      catch (err) { sendCatLog('[SWR GUARD] auto-tune failed: ' + (err.message || err)); }
+    }, 300);   // let the abort teardown settle before keying the tune carrier
+  }
 }
+let _swrLastAutoTune = 0;
 let _currentAlc = 0;
 let _currentPower = 0; // live wattmeter reading from the rig (during TX)
 let _currentAtuState = false;
@@ -5177,6 +5191,8 @@ function js8PushStatus() {
     submode: eng ? eng._submodeName : (settings.js8Submode || 'NORMAL'),
     heartbeat: js8HbEnabled,
     heartbeatMin: js8HbIntervalMin(),
+    hbAck: js8HbAck,                       // ⚙ auto-reply to heartbeats (session-only)
+    swrAutoTune: !!settings.swrAutoTune,   // ⚙ run the ATU once on an SWR-guard trip
     dialHz: _currentFreqHz || 0,
     band: _currentFreqHz ? (freqToBand(_currentFreqHz / 1e6) || '') : '',
     // Audio-passband offsets for the waterfall markers. JS8 offsets are
@@ -5239,6 +5255,39 @@ function js8HandleRx(d) {
         + (msg.checksumValid === false ? ' (checksum FAILED — text may be incomplete)' : ''));
     }
   }
+
+  // ⚙ HB ACK — auto-reply to a decoded heartbeat with the sender's SNR, if the
+  // operator opted in. Automatic TX, so heavily guarded (see js8MaybeAckHeartbeat).
+  if (js8HbAck && msg.isHeartbeat) js8MaybeAckHeartbeat(msg);
+}
+
+/** Send a heartbeat acknowledgement (the sender's SNR back to them) when HB ACK
+ *  is on. Same attended posture as the HB scheduler — this is automatic TX:
+ *  disarms after 30 min without an operator, never keys into a tripped SWR
+ *  match or while busy, never ACKs our own call, and ACKs a given station at
+ *  most once per window so we don't hammer the band. */
+function js8MaybeAckHeartbeat(msg) {
+  const eng = js8Engine();
+  if (!eng) return;
+  const call = String(msg.from || '').toUpperCase();
+  if (!call || call.startsWith('<') || call.startsWith('@')) return;    // need a real station
+  if (call === String(settings.myCallsign || '').toUpperCase()) return; // not our own heartbeat
+  if (Date.now() - js8HbLastActivity > JS8_HB_WATCHDOG_MS) {
+    js8HbAck = false;
+    sendCatLog('[JS8] heartbeat auto-reply stopped — no operator activity for 30 min (attended operation). Turn it back on when you return.');
+    js8PushStatus();
+    return;
+  }
+  if (_swrTripped) return;                                       // don't beacon into a bad match
+  if (eng._txActive || eng.txQueueLength > 0) return;            // not while we're already sending
+  if (radioOwner !== 'none' && radioOwner !== 'jtcat') return;   // radio is busy
+  const last = js8HbAcked.get(call) || 0;
+  if (Date.now() - last < JS8_HBACK_DUPE_MS) return;             // one ACK per station per window
+  js8HbAcked.set(call, Date.now());
+  const snr = (typeof msg.snr === 'number') ? Math.round(msg.snr) : 0;
+  const rpt = (snr >= 0 ? '+' : '-') + String(Math.abs(snr)).padStart(2, '0');
+  const r = js8Transmit('SNR ' + rpt, call);   // directed SNR report — the acknowledgement
+  if (r && r.ok) sendCatLog(`[JS8] HB ACK → ${call} (SNR ${rpt})`);
 }
 
 /** Is this interpreted frame addressed to us (directly or via a group)? */
@@ -5305,6 +5354,11 @@ let js8HbEnabled = false;
 let js8HbTimer = null;
 let js8HbLastActivity = 0;
 const JS8_HB_WATCHDOG_MS = 30 * 60 * 1000;
+// Auto-reply to received heartbeats (HB ACK). Automatic TX, so SESSION-ONLY
+// (never persisted) with the same attended posture as the HB scheduler.
+let js8HbAck = false;
+const js8HbAcked = new Map();   // call -> last ACK ms, for dupe-limiting
+const JS8_HBACK_DUPE_MS = 30 * 60 * 1000;   // ACK a given station at most once per 30 min
 
 function js8HbIntervalMin() {
   const n = parseInt(settings.js8HeartbeatMin, 10);
@@ -24057,6 +24111,23 @@ app.whenReady().then(() => {
   // the Auto scheduler above (Casey 2026-08-09: "let me manually send a HB as
   // many times as I want").
   ipcMain.handle('js8-send-hb', () => { markUserActive(); return js8SendHeartbeatNow(); });
+  // ⚙ Auto-reply to heartbeats (HB ACK). Automatic TX → session-only, and a
+  // toggle is operator activity (pets the 30-min attended watchdog).
+  ipcMain.on('js8-set-hback', (_e, on) => {
+    markUserActive();
+    js8HbAck = !!on;
+    js8HbLastActivity = Date.now();
+    if (js8HbAck) js8HbAcked.clear();
+    sendCatLog('[JS8] heartbeat auto-reply (HB ACK) ' + (js8HbAck ? 'ON' : 'off'));
+    js8PushStatus();
+  });
+  // ⚙ Auto-tune the ATU once when the SWR guard trips — a persisted setting.
+  ipcMain.on('js8-set-swr-autotune', (_e, on) => {
+    markUserActive();
+    settings.swrAutoTune = !!on;
+    saveSettings(settings);
+    js8PushStatus();
+  });
   // Transmit. Always operator-initiated — there is no automatic path here, and
   // the reply carries the refusal reason so the popout can show it rather than
   // appearing to have done nothing.

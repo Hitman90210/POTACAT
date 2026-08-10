@@ -691,6 +691,44 @@
   wfToggleBtn.addEventListener('click', function () { applyWfHidden(!wfHidden, true); });
   try { applyWfHidden(localStorage.getItem(WF_HIDDEN_KEY) === '1', false); } catch (e) { /* ignore */ }
 
+  // ── ⚙ options popover (heartbeat reply, SWR auto-tune, HB interval) ──────────
+  // Same open/close grammar as the JTCAT gear: the ⚙ toggles it, outside-click
+  // and Esc close it. The toggles' authoritative state comes from onStatus.
+  var gearBtn = el('jc-gear-btn'), gearPop = el('jc-gear-pop'),
+      hbAckRow = el('jc-opt-hback'), swrAutoRow = el('jc-opt-swr-autotune'), hbMinInput = el('jc-opt-hbmin');
+  function setGearOpen(open) {
+    gearPop.classList.toggle('hidden', !open);
+    gearBtn.classList.toggle('active', open);
+  }
+  gearBtn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    setGearOpen(gearPop.classList.contains('hidden'));
+  });
+  document.addEventListener('click', function (e) {
+    if (gearPop.classList.contains('hidden')) return;
+    if (gearPop.contains(e.target) || e.target === gearBtn) return;
+    setGearOpen(false);
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !gearPop.classList.contains('hidden')) setGearOpen(false);
+  });
+  // HB ACK — automatic reply to heartbeats. Session-only, like the Auto HB
+  // toggle; main enforces the attended-watchdog / SWR / dupe rules.
+  hbAckRow.addEventListener('click', function () {
+    var on = !hbAckRow.classList.contains('active');
+    hbAckRow.classList.toggle('active', on);
+    if (window.api.setHbAck) window.api.setHbAck(on);
+  });
+  swrAutoRow.addEventListener('click', function () {
+    var on = !swrAutoRow.classList.contains('active');
+    swrAutoRow.classList.toggle('active', on);
+    if (window.api.setSwrAutoTune) window.api.setSwrAutoTune(on);
+  });
+  hbMinInput.addEventListener('change', function () {
+    var n = parseInt(hbMinInput.value, 10);
+    if (n >= 5 && n <= 60 && window.api.heartbeat) window.api.heartbeat({ intervalMin: n });
+  });
+
   // ── RX gain (the one synced level; also our waterfall brightness) ───────────
   function applyRxGainPct(pct, echo) {
     pct = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
@@ -775,6 +813,10 @@
     hbOn = !!(s && s.heartbeat);
     renderHb();
     renderSwr(!!(s && s.swrTripped), s && s.swrMessage);
+    // Gear toggles mirror main's authoritative state.
+    hbAckRow.classList.toggle('active', !!(s && s.hbAck));
+    swrAutoRow.classList.toggle('active', !!(s && s.swrAutoTune));
+    if (s && s.heartbeatMin && document.activeElement !== hbMinInput) hbMinInput.value = s.heartbeatMin;
     if (up !== was && !up) lastDecodeTs = 0;   // a fresh session starts unheard
 
     // Live dial + band picker from the status snapshot (also arrives via

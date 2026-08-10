@@ -251,5 +251,22 @@ test('opening the JS8 window auto-starts it; closing stops it', () => {
     'stop-on-close must be skipped when a remote client may be using JS8');
 });
 
+// ── HB ACK auto-reply is attended + guarded (it is automatic TX) ─────────────
+
+test('HB ACK auto-reply is attended, guarded, and session-only', () => {
+  const body = fnBody('js8MaybeAckHeartbeat');
+  assert.ok(body.includes('JS8_HB_WATCHDOG_MS'),
+    'the 30-min attended watchdog must gate automatic heartbeat replies (Part 97)');
+  assert.ok(body.includes('_swrTripped'), 'never ACK into a tripped SWR match');
+  assert.ok(body.includes('js8HbAcked'), 'ACK a given station at most once per window');
+  assert.ok(body.includes('_txActive') && body.includes('txQueueLength'),
+    'never ACK while already transmitting');
+  assert.ok(body.includes('settings.myCallsign'), 'never ACK our own heartbeat');
+  // Session-only: the enable must never be persisted (would re-arm automatic TX
+  // on the next launch with nobody at the radio).
+  assert.ok(!/settings\.[A-Za-z]*[Hh]bAck/.test(RAW),
+    'HB ACK enable must be session-only, never written to settings');
+});
+
 console.log(`\nJS8 main wiring: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

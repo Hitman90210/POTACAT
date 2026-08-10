@@ -70,6 +70,11 @@ contextBridge.exposeInMainWorld('api', {
   // Set the TX audio offset — the operator clicking the waterfall.
   setOffset: (hz) => ipcRenderer.invoke('js8-set-offset', hz),
 
+  // ⚙ opt-ins. HB ACK = auto-reply to heartbeats (session-only, automatic TX).
+  // SWR auto-tune = run the ATU once on an SWR-guard trip (persisted setting).
+  setHbAck: (on) => ipcRenderer.send('js8-set-hback', !!on),
+  setSwrAutoTune: (on) => ipcRenderer.send('js8-set-swr-autotune', !!on),
+
   // Clock-drift monitor (shared with JTCAT — same NTP measurement). JS8 is
   // time-locked, so an off PC clock silently zeroes decodes.
   onClock: (cb) => ipcRenderer.on('jtcat-clock', (_e, d) => cb(d)),

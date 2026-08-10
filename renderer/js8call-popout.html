@@ -248,6 +248,29 @@
     .jc-meter-val { min-width: 30px; text-align: right; font-variant-numeric: tabular-nums;
       color: var(--text-secondary, #888); }
     .jc-wf-toggle { margin-left: auto; font-size: 10.5px; padding: 2px 8px; flex: none; }
+    .jc-gear-btn { font-size: 13px; padding: 1px 7px; flex: none; }
+    .jc-gear-btn.active { background: var(--bg-hover); }
+
+    /* ⚙ options popover — same shape as JTCAT's jp-options-pop. */
+    .jc-gear-pop { position: fixed; right: 8px; bottom: 40px; z-index: 2000; width: 340px;
+      max-width: calc(100vw - 16px); max-height: 62vh; overflow-y: auto;
+      background: var(--bg-secondary); border: 1px solid var(--border-primary);
+      border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,0.5); padding: 6px; }
+    .jc-gear-pop.hidden { display: none; }
+    .jc-opt-section { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px;
+      color: var(--text-tertiary, #888); padding: 6px 8px 2px; }
+    .jc-opt-row { display: block; width: 100%; text-align: left; background: none; border: none;
+      border-radius: 6px; padding: 6px 8px 6px 30px; cursor: pointer; position: relative;
+      color: var(--text-primary); font-family: inherit; }
+    .jc-opt-row:hover { background: var(--bg-hover); }
+    .jc-opt-row::before { content: '\2610'; position: absolute; left: 9px; top: 5px; font-size: 14px; color: var(--text-tertiary, #888); }
+    .jc-opt-row.active::before { content: '\2611'; color: var(--accent-green-btn, #4ecca3); }
+    .jc-opt-row.jc-opt-num-row { cursor: default; }
+    .jc-opt-row.jc-opt-num-row::before { content: ''; }
+    .jc-opt-label { display: block; font-size: 12px; font-weight: 600; }
+    .jc-opt-label input[type="number"] { width: 44px; font-size: 11px; padding: 1px 3px; border-radius: 4px;
+      border: 1px solid var(--border-primary); background: var(--bg-tertiary); color: var(--text-primary); margin: 0 2px; }
+    .jc-opt-help { display: block; font-size: 10px; color: var(--text-tertiary, #888); margin-top: 2px; line-height: 1.35; }
   </style>
 </head>
 <body>
@@ -371,6 +394,26 @@
         <span class="jc-meter-val" id="jc-swr-val">&mdash;</span>
       </span>
       <button class="jc-btn jc-wf-toggle" id="jc-wf-toggle" title="Show or hide the waterfall">Hide waterfall</button>
+      <button class="jc-btn jc-gear-btn" id="jc-gear-btn" title="JS8 options — heartbeat reply, SWR auto-tune, heartbeat interval">&#9881;</button>
+    </div>
+
+    <!-- ⚙ Options popover — same placement/pattern as the JTCAT gear. Closed by
+         outside click / Esc / the ⚙ button. Hosts the opt-in automatic behaviors. -->
+    <div id="jc-gear-pop" class="jc-gear-pop hidden">
+      <div class="jc-opt-section">Heartbeat</div>
+      <button id="jc-opt-hback" class="jc-opt-row">
+        <span class="jc-opt-label">Reply to heartbeats (HB ACK)</span>
+        <span class="jc-opt-help">When another station's heartbeat is decoded, automatically send them their signal report. This is automatic transmission: it turns itself off after 30 minutes without you, won't key into a bad match or interrupt a QSO, ACKs each station once, and starts OFF at every launch.</span>
+      </button>
+      <label class="jc-opt-row jc-opt-num-row">
+        <span class="jc-opt-label">Auto-heartbeat every <input id="jc-opt-hbmin" type="number" min="5" max="60" value="15"> min</span>
+        <span class="jc-opt-help">Interval for the bar's Auto heartbeat once you switch it on.</span>
+      </label>
+      <div class="jc-opt-section">SWR guard</div>
+      <button id="jc-opt-swr-autotune" class="jc-opt-row">
+        <span class="jc-opt-label">Auto-tune on high SWR</span>
+        <span class="jc-opt-help">If a transmission trips the SWR guard, run the antenna tuner once to re-match instead of latching. Needs a rig with an ATU. Tunes once per trip — if it trips again it latches, so a bad antenna can't loop the tuner.</span>
+      </button>
     </div>
   </div>
 
