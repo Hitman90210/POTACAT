@@ -42,7 +42,6 @@
     "productName": "POTACAT",
     "icon": "assets/icon.png",
     "afterPack": "scripts/linux-after-pack.js",
-    "afterSign": "scripts/notarize.js",
     "files": [
       "main.js",
       "preload.js",
@@ -116,9 +115,7 @@
         "zip"
       ],
       "category": "public.app-category.utilities",
-      "hardenedRuntime": true,
-      "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist",
+      "identity": null,
       "extendInfo": {
         "NSMicrophoneUsageDescription": "POTACAT needs microphone access for ECHOCAT remote audio.",
         "NSCameraUsageDescription": "POTACAT does not use the camera but WebRTC requires this permission."
