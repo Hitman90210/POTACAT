@@ -31,7 +31,7 @@
 
   // Instruments + new bar controls (waterfall, band-activity, meters, clock).
   var rxageEl = el('jc-rxage'), haltBtn = el('jc-halt'),
-      instrumentsEl = el('jc-instruments'), trafficList = el('jc-traffic-list'),
+      instrumentsEl = el('jc-instruments'), bandViewEl = el('jc-band'), trafficList = el('jc-band-list'),
       wfWrapEl = el('jc-wf'), wfToggleBtn = el('jc-wf-toggle'),
       wfCanvas = el('jc-waterfall'), wfCtx = wfCanvas.getContext('2d'), wfSilentEl = el('jc-wf-silent'),
       rxGainEl = el('jc-rx-gain'), rxGainValEl = el('jc-rx-gain-val'),
@@ -173,6 +173,21 @@
     renderConvs(r && r.list);
     setUnreadTotal(r ? r.unread : 0);
     refreshCompose();
+    showThreadView(true);
+  }
+
+  // The center pane is either the live band (idle) or a conversation transcript
+  // (a thread open) — never both, never empty. This is the swap.
+  function showThreadView(open) {
+    msgsEl.hidden = !open;
+    bandViewEl.hidden = !!open;
+    if (!open) headEl.hidden = true;
+  }
+  function closeThread() {
+    openId = null; openCall = '';
+    renderConvs(lastList);       // drop the selected-row highlight
+    showThreadView(false);
+    refreshCompose();
   }
 
   function renderThread(th) {
@@ -188,6 +203,14 @@
       (stn && stn.snr !== null && stn.snr !== undefined
         ? '<span class="mono num">' + esc(snrText(stn.snr)) + ' dB</span>' : '') +
       (stn ? '<span style="margin-left:auto;">heard ' + esc(ago(stn.utc)) + ' ago</span>' : '');
+    // Back to the band-activity view — the transcript replaced it, so give a
+    // way home that doesn't require picking another conversation.
+    var backBtn = document.createElement('button');
+    backBtn.className = 'jc-btn jc-back';
+    backBtn.textContent = '‹ Band';
+    backBtn.title = 'Back to band activity';
+    backBtn.addEventListener('click', closeThread);
+    headEl.insertBefore(backBtn, headEl.firstChild);
     // The conversation IS the QSO record — log it from where it lives.
     // Groups are nets, not QSOs, so no button there.
     if (!th.isGroup) {
@@ -819,7 +842,8 @@
       ph.textContent = 'Listening — decodes appear here as they arrive.';
       trafficList.appendChild(ph);
     }
-    showRunning(false);   // the status push corrects this if JS8 is already up
+    showThreadView(false);   // start on the band-activity view, no conversation open
+    showRunning(false);      // the status push corrects this if JS8 is already up
   })();
   // Relative times drift; re-render the rails once a minute so "4m" stays true.
   setInterval(function () { if (lastList.length) renderConvs(lastList); renderHeard(heard); }, 60000);

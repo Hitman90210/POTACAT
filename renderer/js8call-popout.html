@@ -216,9 +216,12 @@
       border-top: 1px solid var(--border-primary); }
     .jc-instruments[hidden] { display: none; }
 
-    .jc-traffic { display: flex; flex-direction: column; height: 108px; min-height: 0;
-      background: var(--bg-secondary); border-bottom: 1px solid var(--border-primary); }
-    .jc-traffic-head { display: flex; align-items: baseline; gap: 8px; }
+    /* Band activity fills the center pane when no conversation is open; the
+       transcript (.jc-msgs) takes over when one is. Exactly one is visible. */
+    .jc-band { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+    .jc-band[hidden], .jc-msgs[hidden] { display: none; }
+    .jc-band-head { display: flex; align-items: baseline; gap: 8px; }
+    .jc-btn.jc-back { font-size: 10.5px; padding: 2px 8px; margin-right: 4px; flex: none; }
     .jc-traffic-hint { font-size: 9px; letter-spacing: 0; text-transform: none; font-weight: 400;
       color: var(--text-tertiary, #666); }
     .jc-traffic-list { flex: 1; overflow-y: auto; min-height: 0; padding: 0 4px 4px; }
@@ -363,7 +366,17 @@
 
     <div class="jc-thread">
       <div class="jc-threadhead" id="jc-threadhead" hidden></div>
-      <div class="jc-msgs" id="jc-msgs"></div>
+      <!-- Idle view: the live band. This pane is the biggest real estate, and
+           it sat empty until a conversation was opened. Now it shows every
+           decode (to-you highlighted) so you "can see the band"; opening a
+           conversation swaps it for that transcript. -->
+      <div class="jc-band" id="jc-band">
+        <div class="jc-railhead jc-band-head">Band activity
+          <span class="jc-traffic-hint">all decodes — directed to you highlighted</span>
+        </div>
+        <div class="jc-traffic-list" id="jc-band-list"></div>
+      </div>
+      <div class="jc-msgs" id="jc-msgs" hidden></div>
 
       <div class="jc-compose">
         <div class="jc-chips" id="jc-chips"></div>
@@ -382,18 +395,10 @@
     </div>
   </div>
 
-  <!-- The operating instruments — band activity, waterfall, meters. JS8's
-       conversation rail only shows DIRECTED traffic, so an operator can be
-       decoding perfectly on a busy band and stare at an empty screen. These
-       answer "I can see the band" the way JTCAT's decode list + waterfall do.
-       Shown only while running. -->
+  <!-- The operating instruments — waterfall + meters. (Band activity now lives
+       in the center pane when no conversation is open — the old cramped strip
+       here was redundant and is gone.) Shown only while running. -->
   <div class="jc-instruments" id="jc-instruments" hidden>
-    <div class="jc-traffic" id="jc-traffic">
-      <div class="jc-railhead jc-traffic-head">Band activity
-        <span class="jc-traffic-hint" id="jc-traffic-hint">all decodes — directed to you highlighted</span>
-      </div>
-      <div class="jc-traffic-list" id="jc-traffic-list"></div>
-    </div>
     <div class="jc-wf" id="jc-wf">
       <canvas id="jc-waterfall" width="600" height="80"></canvas>
       <div class="jc-wf-silent" id="jc-wf-silent"><strong>Waterfall muted — RX gain is at 0</strong><span>drag the RX slider up to bring it back</span></div>
