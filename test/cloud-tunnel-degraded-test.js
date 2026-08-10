@@ -99,6 +99,34 @@ const DNS = 'ERR Failed to refresh DNS local resolver error="lookup region1.v2.a
   check(st.degraded === false && st.degradedReason === '', 'defaults are false / empty');
 }
 
-console.log('\n' + '='.repeat(50));
-console.log(`Results: ${passed} passed, ${failed} failed`);
-process.exit(failed === 0 ? 0 : 1);
+// ── shutdownAndWait resolves on the child's real EXIT ─────────────────
+// The OTA installer must not overwrite INSTDIR\cloudflared.exe while the
+// process still holds the image lock, or Windows forces a reboot mid-install
+// (1.10.1 field reports). shutdownAndWait() awaits the actual 'exit', not just
+// the kill() call.
+console.log('\n=== shutdownAndWait (locked-file reboot fix) ===');
+{
+  const EventEmitter = require('events');
+  const { m } = makeMgr();
+  const child = new EventEmitter();
+  let killed = false;
+  child.kill = () => { killed = true; };
+  m._child = child;
+  let resolved = false;
+  const p = m.shutdownAndWait(1000).then(() => { resolved = true; });
+  check(killed === true, 'shutdownAndWait signals the child');
+  check(resolved === false, 'it does NOT resolve before the child actually exits');
+  check(m._child === null, 'the child ref is detached immediately');
+  child.emit('exit', 0, null);   // the OS now releases the .exe image lock
+  p.then(() => {
+    check(resolved === true, 'it resolves once the child emits exit');
+    // No child: resolves immediately without throwing.
+    const { m: m2 } = makeMgr();
+    m2.shutdownAndWait(1000).then(() => {
+      check(true, 'resolves immediately when there is no child');
+      console.log('\n' + '='.repeat(50));
+      console.log(`Results: ${passed} passed, ${failed} failed`);
+      process.exit(failed === 0 ? 0 : 1);
+    });
+  });
+}

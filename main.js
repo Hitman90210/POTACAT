@@ -8578,6 +8578,16 @@ function startJtcat(mode) {
     const msg = data.message || String(data);
     sendCatLog('[JTCAT] Engine error: ' + msg);
     console.error('[JTCAT] Engine error:', msg);
+    // JS8 has no WASM fallback (FT8 does), so a missing native addon would
+    // otherwise leave the JS8 window running-but-dead with no explanation.
+    // Say so plainly. The likely case is a mac build that shipped without a
+    // compiled js8_native (K3SBP 2026-08-09); the release CI now gates on it.
+    if (/addon not built|js8_native/i.test(msg) && js8PopoutWin && !js8PopoutWin.isDestroyed()) {
+      js8PopoutWin.webContents.send('js8call-send-result', {
+        ok: false,
+        error: 'JS8 decoder is not available in this build — reinstall the latest POTACAT.',
+      });
+    }
   });
 
   // Surface engine-level info (which decoder is in use, etc.) in the
@@ -20111,7 +20121,23 @@ autoUpdater.on('error', (err) => {
 });
 
 ipcMain.on('start-download', () => { autoUpdater.downloadUpdate(); });
-ipcMain.on('install-update', () => { autoUpdater.quitAndInstall(); });
+ipcMain.on('install-update', async () => {
+  // Kill cloudflared and WAIT for it to actually exit before the NSIS installer
+  // runs. cloudflared.exe ships inside the install tree; a running .exe holds a
+  // Windows image lock until the process fully exits, and if the installer
+  // overwrites the folder while that lock is held Windows forces a reboot to
+  // finish (reported on 1.10.1). Bounded so a wedged child can't block the
+  // update; gracefulCleanup's own kill still runs on the ensuing quit.
+  try {
+    if (cloudTunnel && typeof cloudTunnel.shutdownAndWait === 'function') {
+      sendCatLog('[update] stopping cloudflared before install to avoid a locked-file reboot');
+      await cloudTunnel.shutdownAndWait(2500);
+    }
+  } catch (err) {
+    console.error('[update] cloudflared shutdown before install failed:', err && err.message);
+  }
+  autoUpdater.quitAndInstall();
+});
 ipcMain.on('check-for-updates', () => { checkForUpdates(); });
 
 // Fallback for portable builds where electron-updater is inactive

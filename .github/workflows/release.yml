@@ -87,6 +87,16 @@ jobs:
           test -f "$NODE_FILE"
           lipo -archs "$NODE_FILE"
           lipo -archs "$NODE_FILE" | grep -q arm64
+      - name: Verify js8_native exists and is arm64
+        # JS8 has NO WASM fallback (unlike FT8), so a missing/wrong-arch addon
+        # ships a JS8 button that opens a decoder-less window with no warning
+        # (K3SBP field report, mac 2026-08-09). Gate it like ft8_native.
+        run: |
+          set -e
+          NODE_FILE=lib/js8_native/build/Release/js8_native.node
+          test -f "$NODE_FILE"
+          lipo -archs "$NODE_FILE"
+          lipo -archs "$NODE_FILE" | grep -q arm64
       - name: Bundle hamlib into assets/hamlib/
         run: |
           set -e
@@ -154,6 +164,15 @@ jobs:
         run: |
           set -e
           NODE_FILE=lib/ft8_native/build/Release/ft8_native.node
+          test -f "$NODE_FILE"
+          lipo -archs "$NODE_FILE"
+          lipo -archs "$NODE_FILE" | grep -q x86_64
+      - name: Verify js8_native exists and is x86_64
+        # JS8 has no WASM fallback — a missing addon = a dead JS8 window. Gate
+        # it like ft8_native so a silent mac compile failure stops the release.
+        run: |
+          set -e
+          NODE_FILE=lib/js8_native/build/Release/js8_native.node
           test -f "$NODE_FILE"
           lipo -archs "$NODE_FILE"
           lipo -archs "$NODE_FILE" | grep -q x86_64
