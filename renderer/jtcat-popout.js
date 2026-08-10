@@ -1364,6 +1364,10 @@ function _applyPopoutTheme(payload) {
   // are no-ops here.
   function spotTargetResync(data) {
     if (!data.mode || !data.freqKhz) return;
+    // JS8 is its own window now — it was removed from this popout's mode
+    // selector, so a JS8 spot must not try to set (and blank) the FT8 mode
+    // here. It belongs to the JS8 window.
+    if (data.mode === 'JS8') return;
     var btns = document.querySelectorAll('.jtcat-band-btn');
     var bestBtn = null, bestDist = Infinity;
     btns.forEach(function(btn) {
