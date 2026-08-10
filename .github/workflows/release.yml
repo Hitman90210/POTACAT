@@ -125,7 +125,7 @@ jobs:
       - name: Fetch cloudflared (POTACAT Cloud tunnel binary)
         run: node scripts/fetch-cloudflared.js --platform=mac --arch=arm64
       - name: Build macOS dmg (arm64)
-        run: npx electron-builder --mac --arm64 --publish never --config electron-builder.js
+        run: npx electron-builder --mac --arm64 --publish never --config builder-config.js
         # Signing + notarization are GATED on these secrets. Absent (today) =>
         # empty strings => electron-builder ad-hoc signs and scripts/notarize.js
         # skips, i.e. the current unsigned build, unchanged. Present => a
@@ -220,7 +220,7 @@ jobs:
       - name: Build macOS dmg (x64)
         # electron-builder writes a separate latest-mac-x64.yml so the
         # auto-updater can serve the right binary per host arch.
-        run: npx electron-builder --mac --x64 --publish never --config electron-builder.js
+        run: npx electron-builder --mac --x64 --publish never --config builder-config.js
         # Same signing gate as the arm64 job — inert without the secrets.
         env:
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
