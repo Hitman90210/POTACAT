@@ -5193,6 +5193,10 @@ function js8PushStatus() {
     submode: eng ? eng._submodeName : (settings.js8Submode || 'NORMAL'),
     heartbeat: js8HbEnabled,
     heartbeatMin: js8HbIntervalMin(),
+    // When the Auto scheduler will next transmit (epoch ms; 0 = scheduler
+    // off). Clients count down LOCALLY — no per-second wire traffic. A manual
+    // HB resets _js8HbLastSent, so the countdown resets with it.
+    hbNextAt: js8HbEnabled ? (_js8HbLastSent ? _js8HbLastSent + js8HbIntervalMin() * 60000 : Date.now()) : 0,
     hbAck: js8HbAck,                       // ⚙ auto-reply to heartbeats (session-only)
     swrAutoTune: !!settings.swrAutoTune,   // ⚙ run the ATU once on an SWR-guard trip
     aprsGate: !!settings.js8AprsGate,      // ⚙ RF→APRS-IS gateway opt-in
@@ -15340,6 +15344,24 @@ function connectRemote() {
     markUserActive();
     const r = js8SendHeartbeatNow();
     remoteServer.sendJs8SendResult({ ok: !!r.ok, error: r.error, reqId });
+  });
+  // ⚙ toggles from the phone — same semantics as the popout IPC handlers
+  // (HB ACK session-only + watchdog pet; APRS gate persisted + live connect).
+  remoteServer.on('js8-set-hback', ({ enabled } = {}) => {
+    markUserActive();
+    js8HbAck = !!enabled;
+    js8HbLastActivity = Date.now();
+    if (js8HbAck) js8HbAcked.clear();
+    sendCatLog('[JS8] heartbeat auto-reply (HB ACK) ' + (js8HbAck ? 'ON' : 'off') + ' (remote)');
+    js8PushStatus();
+  });
+  remoteServer.on('js8-set-aprs-gate', ({ enabled } = {}) => {
+    markUserActive();
+    settings.js8AprsGate = !!enabled;
+    saveSettings(settings);
+    if (settings.js8AprsGate && js8Engine()) connectAprsGate();
+    else if (!settings.js8AprsGate) disconnectAprsGate();
+    js8PushStatus();
   });
   remoteServer.on('js8-thread-open', ({ id, guest }) => {
     // A GUEST read is genuinely read-only: no setOpen (that marks the

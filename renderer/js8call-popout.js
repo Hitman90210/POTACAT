@@ -490,12 +490,22 @@
     } catch (e) { /* status push will correct us */ }
   });
 
+  var hbNextAt = 0;   // epoch ms of the next scheduled auto-HB (0 = off)
   function renderHb() {
     hbAutoBtn.className = 'jc-btn' + (hbOn ? ' auto-on' : '');
     hbAutoBtn.title = hbOn
       ? 'Auto-heartbeat is on — turns itself off after 30 minutes without you'
       : 'Auto-heartbeat every few minutes while you are at the radio';
+    // Countdown to the next scheduled heartbeat, computed locally from the
+    // status snapshot's hbNextAt — the button reads "Auto · 12m".
+    if (hbOn && hbNextAt) {
+      var s = Math.max(0, Math.round((hbNextAt - Date.now()) / 1000));
+      hbAutoBtn.textContent = 'Auto · ' + (s < 60 ? s + 's' : Math.ceil(s / 60) + 'm');
+    } else {
+      hbAutoBtn.textContent = 'Auto';
+    }
   }
+  setInterval(renderHb, 1000);
 
   // SWR-guard banner: persistent while latched, with the ATU recovery in it.
   var swrBanner = el('jc-swr'), swrMsg = el('jc-swr-msg'), swrAtu = el('jc-swr-atu');
@@ -820,6 +830,7 @@
     cycleEl.hidden = cycleBar.hidden = !up;
 
     hbOn = !!(s && s.heartbeat);
+    hbNextAt = (s && s.hbNextAt) || 0;
     renderHb();
     renderSwr(!!(s && s.swrTripped), s && s.swrMessage);
     // Gear toggles mirror main's authoritative state.
