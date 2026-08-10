@@ -63,6 +63,36 @@ contextBridge.exposeInMainWorld('api', {
   setBand: (band) => ipcRenderer.invoke('js8-set-band', band),
   onCatFrequency: (cb) => ipcRenderer.on('cat-frequency', (_e, hz) => cb(hz)),
 
+  // Halt TX — reuses the JTCAT halt path (works on the JS8 slice now that
+  // Js8Engine has setTxMessage); cuts the on-air frame and drops PTT.
+  halt: () => ipcRenderer.send('jtcat-halt-tx'),
+
+  // Set the TX audio offset — the operator clicking the waterfall.
+  setOffset: (hz) => ipcRenderer.invoke('js8-set-offset', hz),
+
+  // Clock-drift monitor (shared with JTCAT — same NTP measurement). JS8 is
+  // time-locked, so an off PC clock silently zeroes decodes.
+  onClock: (cb) => ipcRenderer.on('jtcat-clock', (_e, d) => cb(d)),
+  getClock: () => ipcRenderer.invoke('jtcat-get-clock'),
+  checkClock: () => ipcRenderer.invoke('jtcat-check-clock'),
+  syncClock: () => ipcRenderer.invoke('jtcat-sync-clock'),
+  openTimeSettings: () => ipcRenderer.invoke('jtcat-open-time-settings'),
+
+  // Radio meters (raw Flex-style wire values, same as the VFO/JTCAT windows).
+  onSmeter: (cb) => ipcRenderer.on('cat-smeter', (_e, v) => cb(v)),
+  onSwr: (cb) => ipcRenderer.on('cat-swr', (_e, v) => cb(v)),
+  onSwrRatio: (cb) => ipcRenderer.on('cat-swr-ratio', (_e, v) => cb(v)),
+
+  // RX gain — the ONE authoritative level shared with the main window, JTCAT
+  // popout, and ECHOCAT clients (settings.jtcatRxGain, a 0..1 fraction). Here
+  // it also drives the waterfall brightness.
+  setRxGain: (level) => ipcRenderer.send('jtcat-set-rx-gain', level),
+  onSetRxGain: (cb) => ipcRenderer.on('jtcat-set-rx-gain', (_e, level) => cb(level)),
+
+  // Waterfall spectrum — main runs the FFT (JS8 decodes in main), pushing an
+  // array of 0..255 bins at ~10 fps.
+  onSpectrum: (cb) => ipcRenderer.on('js8-spectrum', (_e, bins) => cb(bins)),
+
   openExternal: (url) => ipcRenderer.send('open-external', url),
 
   // Per-window zoom, same convention as the other popouts.

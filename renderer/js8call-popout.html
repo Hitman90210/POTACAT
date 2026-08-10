@@ -191,6 +191,74 @@
     .jc-stn .s { margin-left: auto; font-family: ui-monospace, monospace; font-variant-numeric: tabular-nums;
       color: var(--text-secondary); font-size: 10.5px; }
     .jc-stn .a { font-size: 10px; color: var(--text-tertiary, #666); width: 28px; text-align: right; flex: none; }
+
+    /* --- decode-age chip ("am I receiving?") ------------------------------- */
+    .jc-rxage { padding: 2px 8px; border-radius: 3px; border: 1px solid var(--border-primary);
+      font-size: 10.5px; font-weight: 600; flex: none; color: var(--text-tertiary, #666); }
+    .jc-rxage[hidden] { display: none; }
+    .jc-rxage.fresh { color: #000; background: var(--accent-green-btn, #4ecca3); border-color: var(--accent-green-btn, #4ecca3); }
+    .jc-rxage.stale { color: #000; background: var(--source-sota, #f0a500); border-color: var(--source-sota, #f0a500); }
+
+    /* --- Halt (only STOP and HALT are red) --------------------------------- */
+    .jc-btn.jc-halt { color: var(--accent-red, #e94560); border-color: var(--accent-red, #e94560); font-weight: 700; }
+    .jc-btn.jc-halt:disabled { color: var(--text-tertiary, #666); border-color: var(--border-primary); opacity: .5; }
+
+    /* --- clock-drift banner (same bordered-banner grammar as SWR) ---------- */
+    .jc-clock { display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+      font-size: 12px; font-weight: 600; flex-shrink: 0;
+      background: #5a1a1a; border-bottom: 2px solid var(--accent-red, #e94560); color: #ffd9d9; }
+    .jc-clock[hidden] { display: none; }
+    .jc-clock span { flex: 1; }
+    .jc-clock .jc-btn { flex: none; font-size: 10.5px; padding: 2px 8px; }
+
+    /* --- bottom instruments: traffic + waterfall + meters ------------------ */
+    .jc-instruments { display: flex; flex-direction: column; flex-shrink: 0;
+      border-top: 1px solid var(--border-primary); }
+    .jc-instruments[hidden] { display: none; }
+
+    .jc-traffic { display: flex; flex-direction: column; height: 108px; min-height: 0;
+      background: var(--bg-secondary); border-bottom: 1px solid var(--border-primary); }
+    .jc-traffic-head { display: flex; align-items: baseline; gap: 8px; }
+    .jc-traffic-hint { font-size: 9px; letter-spacing: 0; text-transform: none; font-weight: 400;
+      color: var(--text-tertiary, #666); }
+    .jc-traffic-list { flex: 1; overflow-y: auto; min-height: 0; padding: 0 4px 4px; }
+    .jc-trow { display: flex; gap: 7px; align-items: baseline; padding: 2px 6px; font-size: 11px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; border-radius: 3px; }
+    .jc-trow .t { color: var(--text-tertiary, #666); font-variant-numeric: tabular-nums; flex: none; width: 42px; }
+    .jc-trow .f { color: var(--text-secondary); flex: none; }
+    .jc-trow .x { color: var(--text-primary); flex: 1; min-width: 0; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap; }
+    .jc-trow .n { color: var(--text-tertiary, #666); font-variant-numeric: tabular-nums; flex: none; }
+    .jc-trow.activity .f, .jc-trow.activity .x { color: var(--text-tertiary, #666); }
+    .jc-trow.tome { background: rgba(78, 204, 163, 0.14); }
+    .jc-trow.tome .f { color: var(--accent-green-btn, #4ecca3); font-weight: 700; }
+    .jc-traffic-empty { padding: 14px 10px; text-align: center; color: var(--text-tertiary, #666); font-size: 11px; }
+
+    /* --- waterfall -------------------------------------------------------- */
+    .jc-wf { position: relative; flex-shrink: 0; }
+    #jc-waterfall { width: 100%; height: 80px; display: block; image-rendering: pixelated;
+      cursor: crosshair; border-bottom: 1px solid var(--border-primary); }
+    .jc-wf-silent { display: none; position: absolute; inset: 0; flex-direction: column;
+      align-items: center; justify-content: center; gap: 3px; text-align: center;
+      background: rgba(24, 12, 0, 0.74); pointer-events: none; }
+    .jc-wf-silent.show { display: flex; }
+    .jc-wf-silent strong { color: var(--source-sota, #f0a500); font-size: 11px; font-weight: 700; text-shadow: 0 1px 2px #000; }
+    .jc-wf-silent span { color: #f0c060; font-size: 9px; opacity: .85; }
+
+    /* --- audio bar: RX gain + S/SWR meters (JTCAT's meter grammar) --------- */
+    .jc-audiobar { display: flex; align-items: center; gap: 8px; padding: 3px 10px; font-size: 11px;
+      color: var(--text-secondary, #888); background: var(--bg-secondary); flex-shrink: 0; }
+    .jc-audiolabel { flex-shrink: 0; }
+    #jc-rx-gain { width: 78px; flex: none; }
+    .jc-audioval { min-width: 32px; text-align: right; font-variant-numeric: tabular-nums; flex: none; }
+    .jc-meter-group { display: flex; align-items: center; gap: 4px; flex-shrink: 0; margin-left: 6px;
+      border-left: 1px solid var(--border-primary); padding-left: 8px; }
+    .jc-meter { width: 46px; height: 6px; background: var(--bg-tertiary, #0f1419);
+      border: 1px solid var(--border-primary); border-radius: 3px; overflow: hidden; flex-shrink: 0; }
+    .jc-meter-bar { display: block; height: 100%; width: 0; background: var(--accent-green-btn, #4ecca3);
+      transition: width .1s linear; }
+    .jc-meter-val { min-width: 30px; text-align: right; font-variant-numeric: tabular-nums;
+      color: var(--text-secondary, #888); }
   </style>
 </head>
 <body>
@@ -216,11 +284,13 @@
       <select id="jc-band" title="Tune the radio to a band's JS8 dial"></select>
     </label>
     <span class="mono num" id="jc-dial" title="Radio frequency"></span>
+    <span class="jc-rxage" id="jc-rxage" hidden title="Time since the last JS8 decode — your 'am I actually receiving?' check. Green under 3 minutes, amber beyond. The engine can say 'running' while a wrong device or a down DAX slice delivers silence.">no decodes</span>
     <span class="jc-acts" id="jc-acts" hidden>
       <button class="jc-btn" id="jc-cq" title="Call CQ on JS8 now">CQ</button>
       <button class="jc-btn" id="jc-hb" title="Send a heartbeat now (every press)">HB</button>
       <button class="jc-btn" id="jc-hb-auto" title="Auto-heartbeat every few minutes while you're at the radio (stops after 30 min idle)">Auto</button>
     </span>
+    <button class="jc-btn jc-halt" id="jc-halt" title="Stop transmitting now — cuts the current frame and drops PTT" disabled>Halt</button>
     <button class="jc-btn" id="jc-atu" title="Run the radio's antenna tuner match cycle">ATU</button>
     <button class="jc-btn" id="jc-power" title="Start or stop JS8">Start</button>
     <span class="jc-cycle mono num" id="jc-cycle" hidden title="Time left in the current JS8 period — transmissions begin at the boundary">15s</span>
@@ -229,6 +299,17 @@
   <!-- Period progress: the thin strip under the bar is the FT8-style cycle
        bar — where we are inside the current 15 s interval. -->
   <div class="jc-cyclebar" id="jc-cyclebar" hidden><div id="jc-cyclefill"></div></div>
+
+  <!-- Clock-drift banner. JS8 is time-locked (the whole mode is period
+       boundaries), so a PC clock more than ~1 s off UTC silently zeroes
+       decodes while the audio and waterfall look perfect. Same NTP monitor
+       that drives JTCAT's banner. Colors set per severity by the JS. -->
+  <div class="jc-clock" id="jc-clock" hidden>
+    <span id="jc-clock-msg">PC clock is off — JS8 will not decode.</span>
+    <button class="jc-btn" id="jc-clock-set" title="Open the OS date &amp; time settings — click Sync now">Time settings</button>
+    <button class="jc-btn" id="jc-clock-sync" title="Try an automatic time resync (may need admin)">Sync now</button>
+    <button class="jc-btn" id="jc-clock-recheck" title="Re-measure the clock offset against internet time">Recheck</button>
+  </div>
 
   <!-- SWR-guard error: persistent (the latch persists) until the ATU runs or
        the band changes. The Flex folds power back but never refuses to key, so
@@ -297,6 +378,39 @@
     <div class="jc-rail jc-rail-r">
       <div class="jc-railhead">Heard now</div>
       <div id="jc-heard"></div>
+    </div>
+  </div>
+
+  <!-- The operating instruments — band activity, waterfall, meters. JS8's
+       conversation rail only shows DIRECTED traffic, so an operator can be
+       decoding perfectly on a busy band and stare at an empty screen. These
+       answer "I can see the band" the way JTCAT's decode list + waterfall do.
+       Shown only while running. -->
+  <div class="jc-instruments" id="jc-instruments" hidden>
+    <div class="jc-traffic" id="jc-traffic">
+      <div class="jc-railhead jc-traffic-head">Band activity
+        <span class="jc-traffic-hint" id="jc-traffic-hint">all decodes — directed to you highlighted</span>
+      </div>
+      <div class="jc-traffic-list" id="jc-traffic-list"></div>
+    </div>
+    <div class="jc-wf" id="jc-wf">
+      <canvas id="jc-waterfall" width="600" height="80"></canvas>
+      <div class="jc-wf-silent" id="jc-wf-silent"><strong>Waterfall muted — RX gain is at 0</strong><span>drag the RX slider up to bring it back</span></div>
+    </div>
+    <div class="jc-audiobar">
+      <span class="jc-audiolabel">RX</span>
+      <input type="range" id="jc-rx-gain" min="0" max="100" value="100" title="RX gain — waterfall brightness. Shared with the FT8 window and ECHOCAT; remembered per band.">
+      <span class="jc-audioval" id="jc-rx-gain-val">100%</span>
+      <span class="jc-meter-group" title="Signal strength from the radio">
+        <span>S</span>
+        <span class="jc-meter"><span id="jc-smeter-bar" class="jc-meter-bar"></span></span>
+        <span class="jc-meter-val" id="jc-smeter-val">&mdash;</span>
+      </span>
+      <span class="jc-meter-group" title="SWR — only measurable while transmitting">
+        <span>SWR</span>
+        <span class="jc-meter"><span id="jc-swr-bar" class="jc-meter-bar"></span></span>
+        <span class="jc-meter-val" id="jc-swr-val">&mdash;</span>
+      </span>
     </div>
   </div>
 

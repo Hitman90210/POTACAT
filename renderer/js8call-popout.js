@@ -29,12 +29,24 @@
   var setupEl = el('jc-setup'), setupStart = el('jc-setup-start'),
       setupErr = el('jc-setup-err'), speedEl = el('jc-speed'), hbMinEl = el('jc-hb-min');
 
+  // Instruments + new bar controls (waterfall, band-activity, meters, clock).
+  var rxageEl = el('jc-rxage'), haltBtn = el('jc-halt'),
+      instrumentsEl = el('jc-instruments'), trafficList = el('jc-traffic-list'),
+      wfCanvas = el('jc-waterfall'), wfCtx = wfCanvas.getContext('2d'), wfSilentEl = el('jc-wf-silent'),
+      rxGainEl = el('jc-rx-gain'), rxGainValEl = el('jc-rx-gain-val'),
+      smeterBar = el('jc-smeter-bar'), smeterVal = el('jc-smeter-val'),
+      swrBarEl = el('jc-swr-bar'), swrValEl = el('jc-swr-val'),
+      clockEl = el('jc-clock'), clockMsgEl = el('jc-clock-msg');
+
   var running = false;
   var hbOn = false;
   var openId = null;
   var openCall = '';
   var heard = [];
   var lastList = [];
+  var rxGainLevel = 1.0;          // 0..1, drives waterfall brightness
+  var txOffsetHz = 1500, rxOffsetHz = 1500;
+  var lastDecodeTs = 0;           // for the "am I receiving?" age chip
 
   // Directed queries, one tap. They FILL the box rather than sending, so
   // what leaves is still seen first.
@@ -496,7 +508,185 @@
   function showRunning(on) {
     setupEl.hidden = on;
     colsEl.hidden = !on;
+    instrumentsEl.hidden = !on;
+    if (on) resizeWaterfall();   // the canvas had zero size while hidden
+    renderRxAge();
   }
+
+  // ── band activity ("I can see the band") ────────────────────────────────────
+  function addTraffic(a) {
+    if (!a) return;
+    var kind = a.kind || 'activity';
+    var row = document.createElement('div');
+    row.className = 'jc-trow' + (kind === 'to-me' ? ' tome' : kind === 'activity' ? ' activity' : '');
+    var from = a.from || '';
+    var to = a.to ? ' › ' + a.to : '';
+    var snr = (a.snr === 0 || a.snr) ? ((a.snr > 0 ? '+' : '') + a.snr) : '';
+    row.innerHTML = '<span class="t">' + esc(hhmm(a.utc)) + '</span>' +
+      '<span class="f">' + esc(from + to) + '</span>' +
+      '<span class="x">' + esc(a.text || '') + '</span>' +
+      '<span class="n">' + esc(snr) + '</span>';
+    var empty = trafficList.querySelector('.jc-traffic-empty');
+    if (empty) empty.parentNode.removeChild(empty);
+    trafficList.insertBefore(row, trafficList.firstChild);
+    while (trafficList.childElementCount > 200) trafficList.removeChild(trafficList.lastChild);
+    var t = Number(a.utc) || 0; if (t && t < 1e12) t *= 1000;
+    if (t > lastDecodeTs) { lastDecodeTs = t; renderRxAge(); }
+  }
+
+  // The compact "am I actually receiving?" chip. Green under 3 minutes since the
+  // last decode, amber beyond — deliberately refuses to distinguish a dead
+  // audio path from a quiet band (it can't), so it reports the observation, not
+  // a verdict it can't support.
+  function renderRxAge() {
+    if (!running) { rxageEl.hidden = true; return; }
+    rxageEl.hidden = false;
+    if (!lastDecodeTs) { rxageEl.className = 'jc-rxage'; rxageEl.textContent = 'no decodes'; return; }
+    var ms = Date.now() - lastDecodeTs;
+    rxageEl.className = 'jc-rxage ' + (ms < 180000 ? 'fresh' : 'stale');
+    var s = Math.floor(ms / 1000);
+    rxageEl.textContent = s < 60 ? s + 's'
+      : s < 3600 ? Math.floor(s / 60) + 'm'
+      : Math.floor(s / 3600) + 'h ' + (Math.floor(s / 60) % 60) + 'm';
+  }
+  setInterval(renderRxAge, 1000);
+
+  // ── clock-drift banner ──────────────────────────────────────────────────────
+  var clockHideTimer = null;
+  function fmtOffset(ms) { return (ms > 0 ? '+' : '') + (ms / 1000).toFixed(1) + 's'; }
+  function applyClock(d) {
+    if (clockHideTimer) { clearTimeout(clockHideTimer); clockHideTimer = null; }
+    if (!d || d.level === 'ok') {
+      if (d && d.rebaselined) {
+        clockMsgEl.textContent = 'Clock corrected — JS8 timing re-baselined, decoding resumed.';
+        clockEl.style.background = '#1a5a2a';
+        clockEl.style.borderBottomColor = '#4ecca3';
+        clockEl.hidden = false;
+        clockHideTimer = setTimeout(function () { clockEl.hidden = true; }, 6000);
+      } else { clockEl.hidden = true; }
+      return;
+    }
+    if (d.level === 'unknown') { clockEl.hidden = true; return; } // couldn't measure — don't cry wolf
+    var off = fmtOffset(d.offsetMs || 0);
+    var bad = d.level === 'bad';
+    clockMsgEl.textContent = bad
+      ? 'PC clock is ' + off + ' off UTC — JS8 will NOT decode until you fix it.'
+      : 'PC clock is ' + off + ' off UTC — decoding may be unreliable. Sync recommended.';
+    clockEl.style.background = bad ? '#5a1a1a' : '#5a4a1a';
+    clockEl.style.borderBottomColor = bad ? '#e94560' : '#f0a500';
+    clockEl.hidden = false;
+  }
+  window.api.onClock(applyClock);
+  el('jc-clock-set').addEventListener('click', function () { window.api.openTimeSettings(); });
+  el('jc-clock-recheck').addEventListener('click', function () {
+    clockMsgEl.textContent = 'Checking clock…';
+    window.api.checkClock().then(function (c) { if (c) applyClock(c); });
+  });
+  el('jc-clock-sync').addEventListener('click', function () {
+    clockMsgEl.textContent = 'Syncing clock…';
+    window.api.syncClock().then(function (r) {
+      if (r && r.clock) applyClock(r.clock);
+      if (r && r.sync && !r.sync.success) clockMsgEl.textContent = (r.sync.message || 'Sync failed') + ' — use Time settings.';
+    });
+  });
+  if (window.api.getClock) window.api.getClock().then(function (c) { if (c) applyClock(c); });
+
+  // ── waterfall ────────────────────────────────────────────────────────────────
+  // Fed by main's FFT over the engine's audio (JS8 decodes in main, so there is
+  // no renderer AnalyserNode as in FT8). RX gain here is a brightness control —
+  // the native decoder normalises its own input, so attenuating it would only
+  // hurt decodes; the operator's real use for the slider is taming the display.
+  function resizeWaterfall() {
+    var rect = wfCanvas.getBoundingClientRect();
+    var dpr = window.devicePixelRatio || 1;
+    var nw = Math.round(rect.width * dpr), nh = Math.round(rect.height * dpr);
+    if (nw > 0 && nh > 0 && (wfCanvas.width !== nw || wfCanvas.height !== nh)) {
+      var old = null;
+      try { old = wfCtx.getImageData(0, 0, wfCanvas.width, wfCanvas.height); } catch (e) { /* first paint */ }
+      wfCanvas.width = nw; wfCanvas.height = nh;
+      if (old) wfCtx.putImageData(old, 0, 0);
+    }
+  }
+  function wfColor(norm, data, i) {
+    var r, g, b, t;
+    if (norm < 0.2) { r = 0; g = 0; b = Math.floor(norm * 5 * 140); }
+    else if (norm < 0.4) { t = (norm - 0.2) * 5; r = 0; g = Math.floor(t * 255); b = 140 + Math.floor(t * 115); }
+    else if (norm < 0.6) { t = (norm - 0.4) * 5; r = Math.floor(t * 255); g = 255; b = Math.floor((1 - t) * 255); }
+    else if (norm < 0.8) { t = (norm - 0.6) * 5; r = 255; g = Math.floor((1 - t) * 255); b = 0; }
+    else { t = (norm - 0.8) * 5; r = 255; g = Math.floor(t * 255); b = Math.floor(t * 255); }
+    data[i] = r; data[i + 1] = g; data[i + 2] = b; data[i + 3] = 255;
+  }
+  function drawWfMarkers(w, h) {
+    var rxX = Math.round(rxOffsetHz / 3000 * w);
+    var txX = Math.round(txOffsetHz / 3000 * w);
+    wfCtx.fillStyle = '#000'; wfCtx.fillRect(rxX - 2, 0, 5, h);
+    wfCtx.fillStyle = '#4ecca3'; wfCtx.fillRect(rxX - 1, 0, 3, h);
+    wfCtx.fillStyle = '#000'; wfCtx.fillRect(txX - 2, 0, 5, h);
+    wfCtx.fillStyle = '#ff2222'; wfCtx.fillRect(txX - 1, 0, 3, h);
+  }
+  window.api.onSpectrum(function (bins) {
+    if (!running || !bins || !bins.length) return;
+    if (!wfCanvas.width || !wfCanvas.height) resizeWaterfall();
+    var w = wfCanvas.width, h = wfCanvas.height;
+    if (!w || !h) return;
+    var muted = rxGainLevel <= 0.001;
+    wfSilentEl.classList.toggle('show', muted);
+    var img = wfCtx.getImageData(0, 0, w, h - 1);   // scroll down 1px
+    wfCtx.putImageData(img, 0, 1);
+    var line = wfCtx.createImageData(w, 1);
+    var n = bins.length;
+    for (var x = 0; x < w; x++) {
+      var v = muted ? 0 : Math.min(255, bins[Math.floor(x * n / w)] * rxGainLevel);
+      wfColor(v / 255, line.data, x * 4);
+    }
+    wfCtx.putImageData(line, 0, 0);
+    drawWfMarkers(w, h);
+  });
+  wfCanvas.addEventListener('click', function (e) {
+    var rect = wfCanvas.getBoundingClientRect();
+    var hz = Math.round((e.clientX - rect.left) / rect.width * 3000 / 10) * 10;
+    hz = Math.max(200, Math.min(2900, hz));
+    txOffsetHz = hz;                 // optimistic; the status echo confirms
+    if (window.api.setOffset) window.api.setOffset(hz);
+  });
+  window.addEventListener('resize', resizeWaterfall);
+
+  // ── RX gain (the one synced level; also our waterfall brightness) ───────────
+  function applyRxGainPct(pct, echo) {
+    pct = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
+    rxGainEl.value = pct;
+    rxGainValEl.textContent = pct + '%';
+    rxGainLevel = pct / 100;
+    if (echo && window.api.setRxGain) window.api.setRxGain(rxGainLevel);
+  }
+  rxGainEl.addEventListener('input', function () { applyRxGainPct(rxGainEl.value, true); });
+  if (window.api.onSetRxGain) window.api.onSetRxGain(function (level) { applyRxGainPct(Number(level) * 100, false); });
+
+  // ── S-meter + SWR bars (JTCAT's meter grammar) ──────────────────────────────
+  if (window.api.onSmeter) window.api.onSmeter(function (val) {
+    var v = Number(val) || 0;
+    var color = v < 80 ? '#4ecca3' : v < 160 ? '#ffd740' : '#e94560';
+    smeterBar.style.width = Math.min(100, v / 255 * 100) + '%';
+    smeterBar.style.background = color;
+    smeterVal.textContent = v <= 120 ? 'S' + Math.round(v * 9 / 120) : 'S9+' + Math.round((v - 120) * 60 / 135);
+    smeterVal.style.color = color;
+  });
+  var swrIdle = null;
+  function blankSwr() { swrBarEl.style.width = '0%'; swrValEl.textContent = '—'; swrValEl.style.color = ''; }
+  function swrSeen() { if (swrIdle) clearTimeout(swrIdle); swrIdle = setTimeout(blankSwr, 10000); }
+  function drawSwr(swr) {
+    var color = swr <= 1.5 ? '#4ecca3' : swr <= 2.0 ? '#ffd740' : swr <= 3.0 ? '#f0a500' : '#e94560';
+    swrBarEl.style.width = Math.min(100, ((swr - 1) / 4) * 100) + '%';
+    swrBarEl.style.background = color;
+    swrValEl.textContent = swr < 10 ? swr.toFixed(1) : '>10';
+    swrValEl.style.color = color;
+    swrSeen();
+  }
+  if (window.api.onSwr) window.api.onSwr(function (val) { var v = Number(val) || 0; if (v <= 0) { blankSwr(); return; } drawSwr(1.0 + v / 60); });
+  if (window.api.onSwrRatio) window.api.onSwrRatio(function (s) { var v = Number(s) || 0; if (v <= 0) { blankSwr(); return; } drawSwr(v); });
+
+  // ── Halt ─────────────────────────────────────────────────────────────────────
+  haltBtn.addEventListener('click', function () { if (window.api.halt) window.api.halt(); });
 
   // ── wire-up ────────────────────────────────────────────────────────────────
 
@@ -518,6 +708,14 @@
     txEl.className = 'jc-tx' + (tx ? ' on' : '');
     txEl.textContent = tx ? 'TX' : (queued ? queued + ' queued' : 'RX');
     txEl.title = tx ? 'Transmitting this period.' : 'Receiving.';
+    // Halt is a reserved slot, disabled when there's nothing on air or queued —
+    // never mounted conditionally (a control that appears as you reach for it
+    // reflows the row). Merge-over-previous: absent fields leave it alone.
+    haltBtn.disabled = !(tx || queued);
+
+    // Waterfall markers follow the operator-chosen offsets.
+    if (s && s.txOffset) txOffsetHz = s.txOffset;
+    if (s && s.rxOffset) rxOffsetHz = s.rxOffset;
 
     // The period clock only means something while the engine runs.
     cycleEl.hidden = cycleBar.hidden = !up;
@@ -525,6 +723,7 @@
     hbOn = !!(s && s.heartbeat);
     renderHb();
     renderSwr(!!(s && s.swrTripped), s && s.swrMessage);
+    if (up !== was && !up) lastDecodeTs = 0;   // a fresh session starts unheard
 
     // Live dial + band picker from the status snapshot (also arrives via
     // cat-frequency; either keeps them current).
@@ -553,7 +752,11 @@
     renderHeard(list);
   });
 
-  window.api.onActivity(function () { /* the all-traffic pane is a follow-up */ });
+  // Band activity — EVERY decode, not just directed traffic. The conversation
+  // rail shows only messages addressed to a correspondent, so without this an
+  // operator decoding a busy band sees an empty screen ("am I receiving?").
+  // Directed-to-you rows are highlighted; ambient traffic is dimmed.
+  window.api.onActivity(function (a) { addTraffic(a); });
 
   // Refusals from a manual HB / send (SWR trip, radio busy) land here.
   window.api.onSendResult(function (r) {
@@ -577,6 +780,12 @@
     } catch (e) { /* main not ready yet; the status push will follow */ }
     refreshCompose();
     renderHb();
+    if (!trafficList.childElementCount) {
+      var ph = document.createElement('div');
+      ph.className = 'jc-traffic-empty';
+      ph.textContent = 'Listening — decodes appear here as they arrive.';
+      trafficList.appendChild(ph);
+    }
     showRunning(false);   // the status push corrects this if JS8 is already up
   })();
   // Relative times drift; re-render the rails once a minute so "4m" stays true.

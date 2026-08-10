@@ -51,7 +51,7 @@ async function main() {
     for (const m of ['start', 'stop', 'feedAudio', 'txComplete', 'tryImmediateTx',
       'setMode', 'setTxSlot', 'setHoldTxFreq', 'setLateStartTx', 'setApContext',
       'setAudioLatencyMs', 'setWsprDial', 'reBaseline', 'encodeMessage',
-      'setTxMessage']) {
+      'setTxMessage', 'setTxFreq', 'setRxFreq']) {
       assert.strictEqual(typeof e[m], 'function', 'missing contract method ' + m);
     }
     assert.strictEqual(e._mode, 'JS8');
@@ -163,6 +163,30 @@ async function main() {
     assert.strictEqual(done, false, 'a halt must not fire js8-tx-done');
     report('halt clears the queue and cuts the frame without a bogus completion');
   } catch (err) { report('halt clears the queue and cuts the frame without a bogus completion', err); }
+
+  // ── the TX offset (waterfall click) invalidates queued audio ──────────────
+  try {
+    const e3 = new Js8Engine();
+    e3.setStation({ call: 'K3SBP', grid: 'FN20' });
+    e3.setTxFreq(1200);
+    assert.strictEqual(e3._txFreq, 1200, 'setTxFreq moves the offset');
+    e3.setTxFreq(50);   // below floor
+    assert.strictEqual(e3._txFreq, 200, 'offset clamps to the 200 Hz floor');
+    e3.setTxFreq(9000); // above ceiling
+    assert.strictEqual(e3._txFreq, 3000, 'offset clamps to the 3000 Hz ceiling');
+    report('setTxFreq moves and clamps the TX offset');
+  } catch (err) { report('setTxFreq moves and clamps the TX offset', err); }
+
+  // ── feedAudio mirrors into the spectrum ring for the waterfall ─────────────
+  try {
+    const e4 = new Js8Engine();
+    e4._running = true;                    // feedAudio no-ops unless running
+    const before = e4._specOffset;
+    e4.feedAudio(new Float32Array(480).fill(0.25));
+    assert.strictEqual(e4._specOffset, before + 480, 'the spectrum ring advanced by the sample count');
+    assert.ok(e4._specBuffer[0] > 0.2, 'samples landed in the spectrum ring');
+    report('feedAudio fills the spectrum ring even with no worker');
+  } catch (err) { report('feedAudio fills the spectrum ring even with no worker', err); }
 
   // ── a message that packs to nothing refuses to arm ────────────────────────
   try {

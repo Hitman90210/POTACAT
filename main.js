@@ -873,6 +873,9 @@ function applyJtcatRxGain(value, origin) {
   _jtcatRxGainSaveTimer = setTimeout(() => { try { saveSettings(settings); } catch {} }, 1200);
   if (origin !== 'main' && win && !win.isDestroyed()) win.webContents.send('jtcat-set-rx-gain', v);
   if (origin !== 'popout' && jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) jtcatPopoutWin.webContents.send('jtcat-set-rx-gain', v);
+  // JS8 popout shares the one authoritative level (it drives its waterfall
+  // brightness). Skip the echo back to whichever surface originated the move.
+  if (origin !== 'js8popout' && js8PopoutWin && !js8PopoutWin.isDestroyed()) js8PopoutWin.webContents.send('jtcat-set-rx-gain', v);
   if (origin !== 'remote' && remoteServer) remoteServer.broadcastJtcatRxGainState({ value: v });
 }
 
@@ -2224,6 +2227,7 @@ function sendCatSmeter(val) {
   // op watching the waterfall shouldn't have to open the VFO window to see
   // what the radio is hearing, or what it's looking into on TX.
   if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) jtcatPopoutWin.webContents.send('cat-smeter', val);
+  if (js8PopoutWin && !js8PopoutWin.isDestroyed()) js8PopoutWin.webContents.send('cat-smeter', val);
   _currentSmeter = val;
   if (remoteServer && remoteServer.running) remoteServer.sendToClient({ type: 'smeter', value: val });
 }
@@ -2232,6 +2236,7 @@ function sendCatSwr(val) {
   if (win && !win.isDestroyed()) win.webContents.send('cat-swr', val);
   if (vfoPopoutWin && !vfoPopoutWin.isDestroyed()) vfoPopoutWin.webContents.send('cat-swr', val);
   if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) jtcatPopoutWin.webContents.send('cat-swr', val);
+  if (js8PopoutWin && !js8PopoutWin.isDestroyed()) js8PopoutWin.webContents.send('cat-swr', val);
   _currentSwr = val;
   if (remoteServer && remoteServer.running) remoteServer.sendToClient({ type: 'swr', value: val });
 }
@@ -5171,6 +5176,10 @@ function js8PushStatus() {
     heartbeatMin: js8HbIntervalMin(),
     dialHz: _currentFreqHz || 0,
     band: _currentFreqHz ? (freqToBand(_currentFreqHz / 1e6) || '') : '',
+    // Audio-passband offsets for the waterfall markers. JS8 offsets are
+    // operator-chosen (unlike FT8), so the window shows and edits them.
+    txOffset: eng ? Math.round(eng._txFreq) : 1500,
+    rxOffset: eng ? Math.round(eng._rxFreq) : 1500,
     // The SWR-guard latch, so the JS8 window can show a persistent error and
     // an ATU affordance instead of a transmission that silently died at ~0.5s
     // (Casey 2026-08-09: "no error showed"). Cleared by ATU/band change.
@@ -9239,6 +9248,10 @@ function broadcastJtcatClock(payload) {
   if (win && !win.isDestroyed()) win.webContents.send('jtcat-clock', payload);
   if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) jtcatPopoutWin.webContents.send('jtcat-clock', payload);
   if (jtcatMapPopoutWin && !jtcatMapPopoutWin.isDestroyed()) jtcatMapPopoutWin.webContents.send('jtcat-clock', payload);
+  // JS8 is every bit as time-locked — the whole mode is period boundaries — so
+  // the JS8 window shows the same clock-drift banner (Casey's 2026-06-10 case:
+  // an off CMOS clock = silent zero decodes with the audio looking fine).
+  if (js8PopoutWin && !js8PopoutWin.isDestroyed()) js8PopoutWin.webContents.send('jtcat-clock', payload);
 }
 
 async function runJtcatClockCheck() {
@@ -9490,6 +9503,33 @@ function stopInProcessSpectrum() {
   console.log('[JTCAT] In-process spectrum loop stopped');
 }
 
+// JS8 waterfall spectrum. The JS8 popout has no renderer audio graph (JS8
+// decodes in MAIN, unlike FT8's WebAudio path), so main runs the same FFT
+// over Js8Engine._specBuffer and pushes bins to the popout at ~10 fps. Runs
+// while the popout is open; each tick self-gates on the engine so it costs a
+// couple of null checks when JS8 is off. RX-gain brightness is applied in the
+// popout, so the bins here stay the raw spectrum.
+let _js8SpectrumTimer = null;
+function startJs8Spectrum() {
+  if (_js8SpectrumTimer) return;
+  _js8SpectrumTimer = setInterval(() => {
+    if (!js8PopoutWin || js8PopoutWin.isDestroyed()) return;
+    const eng = js8Engine();
+    if (!eng || !eng._specBuffer) return;
+    const bins = computeSpectrumBins(eng._specBuffer, eng._specOffset || 0, SPECTRUM_BIN_COUNT);
+    const out = new Array(bins.length);
+    for (let i = 0; i < bins.length; i++) out[i] = bins[i];
+    js8PopoutWin.webContents.send('js8-spectrum', out);
+  }, SPECTRUM_INTERVAL_MS);
+  console.log('[JS8] waterfall spectrum loop started');
+}
+function stopJs8Spectrum() {
+  if (!_js8SpectrumTimer) return;
+  clearInterval(_js8SpectrumTimer);
+  _js8SpectrumTimer = null;
+  console.log('[JS8] waterfall spectrum loop stopped');
+}
+
 function stopJtcat() {
   clearJtcatTxFailsafe();
   clearJtcatIcomHardRelease();
@@ -9694,6 +9734,7 @@ function connectSmartSdr() {
     if (win && !win.isDestroyed()) win.webContents.send('cat-swr-ratio', swr);
     if (vfoPopoutWin && !vfoPopoutWin.isDestroyed()) vfoPopoutWin.webContents.send('cat-swr-ratio', swr);
     if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) jtcatPopoutWin.webContents.send('cat-swr-ratio', swr);
+    if (js8PopoutWin && !js8PopoutWin.isDestroyed()) js8PopoutWin.webContents.send('cat-swr-ratio', swr);
     if (remoteServer && remoteServer.running) remoteServer.sendToClient({ type: 'swr-ratio', value: swr });
     // SWR guard: these frames only flow during TX (src=TX- bridge meter), so
     // a sustained over-limit value here means we are RIGHT NOW transmitting
@@ -23820,7 +23861,7 @@ app.whenReady().then(() => {
         settings.js8PopoutBounds = js8PopoutWin.getBounds(); saveSettings(settings);
       }
     });
-    js8PopoutWin.on('closed', () => { js8PopoutWin = null; });
+    js8PopoutWin.on('closed', () => { js8PopoutWin = null; stopJs8Spectrum(); });
     js8PopoutWin.webContents.on('did-finish-load', () => {
       if (!js8PopoutWin || js8PopoutWin.isDestroyed()) return;
       js8PopoutWin.webContents.send('js8call-popout-theme', { theme: settings.lightMode ? 'light' : 'dark', variant: settings.darkVariant || 'navy' });
@@ -23831,6 +23872,12 @@ app.whenReady().then(() => {
       for (const e of js8Tail) js8PopoutWin.webContents.send('js8call-activity', { ...e, replay: true });
       js8PushThreads(null);
       js8PushHeard();
+      // Hydrate the instrumentation the engine may already be feeding: the
+      // clock banner (the monitor runs before this window opens), the shared
+      // RX-gain level, and the waterfall spectrum loop.
+      if (jtcatLastClock) js8PopoutWin.webContents.send('jtcat-clock', jtcatLastClock);
+      if (typeof settings.jtcatRxGain === 'number') js8PopoutWin.webContents.send('jtcat-set-rx-gain', settings.jtcatRxGain);
+      startJs8Spectrum();
     });
     js8PopoutWin.webContents.on('before-input-event', (_e, input) => {
       if (input.key === 'F12' && input.type === 'keyDown') js8PopoutWin.webContents.toggleDevTools();
@@ -23912,6 +23959,16 @@ app.whenReady().then(() => {
   ipcMain.handle('js8-set-band', (_e, band) => {
     markUserActive();
     return js8TuneBand(String(band || ''));
+  });
+
+  // Set the JS8 TX audio offset — the operator picking it on the waterfall.
+  ipcMain.handle('js8-set-offset', (_e, hz) => {
+    markUserActive();
+    const eng = js8Engine();
+    if (!eng) return { ok: false };
+    eng.setTxFreq(Number(hz) || 1500);
+    js8PushStatus();
+    return { ok: true, txOffset: Math.round(eng._txFreq) };
   });
 
   ipcMain.handle('js8-log-prefill', (_e, id) => {
@@ -29439,10 +29496,13 @@ app.whenReady().then(() => {
     // Relay TX gain from popout to main renderer
     if (win && !win.isDestroyed()) win.webContents.send('jtcat-set-tx-gain', level);
   });
-  // RX gain reports from either window's slider — synced everywhere else.
+  // RX gain reports from any window's slider — synced everywhere else. The JS8
+  // popout shares the same value and channel; tag its origin so the echo skips
+  // the slider being dragged.
   ipcMain.on('jtcat-set-rx-gain', (e, level) => {
     const fromPopout = jtcatPopoutWin && !jtcatPopoutWin.isDestroyed() && e.sender === jtcatPopoutWin.webContents;
-    applyJtcatRxGain(level, fromPopout ? 'popout' : 'main');
+    const fromJs8 = js8PopoutWin && !js8PopoutWin.isDestroyed() && e.sender === js8PopoutWin.webContents;
+    applyJtcatRxGain(level, fromJs8 ? 'js8popout' : fromPopout ? 'popout' : 'main');
   });
   ipcMain.on('jtcat-auto-cq-mode', (_e, mode) => {
     setJtcatHuntMode(mode, 'popout');
