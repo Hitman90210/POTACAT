@@ -32,6 +32,7 @@
   // Instruments + new bar controls (waterfall, band-activity, meters, clock).
   var rxageEl = el('jc-rxage'), haltBtn = el('jc-halt'),
       instrumentsEl = el('jc-instruments'), trafficList = el('jc-traffic-list'),
+      wfWrapEl = el('jc-wf'), wfToggleBtn = el('jc-wf-toggle'),
       wfCanvas = el('jc-waterfall'), wfCtx = wfCanvas.getContext('2d'), wfSilentEl = el('jc-wf-silent'),
       rxGainEl = el('jc-rx-gain'), rxGainValEl = el('jc-rx-gain-val'),
       smeterBar = el('jc-smeter-bar'), smeterVal = el('jc-smeter-val'),
@@ -47,6 +48,7 @@
   var rxGainLevel = 1.0;          // 0..1, drives waterfall brightness
   var txOffsetHz = 1500, rxOffsetHz = 1500;
   var lastDecodeTs = 0;           // for the "am I receiving?" age chip
+  var wfHidden = false;           // waterfall hidden by the operator (persisted)
 
   // Directed queries, one tap. They FILL the box rather than sending, so
   // what leaves is still seen first.
@@ -445,7 +447,14 @@
   hbBtn.addEventListener('click', async function () {
     try {
       var r = await window.api.sendHeartbeat();
-      if (r && !r.ok) note(esc(r.error || 'Heartbeat not sent.'), 'err');
+      if (r && r.ok) {
+        // Confirm the enqueue — it transmits at the next period boundary, not
+        // instantly, so silence read as "did nothing" (Casey 2026-08-09). The
+        // TX indicator also flips to "1 queued" from the status push.
+        note('Heartbeat queued' + (r.text ? ' (' + esc(r.text) + ')' : '') + ' — sends at the next period.', 'ok');
+      } else if (r && !r.ok) {
+        note(esc(r.error || 'Heartbeat not sent.'), 'err');
+      }
     } catch (e) { /* ignore */ }
   });
 
@@ -625,7 +634,7 @@
     wfCtx.fillStyle = '#ff2222'; wfCtx.fillRect(txX - 1, 0, 3, h);
   }
   window.api.onSpectrum(function (bins) {
-    if (!running || !bins || !bins.length) return;
+    if (!running || wfHidden || !bins || !bins.length) return;   // don't paint a hidden canvas
     if (!wfCanvas.width || !wfCanvas.height) resizeWaterfall();
     var w = wfCanvas.width, h = wfCanvas.height;
     if (!w || !h) return;
@@ -649,7 +658,19 @@
     txOffsetHz = hz;                 // optimistic; the status echo confirms
     if (window.api.setOffset) window.api.setOffset(hz);
   });
-  window.addEventListener('resize', resizeWaterfall);
+  window.addEventListener('resize', function () { if (!wfHidden) resizeWaterfall(); });
+
+  // Hide/show the waterfall — persisted, so it stays the operator's choice.
+  var WF_HIDDEN_KEY = 'potacat-js8-wf-hidden';
+  function applyWfHidden(hidden, persist) {
+    wfHidden = !!hidden;
+    wfWrapEl.style.display = wfHidden ? 'none' : '';
+    wfToggleBtn.textContent = wfHidden ? 'Show waterfall' : 'Hide waterfall';
+    if (!wfHidden) resizeWaterfall();   // canvas had zero size while hidden
+    if (persist) { try { localStorage.setItem(WF_HIDDEN_KEY, wfHidden ? '1' : '0'); } catch (e) { /* private mode */ } }
+  }
+  wfToggleBtn.addEventListener('click', function () { applyWfHidden(!wfHidden, true); });
+  try { applyWfHidden(localStorage.getItem(WF_HIDDEN_KEY) === '1', false); } catch (e) { /* ignore */ }
 
   // ── RX gain (the one synced level; also our waterfall brightness) ───────────
   function applyRxGainPct(pct, echo) {

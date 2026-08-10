@@ -5521,11 +5521,17 @@ function js8QueueHeartbeat() {
   }
   const grid = String(settings.grid || '').slice(0, 4).toUpperCase();
   eng.setStation({ call: settings.myCallsign, grid });
-  const frames = eng.setTxText(grid ? `HB ${grid}` : 'HB');
+  const text = grid ? `HB ${grid}` : 'HB';
+  const frames = eng.setTxText(text);
   if (!frames) return { ok: false, error: 'Set your callsign in Settings first.' };
   eng._txEnabled = true;
   _js8HbLastSent = Date.now();
-  return { ok: true };
+  // Reflect the queued frame on every surface immediately — the TX indicator
+  // flips to "1 queued" the instant the operator presses HB (FT8 parity),
+  // instead of waiting for the next status tick. Shared by the manual button
+  // and the auto scheduler.
+  js8PushStatus();
+  return { ok: true, text };
 }
 
 /** Manual HB press — send one heartbeat NOW, every press (like CQ). Attended
