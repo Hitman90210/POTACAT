@@ -9102,7 +9102,9 @@ function startJtcat(mode) {
     handleRemotePtt(true, { audio: true });
     armJtcatTxFailsafe(settings.audioSource === 'icom-network' ? 'Icom Network RS-BA1' : (settings.audioSource === 'smartsdr' ? 'SmartSDR Direct' : 'local audio'), data.samples, 12000, data.offsetMs || 0, networkStartDelayMs);
     if (win && !win.isDestroyed()) {
-      win.webContents.send('jtcat-tx-status', { state: 'tx', message: data.message, slot: data.slot });
+      // Carry the mode so the main-window TX badge reads the actual mode
+      // ("JS8 TX" / "PSK31 TX") instead of always "JTCAT TX" (Casey 2026-08-09).
+      win.webContents.send('jtcat-tx-status', { state: 'tx', message: data.message, slot: data.slot, mode: ft8Engine ? ft8Engine._mode : '' });
     }
     if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
       // durMs = buffer duration; the PSK pane paces its TX-echo reveal on it.

@@ -26859,12 +26859,25 @@ window.api.onJtcatTuneAudioStart(function() { startJtcatTuneAudio(); });
 window.api.onJtcatTuneAudioStop(function() { stopJtcatTuneAudio(); });
 
 var jtcatIsTx = false;
+// The TX badge names the actual mode — JS8/PSK31/WSPR get their own label;
+// the FT8/FT4 family keeps "JTCAT TX" (that's the feature's name). Casey
+// 2026-08-09: JS8 TX was blinking "JTCAT TX".
+function jtcatTxBadgeLabel(mode) {
+  var m = String(mode || '').toUpperCase();
+  if (m === 'JS8') return 'JS8 TX';
+  if (m === 'PSK31') return 'PSK31 TX';
+  if (m === 'WSPR') return 'WSPR TX';
+  return 'JTCAT TX';
+}
 window.api.onJtcatTxStatus(function(data) {
   jtcatIsTx = data.state === 'tx';
   if (jtcatIsTx) {
     jtcatEnableTxBtn.classList.add('jtcat-transmitting');
     jtcatTxMsgText.textContent = 'TX: ' + (data.message || '');
-    if (jtcatTxIndicator) jtcatTxIndicator.classList.remove('hidden');
+    if (jtcatTxIndicator) {
+      jtcatTxIndicator.textContent = jtcatTxBadgeLabel(data.mode);
+      jtcatTxIndicator.classList.remove('hidden');
+    }
   } else {
     jtcatEnableTxBtn.classList.remove('jtcat-transmitting');
     if (jtcatTxIndicator) jtcatTxIndicator.classList.add('hidden');
