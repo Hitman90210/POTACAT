@@ -98,6 +98,18 @@ eq(redactIpTo24('127.0.0.1'), '127.0.0.1', 'loopback preserved');
 check(maskEmail('casey@cmox.co').endsWith('.co'), 'maskEmail preserves TLD');
 check(!maskEmail('casey@cmox.co').includes('casey'), 'maskEmail hides local part');
 eq(redactLogLines(['x eyJaa.bb.cc y']), ['x <redacted-jwt> y'], 'redactLogLines JWT');
+// Log lines carry the same addresses the summary fields mask, and these
+// reports get emailed and pasted into Discord. Masking only the header was a
+// half-measure (KQ4DX 2026-08-10: `remoteAddress` shown as 192.168.1.0/24 with
+// `socket connect from 192.168.1.188` intact twenty lines below it).
+eq(redactLogLines(['[Echo CAT] socket connect from 192.168.1.188']),
+  ['[Echo CAT] socket connect from 192.168.1.0/24'], 'redactLogLines masks LAN IPs');
+eq(redactLogLines(['[ws] dialing wss://192.168.1.150:7300 path=lan']),
+  ['[ws] dialing wss://192.168.1.0/24:7300 path=lan'], 'redactLogLines masks IPs in URLs');
+eq(redactLogLines(['listening on 127.0.0.1:7300']),
+  ['listening on 127.0.0.1:7300'], 'redactLogLines leaves loopback alone');
+eq(redactLogLines(['auth Bearer abc.def 10.0.0.5']), ['auth Bearer <redacted> 10.0.0.0/24'],
+  'redactLogLines applies token rules AND IP masking together');
 
 // ───────────────────────────────────────────────────────────────────────────
 console.log('\n=== buildDiagnosticSnapshot: envelope ===');
@@ -176,6 +188,57 @@ function fakeWs() {
   eq(ws._sent[0].type, 'diagnostic-snapshot', 'guest reply is a diagnostic-snapshot');
   eq(ws._sent[0].error, 'not-authorized', 'guest reply carries not-authorized error');
   eq(ws._sent[0].requestId, 'g1', 'guest reply echoes requestId');
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// The desktop half of the report used to hard-code reconnectsLastHour:0, so it
+// contradicted its own log (KQ4DX 2026-08-10: "Reconnects last hour: 0" printed
+// above three logged 1006 closes). A number that disagrees with the evidence
+// beside it makes the reader distrust the whole page.
+console.log('\n=== reconnect counter + push-log exclusions ===');
+
+{
+  const rs = new RemoteServer();
+  eq(rs.reconnectsLastHour(), 0, 'fresh server reports no reconnects');
+  rs._noteClientDisconnect();
+  rs._noteClientDisconnect();
+  eq(rs.reconnectsLastHour(), 2, 'authed drops are counted');
+  // Older than the window — pruned on the next record, ignored by the reader.
+  rs._recentClientDisconnects.unshift(Date.now() - 3700000);
+  eq(rs.reconnectsLastHour(), 2, 'drops older than an hour do not count');
+  rs._noteClientDisconnect();
+  eq(rs._recentClientDisconnects.length, 3, 'recording prunes the expired entry');
+}
+
+{
+  // High-rate streams must stay out of the connect-window push log: the bridge
+  // TX meter alone pushes ~33/sec, and three iOS reconnects evicted every line
+  // of real CAT history from the 600-line ring before the operator could report
+  // anything. They can never be the 1009 offender that log window exists to find.
+  const ex = RemoteServer.PUSH_LOG_EXCLUDED;
+  check(ex.has('tx-meter'), 'tx-meter excluded from the push log');
+  check(ex.has('smeter'), 'smeter excluded from the push log');
+  check(ex.has('signal'), 'WebRTC signal excluded from the push log');
+  check(!ex.has('auth-ok'), 'auth-ok still logged (a real 1009 suspect)');
+  check(!ex.has('settings-update'), 'settings-update still logged (a real 1009 suspect)');
+  check(!ex.has('all-qsos'), 'all-qsos still logged (a real 1009 suspect)');
+}
+
+{
+  // The size warnings are deliberately OUTSIDE the exclusion — nothing large
+  // may hide behind a stream type.
+  const rs = new RemoteServer();
+  const logs = [];
+  rs.on('log', (m) => logs.push(m));
+  const ws = fakeWs();
+  ws._connectedAtMs = Date.now();
+  rs._sendTo(ws, { type: 'tx-meter', value: 0.5 });
+  eq(logs.filter((l) => l.startsWith('push msg=')).length, 0, 'tx-meter push is not logged');
+  rs._sendTo(ws, { type: 'status', freq: 14074000 });
+  eq(logs.filter((l) => l.startsWith('push msg=status')).length, 1, 'status push still logged');
+  rs._sendTo(ws, { type: 'tx-meter', blob: 'x'.repeat(300 * 1024) });
+  check(logs.some((l) => l.includes('LARGE WS payload') && l.includes('tx-meter')),
+    'an oversized excluded type still raises the size warning');
 }
 
 // ───────────────────────────────────────────────────────────────────────────

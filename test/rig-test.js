@@ -1653,6 +1653,138 @@ test('rigctld RPRT clears vfo/split expects; mode parsing resumes', () => {
 });
 
 // =========================================================================
+// A mode the codec CANNOT parse, and a mode reply that never comes, are both
+// silent today: _currentMode stays '' and every client hides PTT/HALT because
+// an empty mode fails the voice-mode whitelist. KQ4DX 2026-08-10 — 40 minutes
+// of `ignored implausible mode ""` on the phone with a CAT link answering
+// frequency and S-meter every second, and nothing anywhere naming the cause.
+console.log('\n=== mode-unknown diagnostics (KQ4DX) ===');
+
+test('kenwood: unrecognized MD value logs once, and emits no mode', () => {
+  const { codec } = captureWrites(KenwoodCodec, { brand: 'Kenwood', protocol: 'kenwood', caps: {}, cw: {} });
+  const logs = [];
+  const modes = [];
+  codec.on('log', (m) => logs.push(m));
+  codec.on('mode', (m) => modes.push(m));
+  codec.onData('MD0;');  // 0 is in no parse table
+  codec.onData('MD0;');  // deduped — this poll runs once a second
+  codec.onData('MD0;');
+  assert.deepStrictEqual(modes, []);
+  const hits = logs.filter((l) => l.includes('unrecognized mode reply'));
+  assert.strictEqual(hits.length, 1, `got: ${logs.join(' | ')}`);
+  assert.ok(hits[0].includes('MD value 0'), hits[0]);
+});
+
+test('kenwood: a DIFFERENT unrecognized value logs again (dedupe is per value)', () => {
+  const { codec } = captureWrites(KenwoodCodec, { brand: 'Kenwood', protocol: 'kenwood', caps: {}, cw: {} });
+  const logs = [];
+  codec.on('log', (m) => logs.push(m));
+  codec.onData('MD0;');
+  codec.onData('MD8;');
+  assert.strictEqual(logs.filter((l) => l.includes('unrecognized mode reply')).length, 2);
+});
+
+test('kenwood: a RECOGNIZED mode still emits and logs nothing', () => {
+  const { codec } = captureWrites(KenwoodCodec, { brand: 'Kenwood', protocol: 'kenwood', caps: {}, cw: {} });
+  const logs = [];
+  const modes = [];
+  codec.on('log', (m) => logs.push(m));
+  codec.on('mode', (m) => modes.push(m));
+  codec.onData('MD2;');
+  assert.deepStrictEqual(modes, ['USB']);
+  assert.strictEqual(logs.filter((l) => l.includes('unrecognized')).length, 0);
+});
+
+test('civ: unrecognized mode byte logs once, and emits no mode', () => {
+  const { codec } = captureWrites(CivCodec, { brand: 'Icom', protocol: 'civ', civAddr: 0x94, caps: {}, cw: {} });
+  const logs = [];
+  const modes = [];
+  codec.on('log', (m) => logs.push(m));
+  codec.on('mode', (m) => modes.push(m));
+  // FE FE E0 94 04 <mode> <filter> FD — 0x22 is in no parse table
+  const frame = Buffer.from([0xFE, 0xFE, 0xE0, 0x94, 0x04, 0x22, 0x01, 0xFD]);
+  codec.onData(frame);
+  codec.onData(frame);
+  assert.deepStrictEqual(modes, []);
+  const hits = logs.filter((l) => l.includes('unrecognized CI-V mode byte'));
+  assert.strictEqual(hits.length, 1, `got: ${logs.join(' | ')}`);
+  assert.ok(hits[0].includes('0x22'), hits[0]);
+});
+
+test('civ: a RECOGNIZED mode byte still emits and logs nothing', () => {
+  const { codec } = captureWrites(CivCodec, { brand: 'Icom', protocol: 'civ', civAddr: 0x94, caps: {}, cw: {} });
+  const logs = [];
+  const modes = [];
+  codec.on('log', (m) => logs.push(m));
+  codec.on('mode', (m) => modes.push(m));
+  codec.onData(Buffer.from([0xFE, 0xFE, 0xE0, 0x94, 0x04, 0x01, 0x01, 0xFD])); // USB
+  assert.deepStrictEqual(modes, ['USB']);
+  assert.strictEqual(logs.filter((l) => l.includes('unrecognized')).length, 0);
+});
+
+test('mode-silence watchdog: answering rig that never reports mode logs once', () => {
+  const { rig } = stubRig();
+  const logs = [];
+  rig.on('log', (m) => logs.push(m));
+  rig._debug = true;
+  rig._lastReadOkMs = Date.now();                                        // freq/meters ARE answering
+  rig._pollStartedMs = Date.now() - (RigController.MODE_SILENCE_MS + 1000);
+  rig._checkModeSilence();
+  rig._checkModeSilence();
+  const hits = logs.filter((l) => l.includes('never reported its MODE'));
+  assert.strictEqual(hits.length, 1, `got: ${logs.join(' | ')}`);
+});
+
+test('mode-silence watchdog: silent BEFORE the window is not yet a fault', () => {
+  const { rig } = stubRig();
+  const logs = [];
+  rig.on('log', (m) => logs.push(m));
+  rig._lastReadOkMs = Date.now();
+  rig._pollStartedMs = Date.now() - 1000;
+  rig._checkModeSilence();
+  assert.strictEqual(logs.length, 0);
+});
+
+test('mode-silence watchdog: a rig that HAS reported a mode never trips it', () => {
+  const { rig, codec } = stubRig();
+  const logs = [];
+  rig.on('log', (m) => logs.push(m));
+  codec.emit('mode', 'USB');
+  rig._lastReadOkMs = Date.now();
+  rig._pollStartedMs = Date.now() - (RigController.MODE_SILENCE_MS + 60000);
+  rig._checkModeSilence();
+  assert.strictEqual(logs.filter((l) => l.includes('never reported its MODE')).length, 0);
+});
+
+test('mode-silence watchdog: stays quiet when NOTHING answers (staleness owns that)', () => {
+  // Two theories for one symptom would send the operator down the wrong path —
+  // "nothing is answering" and "everything but mode is answering" need
+  // different fixes, so only one of them may speak.
+  const { rig } = stubRig();
+  const logs = [];
+  rig.on('log', (m) => logs.push(m));
+  rig._linkStale = true;
+  rig._lastReadOkMs = Date.now() - 60000;
+  rig._pollStartedMs = Date.now() - (RigController.MODE_SILENCE_MS + 60000);
+  rig._checkModeSilence();
+  assert.strictEqual(logs.filter((l) => l.includes('never reported its MODE')).length, 0);
+});
+
+test('mode-silence watchdog: a tune sequence pause does not restart the clock', () => {
+  // _startPolling() re-runs after every tune. Restarting the window there meant
+  // a station tuning more often than MODE_SILENCE_MS would never reach the check.
+  const { rig } = stubRig();
+  const started = Date.now() - (RigController.MODE_SILENCE_MS + 5000);
+  rig._pollStartedMs = started;
+  rig._startPolling();
+  try {
+    assert.strictEqual(rig._pollStartedMs, started);
+  } finally {
+    rig._stopPolling(); // don't leave an interval holding the process open
+  }
+});
+
+// =========================================================================
 // Summary
 console.log(`\n${'='.repeat(50)}`);
 console.log(`Results: ${passed} passed, ${failed} failed`);

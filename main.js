@@ -2456,6 +2456,27 @@ function deriveAudioBridge() {
   return null;
 }
 
+// Which transport a connected client reached us over, inferred from its peer
+// address (the host accepts rather than dials, so there is no path to record at
+// connect time). Tailscale hands out 100.64.0.0/10; RFC1918 and loopback are the
+// LAN listener; anything else came in through the cloud tunnel. Returns null
+// when nobody is connected — "unknown" and "nobody" must not read the same.
+function describeRemotePath(addr) {
+  if (!addr) return null;
+  // Strip the IPv4-mapped-IPv6 prefix Node reports on dual-stack listeners.
+  const ip = String(addr).replace(/^::ffff:/, '');
+  if (ip === '::1' || ip.startsWith('127.')) return 'local';
+  const m = ip.match(/^(\d{1,3})\.(\d{1,3})\./);
+  if (m) {
+    const a = +m[1], b = +m[2];
+    if (a === 100 && b >= 64 && b <= 127) return 'tailscale';
+    if (a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31)) return 'lan';
+    return 'cloud';
+  }
+  if (/^f[cd]/i.test(ip)) return 'lan'; // IPv6 unique-local
+  return 'cloud';
+}
+
 // Gather the desktop's RAW diagnostic state into the brief's section inputs.
 // Pure shaping + redaction happens in lib/diagnostic-snapshot.js; this only
 // reads live state. Best-effort per field — never throws.
@@ -2490,13 +2511,20 @@ function gatherDesktopRawDiagnostic() {
     },
     connection: {
       role: 'host',
-      // pathTried / pathActive / latencyMs / reconnectsLastHour need WS-path
-      // instrumentation not yet wired (brief notes this as light follow-up).
+      // The host doesn't RACE paths the way the phone does — it accepts on
+      // whichever it's reached over — so pathTried stays empty by definition
+      // and pathActive is inferred from the peer address: a private address is
+      // the LAN listener, a CGNAT 100.64/10 address is Tailscale, anything else
+      // arrived through the cloud tunnel. latencyMs stays null (no RTT probe on
+      // this side; the phone reports the measured value).
       pathTried: [],
-      pathActive: null,
-      remoteAddress: null,
+      pathActive: describeRemotePath(conn && conn.remoteAddress),
+      remoteAddress: (conn && conn.remoteAddress) || null,
       latencyMs: null,
-      reconnectsLastHour: 0,
+      reconnectsLastHour: (() => {
+        try { return remoteServer ? remoteServer.reconnectsLastHour() : 0; }
+        catch { return 0; }
+      })(),
       passSession: !!(conn && conn.passSession),
     },
     pairedDevices: (paired || []).map(d => ({
@@ -2507,8 +2535,21 @@ function gatherDesktopRawDiagnostic() {
       profile: activeRig ? (activeRig.name || activeRig.model || null) : null,
       catTransport,
       catStatus: !catTarget ? 'not_configured' : (catConnected ? 'connected' : 'disconnected'),
-      catLastPollAgeMs: null,
-      vfo: _currentMode ? `${(_currentFreqHz / 1000).toFixed(1)} kHz ${_currentMode}` : null,
+      catLastPollAgeMs: (() => {
+        try {
+          const t = cat && cat._lastReadOkMs;
+          return t ? Math.max(0, Date.now() - t) : null;
+        } catch { return null; }
+      })(),
+      // Report whatever we HAVE. This used to require a mode, so a rig that
+      // reported freq but no mode produced no VFO line at all — hiding both
+      // the symptom (mode is empty) and the frequency that would have told us
+      // the link was otherwise healthy. KQ4DX 2026-08-10: the one field that
+      // would have settled the triage was suppressed by the very bug being
+      // reported. "unknown" is data; a missing line is not.
+      vfo: (_currentFreqHz || _currentMode)
+        ? `${(_currentFreqHz / 1000).toFixed(1)} kHz ${_currentMode || '(mode unknown)'}`
+        : null,
       audioBridge: deriveAudioBridge(),
     },
     tailscale: {
