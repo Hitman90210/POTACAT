@@ -60,6 +60,7 @@
     (d.heardBy || []).forEach(function (h) {
       (by[h.call] = by[h.call] || {}).heardBy = h;
     });
+    (d.mailFor || []).forEach(function (call) { (by[call] = by[call] || {}).mail = true; });
 
     var plotted = 0, total = 0;
     Object.keys(by).forEach(function (call) {
@@ -73,6 +74,7 @@
       var color = both ? '#f0a500' : e.heard ? '#4ecca3' : '#4fc3f7';
       var lines = ['<b>' + call + '</b> &middot; ' + grid];
       if (e.heard) lines.push('I hear them: ' + (e.heard.snr > 0 ? '+' : '') + e.heard.snr + ' dB &middot; ' + ago(e.heard.utc));
+      if (e.mail) lines.push('&#9993; Holding mail for them');
       if (e.heardBy) lines.push('They hear me: ' + (e.heardBy.snr > 0 ? '+' : '') + e.heardBy.snr + ' dB &middot; ' + ago(e.heardBy.utc));
       // Plot at -360/0/+360 so markers survive scrolling past the antimeridian —
       // but draw the reach line ONLY to the copy nearest home, or the two far

@@ -424,6 +424,15 @@
         <input id="jc-sms-text" type="text" maxlength="67" placeholder="Message (67 max)" style="margin-top:4px;width:100%;font-size:11px;padding:2px 4px;border-radius:4px;border:1px solid var(--border-primary);background:var(--bg-input,#0f1419);color:var(--text-primary);">
         <span class="jc-opt-help"><span id="jc-sms-est">One-way text to a phone or email via the APRS network.</span> <button id="jc-sms-send" class="jc-btn go" style="font-size:10.5px;padding:1px 8px;margin-left:6px;">Send</button></span>
       </label>
+      <div class="jc-opt-section">Mailbox</div>
+      <button id="jc-opt-mail-hold" class="jc-opt-row active">
+        <span class="jc-opt-label">Hold mail for other stations</span>
+        <span class="jc-opt-help">Store "MSG TO:" messages you decode so their recipients can collect them from you (QUERY MSGS). Serving is rate-limited by a transmit budget (~2 min/hour) and every mail transmission is logged.</span>
+      </button>
+      <button id="jc-opt-mail-unattended" class="jc-opt-row">
+        <span class="jc-opt-label">Serve mail while away</span>
+        <span class="jc-opt-help">Answer mail queries even when you have not touched the station for 30+ minutes. This is automatic control: in the US, 14.078 is NOT a &sect;97.221 automatic-control sub-band, and whether query-response service qualifies as initiated-by-the-remote-station is YOUR call as licensee. Off = queries are served only while you are around.</span>
+      </button>
       <div class="jc-opt-section">APRS</div>
       <button id="jc-opt-aprs-gate" class="jc-opt-row">
         <span class="jc-opt-label">APRS-IS gateway <span id="jc-aprs-gate-state" class="jc-opt-help" style="display:inline;"></span></span>

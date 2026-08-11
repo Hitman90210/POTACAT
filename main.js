@@ -5244,6 +5244,8 @@ function js8PushStatus() {
     aprsGateUp: !!(aprsGate && aprsGate.verified),
     groups: js8CustomGroups(),             // joined @NETS (⚙ gear)
     mailUnread: _js8Mailbox ? _js8Mailbox.unread : 0,   // count only — content stays owner-side
+    mailHold: settings.js8MailHold !== false,        // ⚙ hold mail for other stations
+    mailUnattended: !!settings.js8MailUnattended,    // ⚙ serve queries while away (§97.221 note in the gear)
     dialHz: _currentFreqHz || 0,
     band: _currentFreqHz ? (freqToBand(_currentFreqHz / 1e6) || '') : '',
     // Audio-passband offsets for the waterfall markers. JS8 offsets are
@@ -5326,7 +5328,20 @@ function js8HandleRx(d) {
           sendCatLog(`[JS8 MAIL] stored #${row.id} from ${row.from}: ${row.text}`);
           if (win && !win.isDestroyed()) win.webContents.send('app-notice', { message: `JS8 mail from ${row.from}: ${row.text}`, duration: 10000 });
           js8PushStatus();   // mailUnread rides js8-state to every surface
+          if (remoteServer && remoteServer.broadcastJs8Mail) remoteServer.broadcastJs8Mail({ id: row.id, from: row.from, text: row.text, utc: row.receivedAt });
         }
+      } else {
+        // Mail-drop role (step 2): hold "MSG TO:<OTHER> <text>" for pickup.
+        const rel = /^MSG\s+TO:\s*([A-Z0-9/]+)\s+(.+)$/is.exec(String(msg.text || '').trim());
+        if (rel && settings.js8MailHold !== false) {
+          const row = js8Mailbox().add({ from: msg.from, to: rel[1].toUpperCase(), text: rel[2].trim() });
+          if (row) {
+            js8MailboxSave();
+            sendCatLog(`[JS8 MAIL] holding #${row.id} from ${row.from} for ${row.to}`);
+            js8PushMapData();   // the map badges stations we hold mail for
+          }
+        }
+        js8ServeMailQuery(msg);   // QUERY MSGS / QUERY MSG <id>
       }
     }
     // Reachability, the other direction: an SNR report addressed to US
@@ -5432,8 +5447,55 @@ function js8MaybeAckHeartbeat(msg) {
   js8HbAcked.set(call, Date.now());
   const snr = (typeof msg.snr === 'number') ? Math.round(msg.snr) : 0;
   const rpt = (snr >= 0 ? '+' : '-') + String(Math.abs(snr)).padStart(2, '0');
-  const r = js8Transmit('SNR ' + rpt, call);   // directed SNR report — the acknowledgement
+  // Step 3: mail goes looking for its recipient — if we hold mail for this
+  // station, say so in the same ACK ("SNR -11 MSG ID A1B2C3").
+  const held = _js8Mailbox ? js8Mailbox().undeliveredFor(call)[0] : null;
+  const ackText = 'SNR ' + rpt + (held ? ' MSG ID ' + held.id : '');
+  const r = js8Transmit(ackText, call);   // directed SNR report — the acknowledgement
   if (r && r.ok) sendCatLog(`[JS8] HB ACK → ${call} (SNR ${rpt})`);
+}
+
+/** Serve QUERY MSGS / QUERY MSG <ID> from the mailbox (store-and-forward
+ *  step 2). Automatic TX in response to interrogation, so it passes FOUR
+ *  gates: attended (operator active within 30 min — or the explicit
+ *  unattended opt-in, see its §97.221 note), the usual TX guards, the
+ *  duty-cycle governor, and full logging. Refusals are logged, never sent —
+ *  a mailbox that argues on the air is QRM. */
+function js8ServeMailQuery(msg) {
+  const text = String(msg.text || '').trim();
+  const isList = /^QUERY\s+MSGS\??$/i.test(text);
+  const isGet = /^QUERY\s+MSG\s+([A-Z0-9]+)$/i.exec(text);
+  if (!isList && !isGet) return;
+  const call = String(msg.from || '').toUpperCase();
+  const eng = js8Engine();
+  if (!eng || !call || call.startsWith('<')) return;
+  const attended = Date.now() - js8HbLastActivity <= JS8_HB_WATCHDOG_MS;
+  if (!attended && !settings.js8MailUnattended) {
+    sendCatLog(`[JS8 MAIL] ${call} queried but the operator is away >30 min and unattended service is off — not serving`);
+    return;
+  }
+  if (_swrTripped || eng._txActive || eng.txQueueLength > 0) return;
+  if (radioOwner !== 'none' && radioOwner !== 'jtcat') return;
+  let reply;
+  let served = null;
+  if (isList) {
+    const next = js8Mailbox().undeliveredFor(call)[0];
+    reply = next ? `MSG ID ${next.id}` : 'NO MESSAGES';
+  } else {
+    const row = js8Mailbox().byId(isGet[1]);
+    if (!row || row.to !== call) { sendCatLog(`[JS8 MAIL] ${call} asked for #${isGet[1]} — not theirs/unknown, ignoring`); return; }
+    reply = `MSG FROM ${row.from}: ${row.text}`;
+    served = row;
+  }
+  const estSec = Math.ceil((call.length + reply.length) / 10) * 15;
+  const refusal = js8MailGovernor().refusal(call, estSec);
+  if (refusal) { sendCatLog(`[JS8 MAIL] governor refused serving ${call}: ${refusal}`); return; }
+  const r = js8Transmit(reply, call);
+  if (r && r.ok) {
+    js8MailGovernor().record(call, (r.frames || 1) * 15);
+    if (served) { served.deliveredAt = Date.now(); js8MailboxSave(); js8PushMapData(); }
+    sendCatLog(`[JS8 MAIL] served ${call}: ${reply}`);
+  }
 }
 
 /** The custom @GROUPS the operator has joined (settings.js8Groups, ⚙ gear). */
@@ -5455,6 +5517,14 @@ function js8IsForMe(d) {
 
 // ── JS8 mailbox (receive-only store-and-forward, v1) ─────────────────────────
 let _js8Mailbox = null;
+let _js8MailGovernor = null;
+function js8MailGovernor() {
+  if (!_js8MailGovernor) {
+    const { Js8MailGovernor } = require('./lib/js8-mail-governor');
+    _js8MailGovernor = new Js8MailGovernor({});
+  }
+  return _js8MailGovernor;
+}
 let _js8MailboxSaveTimer = null;
 function js8Mailbox() {
   if (_js8Mailbox) return _js8Mailbox;
@@ -5464,7 +5534,15 @@ function js8Mailbox() {
   catch { /* first run */ }
   return _js8Mailbox;
 }
+/** Mail addressed to the OWNER (what the phone sees) — held-for-others stays local. */
+function js8OwnMailList() {
+  const me = (settings.myCallsign || '').toUpperCase();
+  return js8Mailbox().messages.filter((x) => x.to === me)
+    .map((x) => ({ id: x.id, from: x.from, text: x.text, utc: x.receivedAt, readAt: x.readAt }));
+}
+
 function js8MailboxSave() {
+  if (remoteServer && remoteServer.setJs8MailList) remoteServer.setJs8MailList(js8OwnMailList());
   clearTimeout(_js8MailboxSaveTimer);
   _js8MailboxSaveTimer = setTimeout(() => {
     try { fs.writeFileSync(path.join(app.getPath('userData'), 'js8-mailbox.json'), JSON.stringify(js8Mailbox().toJSON())); }
@@ -5875,6 +5953,7 @@ function js8PushMapData() {
     home: { call: (settings.myCallsign || '').toUpperCase(), grid: (settings.grid || '').toUpperCase().slice(0, 4) },
     heard: js8Heard,
     heardBy: js8HeardBy.map((h) => ({ ...h, grid: h.grid || gridOf(h.call) })),
+    mailFor: _js8Mailbox ? _js8Mailbox.holdingFor((settings.myCallsign || '').toUpperCase()) : [],
   });
 }
 
@@ -15439,6 +15518,10 @@ function connectRemote() {
     sendCatLog('[JS8] heartbeat auto-reply (HB ACK) ' + (js8HbAck ? 'ON' : 'off') + ' (remote)');
     js8PushStatus();
   });
+  remoteServer.on('js8-mail-read', ({ id } = {}) => {
+    markUserActive();
+    ipcMain.emit('js8-mail-read', null, id);
+  });
   remoteServer.on('js8-set-groups', ({ groups } = {}) => {
     markUserActive();
     ipcMain.emit('js8-set-groups', null, groups);   // one implementation (parse+persist+push)
@@ -24354,7 +24437,22 @@ app.whenReady().then(() => {
     sendCatLog('[JS8] heartbeat auto-reply (HB ACK) ' + (js8HbAck ? 'ON' : 'off'));
     js8PushStatus();
   });
-  // ⚙ RF→APRS-IS gateway. Internet-only (never keys the radio), so persisting
+  // Mail read-marks (desktop + phone share this one implementation).
+  ipcMain.on('js8-mail-read', (_e, id) => {
+    if (id === 'all') js8Mailbox().markAllRead(); else js8Mailbox().markRead(id);
+    js8MailboxSave();
+    js8PushStatus();
+  });
+  // ⚙ mailbox policy: hold-for-others (default ON) + unattended serving
+  // (default OFF — the §97.221 automatic-control question is the operator's).
+  ipcMain.on('js8-set-mail-opts', (_e, o = {}) => {
+    markUserActive();
+    if (o.hold !== undefined) settings.js8MailHold = !!o.hold;
+    if (o.unattended !== undefined) settings.js8MailUnattended = !!o.unattended;
+    saveSettings(settings);
+    js8PushStatus();
+  });
+    // ⚙ RF→APRS-IS gateway. Internet-only (never keys the radio), so persisting
   // the opt-in is safe — unlike the automatic-TX toggles.
   ipcMain.on('js8-set-aprs-gate', (_e, on) => {
     markUserActive();

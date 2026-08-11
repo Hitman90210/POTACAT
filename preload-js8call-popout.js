@@ -79,6 +79,9 @@ contextBridge.exposeInMainWorld('api', {
   setSwrAutoTune: (on) => ipcRenderer.send('js8-set-swr-autotune', !!on),
   setAprsGate: (on) => ipcRenderer.send('js8-set-aprs-gate', !!on),
   setGroups: (raw) => ipcRenderer.send('js8-set-groups', raw),
+  // Mailbox policy (+ read-marks share the main implementation).
+  setMailOpts: (o) => ipcRenderer.send('js8-set-mail-opts', o),
+  markMailRead: (id) => ipcRenderer.send('js8-mail-read', id),
   // Outbound SMS/email via APRS — main builds the packet and transmits.
   sendSms: (kind, to, text) => ipcRenderer.invoke('js8-send-sms', { kind, to, text }),
 

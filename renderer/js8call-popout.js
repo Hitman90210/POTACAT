@@ -767,6 +767,17 @@
     smsSend.disabled = false;
   });
 
+  var mailHoldRow = el('jc-opt-mail-hold'), mailUnattRow = el('jc-opt-mail-unattended');
+  mailHoldRow.addEventListener('click', function () {
+    var on = !mailHoldRow.classList.contains('active');
+    mailHoldRow.classList.toggle('active', on);
+    if (window.api.setMailOpts) window.api.setMailOpts({ hold: on });
+  });
+  mailUnattRow.addEventListener('click', function () {
+    var on = !mailUnattRow.classList.contains('active');
+    mailUnattRow.classList.toggle('active', on);
+    if (window.api.setMailOpts) window.api.setMailOpts({ unattended: on });
+  });
   var aprsGateRow = el('jc-opt-aprs-gate'), aprsGateState = el('jc-aprs-gate-state');
   aprsGateRow.addEventListener('click', function () {
     var on = !aprsGateRow.classList.contains('active');
@@ -869,6 +880,8 @@
     // Gear toggles mirror main's authoritative state.
     hbAckRow.classList.toggle('active', !!(s && s.hbAck));
     swrAutoRow.classList.toggle('active', !!(s && s.swrAutoTune));
+    mailHoldRow.classList.toggle('active', !(s && s.mailHold === false));
+    mailUnattRow.classList.toggle('active', !!(s && s.mailUnattended));
     aprsGateRow.classList.toggle('active', !!(s && s.aprsGate));
     aprsGateState.textContent = (s && s.aprsGate) ? (s.aprsGateUp ? '— connected' : '— connecting…') : '';
     if (s && Array.isArray(s.groups) && document.activeElement !== groupsInput) groupsInput.value = s.groups.join(', ');

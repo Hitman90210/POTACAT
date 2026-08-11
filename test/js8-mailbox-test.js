@@ -51,5 +51,32 @@ test('SMS/email builders pin the silent-failure details', () => {
   assert.ok(!buildSmsMessage('SMSGTE', '5551234567', 'a{b}c', 1).includes('}'), 'braces stripped from body (they delimit the seq)');
 });
 
+const { Js8MailGovernor } = require('../lib/js8-mail-governor');
+
+test('mail-drop: undelivered per call, delivery stamps, holding list', () => {
+  const box = new Js8Mailbox();
+  const a = box.add({ from: 'W1AW', to: 'K1ABC', text: 'first' });
+  box.add({ from: 'W1AW', to: 'K1ABC', text: 'second' });
+  box.add({ from: 'W1AW', to: 'N0DE', text: 'other' });
+  assert.strictEqual(box.undeliveredFor('K1ABC').length, 2);
+  assert.strictEqual(box.undeliveredFor('K1ABC')[0].text, 'first', 'oldest first');
+  assert.ok(box.markDelivered(a.id));
+  assert.strictEqual(box.undeliveredFor('K1ABC').length, 1);
+  assert.deepStrictEqual(box.holdingFor('').sort(), ['K1ABC', 'N0DE']);
+  assert.deepStrictEqual(box.holdingFor('N0DE'), ['K1ABC'], 'own mail excluded');
+});
+
+test('governor: budget + per-call caps, rolling window', () => {
+  const g = new Js8MailGovernor({ windowMs: 1000, budgetSec: 30, maxPerCall: 2 });
+  const t0 = 1000000;
+  assert.strictEqual(g.refusal('W1AW', 15, t0), '');
+  g.record('W1AW', 15, t0);
+  assert.ok(/budget spent/.test(g.refusal('W1AW', 16, t0)), 'over budget refused');
+  g.record('W1AW', 10, t0);
+  assert.ok(/already served/.test(g.refusal('W1AW', 1, t0)), 'per-call cap refused');
+  assert.strictEqual(g.refusal('K1ABC', 5, t0), '', 'other calls still fine');
+  assert.strictEqual(g.refusal('W1AW', 15, t0 + 2000), '', 'window rolls off');
+});
+
 console.log(`\nJS8 mailbox: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
