@@ -1722,6 +1722,57 @@ test('civ: a RECOGNIZED mode byte still emits and logs nothing', () => {
   assert.strictEqual(logs.filter((l) => l.includes('unrecognized')).length, 0);
 });
 
+test('civ: a frame we do not consume is logged once per command byte', () => {
+  const { codec } = captureWrites(CivCodec, { brand: 'Icom', protocol: 'civ', civAddr: 0x94, caps: {}, cw: {} });
+  const logs = [];
+  codec.on('log', (m) => logs.push(m));
+  // cmd 0x1A (rig-specific settings) — addressed to us, framed fine, unconsumed.
+  const f = Buffer.from([0xFE, 0xFE, 0xE0, 0x94, 0x1A, 0x06, 0x01, 0xFD]);
+  codec.onData(f);
+  codec.onData(f);
+  const hits = logs.filter((l) => l.includes('unhandled CI-V frame'));
+  assert.strictEqual(hits.length, 1, `got: ${logs.join(' | ')}`);
+  assert.ok(hits[0].includes('cmd=0x1a'), hits[0]);
+});
+
+test('civ: the unhandled-frame diagnostic is capped so garbage cannot flood', () => {
+  const { codec } = captureWrites(CivCodec, { brand: 'Icom', protocol: 'civ', civAddr: 0x94, caps: {}, cw: {} });
+  const logs = [];
+  codec.on('log', (m) => logs.push(m));
+  for (let cmd = 0x20; cmd < 0x40; cmd++) {
+    codec.onData(Buffer.from([0xFE, 0xFE, 0xE0, 0x94, cmd, 0x00, 0xFD]));
+  }
+  assert.strictEqual(logs.filter((l) => l.includes('unhandled CI-V frame')).length, 8);
+});
+
+test('civ: a frequency frame that will not decode names the baud suspect', () => {
+  const { codec } = captureWrites(CivCodec, { brand: 'Icom', protocol: 'civ', civAddr: 0x94, caps: {}, cw: {} });
+  const logs = [];
+  const freqs = [];
+  codec.on('log', (m) => logs.push(m));
+  codec.on('frequency', (hz) => freqs.push(hz));
+  // All-zero BCD decodes to 0 — the `hz > 0` guard that used to drop silently.
+  const f = Buffer.from([0xFE, 0xFE, 0xE0, 0x94, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFD]);
+  codec.onData(f);
+  codec.onData(f);
+  assert.deepStrictEqual(freqs, []);
+  const hits = logs.filter((l) => l.includes('did not decode'));
+  assert.strictEqual(hits.length, 1, `got: ${logs.join(' | ')}`);
+  assert.ok(hits[0].includes('baud'), hits[0]);
+});
+
+test('civ: a GOOD frequency frame still parses and logs no baud suspicion', () => {
+  const { codec } = captureWrites(CivCodec, { brand: 'Icom', protocol: 'civ', civAddr: 0x94, caps: {}, cw: {} });
+  const logs = [];
+  const freqs = [];
+  codec.on('log', (m) => logs.push(m));
+  codec.on('frequency', (hz) => freqs.push(hz));
+  // 14.074000 MHz, CI-V little-endian BCD: 00 40 07 14 00
+  codec.onData(Buffer.from([0xFE, 0xFE, 0xE0, 0x94, 0x03, 0x00, 0x40, 0x07, 0x14, 0x00, 0xFD]));
+  assert.deepStrictEqual(freqs, [14074000]);
+  assert.strictEqual(logs.filter((l) => l.includes('did not decode')).length, 0);
+});
+
 test('mode-silence watchdog: answering rig that never reports mode logs once', () => {
   const { rig } = stubRig();
   const logs = [];
