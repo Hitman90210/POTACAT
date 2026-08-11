@@ -66,3 +66,15 @@ See `mobile-handoff-js8-mailbox.md` §1–2 for the full contract. Summary:
 1. Mail inbox + push notification (highest user value; wire is complete).
 2. SMS/email form (small; reuses your send-result plumbing).
 3. Map (biggest lift; `js8-heard-by` + `js8-heard` are both flowing).
+
+## Build 4 — Idle program picker (added 2026-08-10)
+
+- **C2S `set-idle-rx { mode: 'sstv'|'wspr'|'psk31'|'js8' }`** — which program
+  the station launches after the idle threshold (Auto-RX). Guest-refused
+  (it changes what the station does unattended). Persisted; the current
+  value now rides the settings blob as **`idleRxMode`** — render a 4-way
+  picker, current value from settings, no local latching.
+- `js8` is NEW on desktop too: idle now opens the JS8 window (auto-start +
+  day/night QSY), so the heartbeat net, HB ACKs (if on), mail intake, and
+  the APRS gate all run while the operator is away; activity-state shows it
+  like the other idle programs, and mail arrival still pushes `js8-mail`.

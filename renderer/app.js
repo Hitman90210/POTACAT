@@ -14415,7 +14415,7 @@ async function openSettingsDialog(tab) {
     const enableEl = document.getElementById('set-enable-auto-sstv');
     const modeEl = document.getElementById('set-idle-rx-mode');
     if (!enableEl || !modeEl) return;
-    modeEl.value = (s.idleRxMode === 'wspr' || s.idleRxMode === 'psk31') ? s.idleRxMode : 'sstv';
+    modeEl.value = (['wspr', 'psk31', 'js8'].includes(s.idleRxMode)) ? s.idleRxMode : 'sstv';
     document.getElementById('idle-wspr-band-hop').checked = s.idleWsprBandHop === true;
     document.getElementById('idle-wspr-band-single').checked = s.idleWsprBandHop !== true;
     document.getElementById('set-idle-wspr-band').value = s.idleWsprBand || '20m';
@@ -15157,7 +15157,7 @@ settingsSave.addEventListener('click', async () => {
     freedvForceSideband: freedvForceSidebandVal,
     enableAutoSstv: document.getElementById('set-enable-auto-sstv').checked,
     autoSstvInactivityMin: parseInt(document.getElementById('set-auto-sstv-min').value) || 90,
-    idleRxMode: ['wspr', 'psk31'].includes(document.getElementById('set-idle-rx-mode').value) ? document.getElementById('set-idle-rx-mode').value : 'sstv',
+    idleRxMode: ['wspr', 'psk31', 'js8'].includes(document.getElementById('set-idle-rx-mode').value) ? document.getElementById('set-idle-rx-mode').value : 'sstv',
     idleWsprBandHop: document.getElementById('idle-wspr-band-hop').checked,
     idleWsprBand: document.getElementById('set-idle-wspr-band').value || '20m',
     idlePskBand: document.getElementById('set-idle-psk-band').value || '20m',
@@ -21698,7 +21698,7 @@ document.getElementById('welcome-start').addEventListener('click', async () => {
   const hideOobChecked = document.getElementById('welcome-hide-oob').checked;
   const autoSstvChecked = document.getElementById('welcome-enable-auto-sstv').checked;
   const autoSstvMinVal = Math.max(5, Math.min(600, parseInt(document.getElementById('welcome-auto-sstv-min').value, 10) || 90));
-  const idleRxModeVal = ['wspr', 'psk31'].includes(document.getElementById('welcome-idle-rx-mode').value) ? document.getElementById('welcome-idle-rx-mode').value : 'sstv';
+  const idleRxModeVal = ['wspr', 'psk31', 'js8'].includes(document.getElementById('welcome-idle-rx-mode').value) ? document.getElementById('welcome-idle-rx-mode').value : 'sstv';
   const idleWsprBandHopVal = document.getElementById('welcome-idle-wspr-band-hop').checked;
   const idleWsprBandVal = document.getElementById('welcome-idle-wspr-band').value || '20m';
   const idlePskBandVal = document.getElementById('welcome-idle-psk-band').value || '20m';
@@ -22082,7 +22082,7 @@ async function checkFirstRun(force = false) {
       (function () {
         const modeEl = document.getElementById('welcome-idle-rx-mode');
         if (!modeEl) return;
-        modeEl.value = (s.idleRxMode === 'wspr' || s.idleRxMode === 'psk31') ? s.idleRxMode : 'sstv';
+        modeEl.value = (['wspr', 'psk31', 'js8'].includes(s.idleRxMode)) ? s.idleRxMode : 'sstv';
         document.getElementById('welcome-idle-wspr-band-hop').checked = s.idleWsprBandHop === true;
         document.getElementById('welcome-idle-wspr-band-single').checked = s.idleWsprBandHop !== true;
         document.getElementById('welcome-idle-wspr-band').value = s.idleWsprBand || '20m';

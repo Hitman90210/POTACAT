@@ -11736,6 +11736,7 @@ function updateRemoteSettings() {
     // (AB9AI 2026-07-24). tuneRadio already honors it; this only closes the
     // display gap. Default-true idiom, like logCommentTags above.
     jtcatUseDataMode: settings.jtcatUseDataMode !== false,
+    idleRxMode: ['wspr', 'psk31', 'js8'].includes(settings.idleRxMode) ? settings.idleRxMode : 'sstv',
     enableAtu: !!settings.enableAtu,
     tuneClick: !!settings.tuneClick,
     enableRotor: !!settings.enableRotor,
@@ -15533,6 +15534,14 @@ function connectRemote() {
     if (js8HbAck) js8HbAcked.clear();
     sendCatLog('[JS8] heartbeat auto-reply (HB ACK) ' + (js8HbAck ? 'ON' : 'off') + ' (remote)');
     js8PushStatus();
+  });
+  remoteServer.on('set-idle-rx', ({ mode } = {}) => {
+    markUserActive();
+    const v = ['sstv', 'wspr', 'psk31', 'js8'].includes(mode) ? mode : 'sstv';
+    settings.idleRxMode = v;
+    saveSettings(settings);
+    sendCatLog('[Auto-RX] idle program set to ' + v.toUpperCase() + ' (remote)');
+    updateRemoteSettings();   // echo the choice back to every client
   });
   remoteServer.on('js8-send-sms', ({ kind, to, text, reqId } = {}) => {
     markUserActive();
@@ -20757,7 +20766,9 @@ let autoIdleJtcatActive = false;
 let autoIdlePrevJtcatMode = null;
 let autoIdleJtcatOpenedPopout = false;
 let _autoRxDeferLogged = false; // one "Deferred" line per deferral, not per tick
-let autoIdleRxLabel = null; // 'WSPR' | 'PSK31' — names the stop log line
+let autoIdleJs8Active = false;
+let autoIdleJs8OpenedPopout = false;
+let autoIdleRxLabel = null; // 'WSPR' | 'PSK31' | 'JS8' — names the stop log line
 // PSK31 watering-hole USB dials (kHz), mirrored from the popout's
 // PSK_BAND_FREQS. PSK31-on-idle parks on one band (no hopping).
 const PSK_IDLE_DIALS = {
@@ -20843,6 +20854,19 @@ function triggerAutoSstv() {
   // from settings.jtcatLastMode and tunes to settings.jtcatLastBandFreq, so
   // configure both first.
   const idleMode = settings.idleRxMode || 'sstv';
+  if (idleMode === 'js8') {
+    // JS8-on-idle: the JS8 window owns everything — opening it auto-starts
+    // the engine and QSYs to the day/night calling frequency (open = start).
+    autoSstvActive = true;
+    autoIdleJs8Active = true;
+    autoIdleJs8OpenedPopout = !(js8PopoutWin && !js8PopoutWin.isDestroyed());
+    autoIdleRxLabel = 'JS8';
+    ipcMain.emit('js8call-popout-open');
+    sendCatLog('[Auto-RX] JS8 receive started — heartbeat net + inbox (mail keeps counting)');
+    if (remoteServer) remoteServer.broadcastSstvTxStatus({ state: 'auto-rx' });
+    pushActivityState();
+    return;
+  }
   if (idleMode === 'wspr' || idleMode === 'psk31') {
     autoSstvActive = true;
     autoIdleJtcatActive = true;
@@ -20893,6 +20917,20 @@ function triggerAutoSstv() {
 function cancelAutoSstv() {
   if (!autoSstvActive) return;
   autoSstvActive = false;
+  if (autoIdleJs8Active) {
+    // JS8-on-idle teardown: close the window only if WE opened it — close =
+    // stop frees the radio (and the close handler already spares a session a
+    // phone is driving).
+    autoIdleJs8Active = false;
+    if (autoIdleJs8OpenedPopout && js8PopoutWin && !js8PopoutWin.isDestroyed()) {
+      try { js8PopoutWin.close(); } catch {}
+    }
+    autoIdleJs8OpenedPopout = false;
+    sendCatLog('[Auto-RX] JS8 receive stopped');
+    autoIdleRxLabel = null;
+    pushActivityState();
+    return;
+  }
   if (autoIdleJtcatActive) {
     // WSPR/PSK31-on-idle teardown: restore the user's prior JTCAT mode and
     // close the popout only if WE opened it (don't close one the user had open
