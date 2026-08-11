@@ -5455,6 +5455,21 @@ function js8MaybeAckHeartbeat(msg) {
   if (r && r.ok) sendCatLog(`[JS8] HB ACK → ${call} (SNR ${rpt})`);
 }
 
+// Outbound SMS/email via APRS — ONE implementation for popout IPC + phone.
+// Main builds the packet (9-char padded addressee + {NN sequence are where
+// hand-typed attempts silently die) from settings-configured gateways.
+let _js8AprsSeq = 0;
+function js8SendSmsEmail(kind, to, text) {
+  const { buildSmsMessage, buildEmailMessage } = require('./lib/aprs-is');
+  const seq = (_js8AprsSeq = (_js8AprsSeq % 99) + 1);
+  const body = String(text || '').slice(0, 67);
+  const packet = kind === 'email'
+    ? buildEmailMessage(settings.js8EmailGateway || 'EMAIL-2', to, body, seq)
+    : buildSmsMessage(settings.js8SmsGateway || 'SMSGTE', to, body, seq);
+  if (!packet) return { ok: false, error: kind === 'email' ? 'Enter a valid email address and message.' : 'Enter a valid phone number and message.' };
+  return js8Transmit('CMD ' + packet, '@APRSIS');
+}
+
 /** Serve QUERY MSGS / QUERY MSG <ID> from the mailbox (store-and-forward
  *  step 2). Automatic TX in response to interrogation, so it passes FOUR
  *  gates: attended (operator active within 30 min — or the explicit
@@ -5947,6 +5962,7 @@ function js8PushHeard() {
  *  renderer. heardBy grids are backfilled from the heard rail (an SNR reply
  *  carries no grid of its own). */
 function js8PushMapData() {
+  if (remoteServer && remoteServer.broadcastJs8HeardBy) remoteServer.broadcastJs8HeardBy(js8HeardBy);
   if (!js8MapWin || js8MapWin.isDestroyed()) return;
   const gridOf = (call) => { const h = js8Heard.find((x) => x.call === call); return (h && h.grid) || ''; };
   js8MapWin.webContents.send('js8-map-data', {
@@ -15518,6 +15534,11 @@ function connectRemote() {
     sendCatLog('[JS8] heartbeat auto-reply (HB ACK) ' + (js8HbAck ? 'ON' : 'off') + ' (remote)');
     js8PushStatus();
   });
+  remoteServer.on('js8-send-sms', ({ kind, to, text, reqId } = {}) => {
+    markUserActive();
+    const r = js8SendSmsEmail(kind, to, text);   // ONE packet builder + seq
+    remoteServer.sendJs8SendResult({ ok: !!r.ok, error: r.error, text: r.text, frames: r.frames, reqId });
+  });
   remoteServer.on('js8-mail-read', ({ id } = {}) => {
     markUserActive();
     ipcMain.emit('js8-mail-read', null, id);
@@ -24473,17 +24494,9 @@ app.whenReady().then(() => {
   });
   // Outbound SMS/email via APRS: MAIN builds the packet (padding + sequence
   // are where users silently fail) and rides the normal @APRSIS transmit.
-  let _js8AprsSeq = 0;
   ipcMain.handle('js8-send-sms', (_e, { kind, to, text } = {}) => {
     markUserActive();
-    const { buildSmsMessage, buildEmailMessage } = require('./lib/aprs-is');
-    const seq = (_js8AprsSeq = (_js8AprsSeq % 99) + 1);
-    const body = String(text || '').slice(0, 67);
-    const packet = kind === 'email'
-      ? buildEmailMessage(settings.js8EmailGateway || 'EMAIL-2', to, body, seq)
-      : buildSmsMessage(settings.js8SmsGateway || 'SMSGTE', to, body, seq);
-    if (!packet) return { ok: false, error: kind === 'email' ? 'Enter a valid email address and message.' : 'Enter a valid phone number and message.' };
-    return js8Transmit('CMD ' + packet, '@APRSIS');
+    return js8SendSmsEmail(kind, to, text);
   });
   // ⚙ Auto-tune the ATU once when the SWR guard trips — a persisted setting.
   ipcMain.on('js8-set-swr-autotune', (_e, on) => {
