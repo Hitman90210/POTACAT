@@ -253,6 +253,19 @@ test('opening the JS8 window auto-starts it; closing stops it', () => {
 
 // ── HB ACK auto-reply is attended + guarded (it is automatic TX) ─────────────
 
+test('JS8 starts and stops the shared JTCAT audio feeder', () => {
+  assert.ok(RAW.includes('function startJs8AudioFeed()'),
+    'JS8 needs its own audio-feeder request, not just a running engine');
+  assert.ok(RAW.includes("webContents.send('jtcat-start-for-js8')"),
+    'JS8 start must ask the desktop renderer to start JTCAT audio capture');
+  assert.ok(RAW.includes("webContents.send('jtcat-stop-for-js8')"),
+    'JS8 stop must release the JS8-owned audio capture');
+  assert.ok(/ipcMain\.handle\('js8-start'[\s\S]*startJtcat\('JS8'\)[\s\S]*startJs8AudioFeed\(\)/.test(RAW),
+    'desktop JS8 Start must start both the engine and the audio feeder');
+  assert.ok(/remoteServer\.on\('js8-start'[\s\S]*startJtcat\('JS8'\); startJs8AudioFeed\(\)/.test(RAW),
+    'remote JS8 Start must start both the engine and the audio feeder');
+});
+
 test('HB ACK auto-reply is guarded and session-only', () => {
   const body = fnBody('js8MaybeAckHeartbeat');
   // Casey 2026-08-10: HB ACK replies until turned OFF — response-to-
