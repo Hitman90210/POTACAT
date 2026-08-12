@@ -11431,7 +11431,27 @@ if (viewsDropdown) {
 function bindClick(el, handler) {
   if (el && typeof el.addEventListener === 'function') el.addEventListener('click', handler);
 }
-bindClick(viewJtcatBtn, () => window.api.jtcatPopoutOpen());
+bindClick(viewJtcatBtn, async () => {
+  // Mode-first menu: this entry means the FT-family. If the saved mode is a
+  // continuous mode (WSPR/PSK31 now have their own entries), come up in FT8.
+  try {
+    const s = await window.api.getSettings();
+    if (!['FT8', 'FT4', 'FT2'].includes(s && s.jtcatLastMode)) {
+      window.api.saveSettings({ jtcatLastMode: 'FT8' });
+    }
+  } catch (e) { /* popout still opens in whatever mode was saved */ }
+  window.api.jtcatPopoutOpen();
+});
+// WSPR / PSK31: the same popout, opened directly in that pane (the popout
+// auto-starts from settings.jtcatLastMode — same pattern as JS8's window).
+bindClick(document.getElementById('view-wspr-btn'), () => {
+  window.api.saveSettings({ jtcatLastMode: 'WSPR' });
+  window.api.jtcatPopoutOpen();
+});
+bindClick(document.getElementById('view-psk31-btn'), () => {
+  window.api.saveSettings({ jtcatLastMode: 'PSK31' });
+  window.api.jtcatPopoutOpen();
+});
 bindClick(document.getElementById('view-mercury-btn'), () => { if (window.api.mercuryPopoutOpen) window.api.mercuryPopoutOpen(); });
 bindClick(document.getElementById('view-js8call-btn'), () => { if (window.api.js8PopoutOpen) window.api.js8PopoutOpen(); });
 bindClick(document.getElementById('view-sstv-btn'), () => window.api.sstvPopoutOpen());
