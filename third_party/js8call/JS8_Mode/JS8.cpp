@@ -854,31 +854,30 @@ static_assert(alphabet.size() == 64);
 // direct index operation into a 256-byte table, the creation of which
 // must be constexpr under C++17.
 
-constexpr auto alphabetWord = []() {
-    constexpr std::uint8_t invalid = 0xff;
+constexpr std::uint8_t invalidAlphabetWord = 0xff;
 
-    constexpr auto words = []() {
-        std::array<std::uint8_t, 256> words{};
+constexpr auto alphabetWords = []() {
+    std::array<std::uint8_t, 256> words{};
 
-        for (auto &word : words)
-            word = invalid;
+    for (auto &word : words)
+        word = invalidAlphabetWord;
 
-        for (std::size_t i = 0; i < alphabet.size(); ++i) {
-            words[static_cast<std::uint8_t>(alphabet[i])] =
-                static_cast<std::uint8_t>(i);
-        }
+    for (std::size_t i = 0; i < alphabet.size(); ++i) {
+        words[static_cast<std::uint8_t>(alphabet[i])] =
+            static_cast<std::uint8_t>(i);
+    }
 
-        return words;
-    }();
-
-    return [words](char const value) {
-        if (auto const word = words[value]; word != invalid) {
-            return word;
-        }
-
-        throw std::runtime_error("Invalid character in message");
-    };
+    return words;
 }();
+
+constexpr std::uint8_t alphabetWord(char const value) {
+    auto const word = alphabetWords[static_cast<std::uint8_t>(value)];
+    if (word != invalidAlphabetWord) {
+        return word;
+    }
+
+    throw std::runtime_error("Invalid character in message");
+}
 
 // Sanity check key bounds of the 6-bit encoding table.
 
@@ -960,16 +959,15 @@ std::string extractmessage174(std::array<int8_t, KK> const &decoded) {
 // but you'll note that the rows have been reordered here, because this
 // isn't Fortran; C++ is row-major, not column-major.
 
-constexpr auto parity = []() {
-    constexpr std::size_t Rows = 87;
-    constexpr std::size_t Cols = 87;
+constexpr std::size_t ParityRows = 87;
+constexpr std::size_t ParityCols = 87;
 
-    using ElementType = std::uint64_t;
-    constexpr std::size_t ElementSize =
-        std::numeric_limits<ElementType>::digits;
+using ParityElementType = std::uint64_t;
+constexpr std::size_t ParityElementSize =
+    std::numeric_limits<ParityElementType>::digits;
 
-    constexpr auto matrix = []() {
-        constexpr std::array<std::string_view, Rows> Data = {
+constexpr auto parityMatrix = []() {
+        constexpr std::array<std::string_view, ParityRows> Data = {
             "23bba830e23b6b6f50982e", "1f8e55da218c5df3309052",
             "ca7b3217cd92bd59a5ae20", "56f78313537d0f4382964e",
             "6be396b5e2e819e373340c", "293548a138858328af4210",
@@ -1015,13 +1013,13 @@ constexpr auto parity = []() {
             "3dd01a59d86310743ec752", "8abdb889efbe39a510a118",
             "3f231f212055371cf3e2a2"};
 
-        constexpr std::size_t Total = (Rows * Cols + ElementSize - 1);
-        constexpr std::size_t Count = Total / ElementSize;
+        constexpr std::size_t Total = (ParityRows * ParityCols + ParityElementSize - 1);
+        constexpr std::size_t Count = Total / ParityElementSize;
         constexpr std::array<std::uint8_t, 4> Masks = {0x8, 0x4, 0x2, 0x1};
 
-        std::array<ElementType, Count> data{};
+        std::array<ParityElementType, Count> data{};
 
-        for (std::size_t row = 0; row < Rows; ++row) {
+        for (std::size_t row = 0; row < ParityRows; ++row) {
             std::size_t col = 0;
 
             for (auto const c : Data[row]) {
@@ -1032,25 +1030,24 @@ constexpr auto parity = []() {
                                              : throw "Invalid hex";
 
                 for (auto const mask : Masks) {
-                    if (col >= Cols)
+                    if (col >= ParityCols)
                         break;
                     if (value & mask) {
-                        auto const index = row * Cols + col;
-                        data[index / ElementSize] |=
-                            (ElementType(1) << (index % ElementSize));
+                        auto const index = row * ParityCols + col;
+                        data[index / ParityElementSize] |=
+                            (ParityElementType(1) << (index % ParityElementSize));
                     }
                     ++col;
                 }
             }
         }
         return data;
-    }();
-
-    return [matrix](std::size_t const row, std::size_t const col) {
-        auto const index = row * Cols + col;
-        return (matrix[index / ElementSize] >> (index % ElementSize)) & 1;
-    };
 }();
+
+constexpr bool parity(std::size_t const row, std::size_t const col) {
+    auto const index = row * ParityCols + col;
+    return (parityMatrix[index / ParityElementSize] >> (index % ParityElementSize)) & 1;
+}
 } // namespace
 
 /******************************************************************************/
