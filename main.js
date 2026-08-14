@@ -8786,7 +8786,12 @@ function startJtcat(mode) {
   // bookkeeping, so the engine kept decoding while the idle timer — blind to
   // its own session — logged "already decoding" every 30s forever and never
   // tore down when the operator returned. (Casey 2026-07-22)
-  if (autoSstvActive && !autoIdleJtcatActive) cancelAutoSstv();
+  // (JS8-on-idle joined this rule 2026-08-14: the JS8 window's open=start
+  // calls startJtcat('JS8') from did-finish-load ~200ms after the idle
+  // session opened that window — cancelling here closed the window, whose
+  // close=stop killed the engine, and the 30s idle tick reopened it: a
+  // once-a-minute quarter-second window flash, forever. Casey's machine.)
+  if (autoSstvActive && !autoIdleJtcatActive && !autoIdleJs8Active) cancelAutoSstv();
   if (sstvPopoutWin && !sstvPopoutWin.isDestroyed()) {
     sendCatLog('[JTCAT] Closing SSTV popout — JTCAT and SSTV can\'t share the audio input');
     try { sstvPopoutWin.close(); } catch {}
