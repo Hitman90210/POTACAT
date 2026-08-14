@@ -1032,6 +1032,12 @@ const setSotaUpload = document.getElementById('set-sota-upload');
 const sotaUploadConfig = document.getElementById('sota-upload-config');
 const setSotaUsername = document.getElementById('set-sota-username');
 const setSotaPassword = document.getElementById('set-sota-password');
+const setLotwEnable = document.getElementById('set-lotw-enable');
+const lotwConfig = document.getElementById('lotw-config');
+const setLotwLocation = document.getElementById('set-lotw-location');
+const setLotwPassword = document.getElementById('set-lotw-password');
+const lotwUploadBtn = document.getElementById('lotw-upload-btn');
+const lotwUploadResult = document.getElementById('lotw-upload-result');
 const distHeader = document.getElementById('dist-header');
 const utcClockEl = document.getElementById('utc-clock');
 const sfiStatusEl = document.getElementById('sfi-status');
@@ -4549,6 +4555,50 @@ if (setMercuryEnable) {
 // SOTA upload checkbox toggles config visibility
 setSotaUpload.addEventListener('change', () => {
   sotaUploadConfig.classList.toggle('hidden', !setSotaUpload.checked);
+});
+
+// LoTW (TQSL) — checkbox toggles config; opening it pulls the Station
+// Location list from the operator's TQSL install so the dropdown is
+// always what TQSL actually has, never a stale copy.
+async function refreshLotwLocations(preferred) {
+  if (!window.api || !window.api.lotwLocations) return;
+  try {
+    const r = await window.api.lotwLocations();
+    document.getElementById('lotw-missing').classList.toggle('hidden', !!r.tqslPath);
+    const want = preferred || setLotwLocation.value || r.configured || '';
+    setLotwLocation.innerHTML = '<option value="">Select...</option>';
+    for (const name of r.locations || []) {
+      const o = document.createElement('option');
+      o.value = name;
+      o.textContent = name;
+      setLotwLocation.appendChild(o);
+    }
+    if (want && (r.locations || []).includes(want)) setLotwLocation.value = want;
+  } catch (e) {
+    console.warn('[LoTW] locations fetch failed', e);
+  }
+}
+setLotwEnable.addEventListener('change', () => {
+  lotwConfig.classList.toggle('hidden', !setLotwEnable.checked);
+  if (setLotwEnable.checked) refreshLotwLocations();
+});
+lotwUploadBtn.addEventListener('click', async () => {
+  if (!window.api || !window.api.lotwUpload) return;
+  lotwUploadBtn.disabled = true;
+  lotwUploadResult.style.color = '';
+  lotwUploadResult.textContent = 'Signing and uploading...';
+  try {
+    const r = await window.api.lotwUpload({
+      location: setLotwLocation.value,
+      password: setLotwPassword.value,
+    });
+    lotwUploadResult.textContent = r.message || (r.ok ? 'Uploaded.' : 'Upload failed.');
+    lotwUploadResult.style.color = r.ok ? '#4ecca3' : '#e94560';
+  } catch (e) {
+    lotwUploadResult.textContent = 'Upload failed: ' + (e.message || e);
+    lotwUploadResult.style.color = '#e94560';
+  }
+  lotwUploadBtn.disabled = false;
 });
 
 // (Legacy: a #set-enable-remote checkbox toggled #remote-config
@@ -14466,6 +14516,10 @@ async function openSettingsDialog(tab) {
   setSotaUsername.value = s.sotaUsername || '';
   setSotaPassword.value = s.sotaPassword || '';
   sotaUploadConfig.classList.toggle('hidden', !s.sotaUpload);
+  setLotwEnable.checked = s.lotwEnable === true;
+  setLotwPassword.value = s.lotwCertPassword || '';
+  lotwConfig.classList.toggle('hidden', !s.lotwEnable);
+  if (s.lotwEnable) refreshLotwLocations(s.lotwStationLocation);
   setPotaParksPath.value = s.potaParksPath || '';
   potaParksClearBtn.style.display = s.potaParksPath ? '' : 'none';
   setHideWorkedParks.checked = s.hideWorkedParks === true;
@@ -15191,6 +15245,9 @@ settingsSave.addEventListener('click', async () => {
     sotaUpload: sotaUploadEnabled,
     sotaUsername: sotaUsernameVal,
     sotaPassword: sotaPasswordVal,
+    lotwEnable: setLotwEnable.checked,
+    lotwStationLocation: setLotwLocation.value || '',
+    lotwCertPassword: setLotwPassword.value || '',
     licenseClass: licenseClassVal,
     hideOutOfBand: hideOob,
     hideWorked: hideWorkedEnabled,

@@ -257,6 +257,8 @@ contextBridge.exposeInMainWorld('api', {
   onCatLogHistory: (cb) => ipcRenderer.on('cat-log-history', (_e, lines) => cb(lines)),
   markBugReportStart: () => ipcRenderer.invoke('bug-report-mark'),
   getBugReportLog: () => ipcRenderer.invoke('get-bug-report-log'),
+  lotwLocations: () => ipcRenderer.invoke('lotw-locations'),
+  lotwUpload: (opts) => ipcRenderer.invoke('lotw-upload', opts),
   onWorkedQsos: (cb) => ipcRenderer.on('worked-qsos', (_e, data) => cb(data)),
   onWorkedParks: (cb) => ipcRenderer.on('worked-parks', (_e, data) => cb(data)),
   onSpotMuteRules: (cb) => ipcRenderer.on('spot-mute-rules', (_e, rules) => cb(rules)),

@@ -1,6 +1,15 @@
 # TQSL / LoTW Integration Plan
 
-**Status: scoped 2026-07-02, saved for later. Nothing built.**
+**Status: Phase 1 SHIPPED 2026-08-13** — manual whole-log upload from
+Settings > Logging ("Upload to LoTW"). `lib/tqsl.js` (pure: find tqsl,
+station_data candidates + location parse, argv builder, exit-code map;
+`test/tqsl-test.js`), `lotw-locations`/`lotw-upload` IPC in main.js (log
+snapshotted to `lotw-upload.adi` so an append mid-upload can't tear the file
+TQSL reads; live dialog values win over saved settings so the button works
+before Save), `lotwCertPassword` in the secrets registry. Casey's
+prerequisite Station Location exists: **"K3SBP Shack"** (K3SBP, FN20JB, PA).
+Phase 1.5 (per-QSO LOTW_QSL_SENT flags) and Phase 2 (debounced auto-upload)
+remain as scoped below.
 
 Upload logged QSOs to ARRL Logbook of the World by shelling out to the user's
 existing TQSL install. We do NOT bundle TQSL (it's ARRL's, tied to the user's

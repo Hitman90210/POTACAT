@@ -25999,6 +25999,49 @@ app.whenReady().then(() => {
   // process start (including pre-window ones the renderer never received).
   // Head/tail selection keeps the clipboard paste Discord-sized; redaction
   // runs here so log lines from disk never reach the paste unmasked.
+  // ── LoTW via the operator's TQSL (docs/tqsl-lotw-plan.md, Phase 1) ─────────
+  ipcMain.handle('lotw-locations', () => {
+    const { findTqsl, stationDataCandidates, parseStationLocations } = require('./lib/tqsl');
+    const tqsl = findTqsl(settings.tqslPath);
+    let locations = [];
+    for (const sd of stationDataCandidates()) {
+      try { locations = parseStationLocations(fs.readFileSync(sd, 'utf8')); break; }
+      catch { /* no TQSL config yet — keep looking */ }
+    }
+    return { tqslPath: tqsl, locations, configured: settings.lotwStationLocation || '' };
+  });
+  ipcMain.handle('lotw-upload', async (_e, opts) => {
+    const { findTqsl, buildTqslArgs, mapTqslExit } = require('./lib/tqsl');
+    // Live field values from the Settings dialog win over saved settings so
+    // the button works before the operator hits Save.
+    const location = (opts && opts.location) || settings.lotwStationLocation;
+    const password = (opts && typeof opts.password === 'string') ? opts.password : settings.lotwCertPassword;
+    const tqsl = findTqsl(settings.tqslPath);
+    if (!tqsl) return { ok: false, message: 'TQSL not found — install TrustedQSL (arrl.org/tqsl) or set its path in Settings.' };
+    if (!location) return { ok: false, message: 'Pick your TQSL Station Location first.' };
+    const logPath = settings.adifLogPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
+    if (!fs.existsSync(logPath)) return { ok: false, message: 'No QSO log to upload yet.' };
+    // Snapshot the log so an append mid-upload can't tear the file TQSL reads.
+    const snap = path.join(app.getPath('userData'), 'lotw-upload.adi');
+    fs.copyFileSync(logPath, snap);
+    const args = buildTqslArgs({ location, adifPath: snap, password });
+    sendCatLog(`[LoTW] tqsl ${args.filter((x) => !password || x !== password).join(' ')}`);
+    return new Promise((resolve) => {
+      const { execFile } = require('child_process');
+      execFile(tqsl, args, { timeout: 120000 }, (err, stdout, stderr) => {
+        const code = err ? (typeof err.code === 'number' ? err.code : -1) : 0;
+        const r = mapTqslExit(code);
+        // TQSL prints its story to stderr in batch mode — keep the tail.
+        const tail = String(stderr || stdout || '').trim().split(/\r?\n/).slice(-3).join(' | ');
+        if (tail) r.detail = tail;
+        sendCatLog(`[LoTW] ${r.ok ? 'OK' : 'FAILED'} (exit ${code}): ${r.message}${tail ? ' — ' + tail : ''}`);
+        if (r.ok) { settings.lastLotwUploadAt = Date.now(); saveSettings(settings); }
+        try { fs.unlinkSync(snap); } catch { /* best effort */ }
+        resolve(r);
+      });
+    });
+  });
+
   ipcMain.handle('get-bug-report-log', () => {
     try {
       let startupLines = [];
@@ -26050,6 +26093,8 @@ app.whenReady().then(() => {
       'https://potacat.com/', 'https://docs.potacat.com/', 'https://buymeacoffee.com/potacat', 'https://docs.google.com/spreadsheets/',
       'https://pota.app/', 'https://www.sotadata.org.uk/', 'https://wwff.co/', 'https://llota.app/',
       'https://tailscale.com', 'https://worldradioleague.com',
+      // TrustedQSL download — the LoTW upload block in Settings > Logging.
+      'https://www.arrl.org/tqsl-download', 'https://lotw.arrl.org/',
       'https://api.potacat.com/',
       'http://rx.linkfanel.net', 'http://kiwisdr.com', 'http://websdr.org',
       // ECHOCAT mobile app store links (Settings footer promo).

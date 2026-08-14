@@ -2403,6 +2403,24 @@
             <div class="help-text" style="margin-top:4px;line-height:1.5;">FT8BR uses the COMMENT field for in-app commands like <code>/team &lt;name&gt;</code> or <code>/score</code>. Set it once here or update it on the JTCAT panel between QSOs. Empty comment is fine — the QSO still scores, just without a command.</div>
           </div>
         </div>
+        <div style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px;">
+          <label class="checkbox-label"><input type="checkbox" id="set-lotw-enable"> Upload to ARRL Logbook of the World (via TQSL)</label>
+          <span class="help-text" style="margin-left:12px;display:block;">Signs and uploads your POTACAT log with your own TrustedQSL install and callsign certificate. QSOs already at LoTW are skipped automatically.</span>
+          <div id="lotw-config" class="hidden" style="margin-left:12px;margin-top:6px;">
+            <div id="lotw-missing" class="hidden help-text" style="margin-bottom:6px;">TQSL was not found. Install <a href="https://www.arrl.org/tqsl-download" id="lotw-tqsl-link" data-external>TrustedQSL</a>, create your callsign certificate and a Station Location in it, then reopen Settings.</div>
+            <label>Station Location:
+              <select id="set-lotw-location" style="min-width:180px;"><option value="">Select...</option></select>
+            </label>
+            <label style="display:block;margin-top:4px;">Certificate password (only if your certificate has one):
+              <input type="password" id="set-lotw-password" style="width:180px;" autocomplete="off">
+            </label>
+            <div style="margin-top:8px;">
+              <button type="button" id="lotw-upload-btn">Upload to LoTW</button>
+              <span id="lotw-upload-result" class="help-text" style="margin-left:8px;"></span>
+            </div>
+            <div class="help-text" style="margin-top:4px;line-height:1.5;">Station Locations come from TQSL (Station &gt; Add/Edit Station Locations). The upload sends your whole POTACAT log — TQSL's duplicate detection uploads only what LoTW hasn't seen.</div>
+          </div>
+        </div>
       </div>
       <div style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px;">
         <label class="checkbox-label"><input type="checkbox" id="set-sota-upload"> Auto-upload SOTA chaser QSOs to SOTAdata</label>
