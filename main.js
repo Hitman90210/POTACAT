@@ -1424,7 +1424,10 @@ function tripSwrGuard(swr) {
   // per minute — the tune clears the latch, so without this gate a still-bad
   // match would trip → tune → trip forever. If it trips again inside the
   // minute, it latches and the operator intervenes. Flex-only (the guard is).
-  if (settings.swrAutoTune && flexSdr() && Date.now() - _swrLastAutoTune > 60000) {
+  // (smartSdr && connected inline — flexSdr() is closure-local to the remote
+  // setup and NOT in scope here; calling it crashed the app the first time
+  // the guard tripped with auto-tune on. K3SBP 2026-08-13.)
+  if (settings.swrAutoTune && smartSdr && smartSdr.connected && Date.now() - _swrLastAutoTune > 60000) {
     _swrLastAutoTune = Date.now();
     sendCatLog('[SWR GUARD] auto-tuning the ATU to re-match (one shot — latches if it trips again).');
     setTimeout(() => {
