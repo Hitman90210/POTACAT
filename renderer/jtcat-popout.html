@@ -113,6 +113,11 @@
     [data-theme="light"] .jp-row.jp-directed .jp-msg { color: #b3202e; }
     [data-theme="light"] .jp-row.jp-chase .jp-msg { color: #8a6a00; }
     [data-theme="light"] .jp-row.jp-new-park .jp-msg { color: #0b7a4b; }
+    /* WSPR distance + best-DX use the same pale yellow as chase — same
+       dark-gold substitute in light mode (unreadable otherwise, Casey
+       2026-08-14). */
+    [data-theme="light"] .jp-wspr-stats .s-dx,
+    [data-theme="light"] .jp-wspr-row .w-dist { color: #8a6a00; }
     .jp-entity { font-size: 10px; color: var(--text-dim, #666); margin-left: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
 
     /* WSPR pane */
