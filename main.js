@@ -26169,7 +26169,11 @@ app.whenReady().then(() => {
     sendCatLog(`[LoTW] tqsl ${args.filter((x) => !password || x !== password).join(' ')}`);
     return new Promise((resolve) => {
       const { execFile } = require('child_process');
-      execFile(tqsl, args, { timeout: 120000 }, (err, stdout, stderr) => {
+      // maxBuffer: tqsl prints a multi-line complaint PER SKIPPED QSO to
+      // stderr, and a big log whose grids don't match the Station Location
+      // blows past Node's 1MB default — execFile then KILLS tqsl mid-run
+      // ("stderr maxBuffer length exceeded", LZ3AW's "-1", 2026-08-14).
+      execFile(tqsl, args, { timeout: 120000, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
         const code = err ? (typeof err.code === 'number' ? err.code : -1) : 0;
         let r;
         if (err && typeof err.code !== 'number') {
