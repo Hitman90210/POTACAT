@@ -1,0 +1,44 @@
+# Compile-tests the vendored wsprd (WSPR decoder) on every platform WITHOUT
+# cutting a release — packaged builds shipped with NO wsprd for months because
+# nothing ever exercised this path (the installer lesson, again). Triggers on
+# any change to the vendored source or this file, and on demand.
+name: wsprd build test
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'third_party/wsprd/**'
+      - '.github/workflows/wsprd-build-test.yml'
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-fftw
+      - shell: msys2 {0}
+        run: |
+          gcc -O3 -o wsprd.exe third_party/wsprd/src/*.c -lfftw3f -lm -static
+          ./wsprd.exe 2>&1 | head -5 || true
+          test -f wsprd.exe
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update && sudo apt-get install -y libfftw3-dev
+          gcc -O3 -o wsprd third_party/wsprd/src/*.c -Wl,-Bstatic -lfftw3f -Wl,-Bdynamic -lm
+          ./wsprd 2>&1 | head -5 || true
+          test -f wsprd
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          brew install fftw
+          clang -O3 -o wsprd third_party/wsprd/src/*.c "$(brew --prefix fftw)/lib/libfftw3f.a" -lm
+          ./wsprd 2>&1 | head -5 || true
+          test -f wsprd

@@ -49,6 +49,16 @@ jobs:
       - name: Build native addons
         run: npm run build-natives
         continue-on-error: true # native build failures don't block the release
+      - name: Set up MSYS2 (for wsprd)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-fftw
+      - name: Build wsprd (WSPR decoder — GPLv3 separate exe; packaged users had none, #wsprd)
+        shell: msys2 {0}
+        run: |
+          gcc -O3 -o assets/wsprd/wsprd.exe third_party/wsprd/src/*.c -lfftw3f -lm -static
+          test -f assets/wsprd/wsprd.exe
       - name: Fetch cloudflared (POTACAT Cloud tunnel binary)
         run: node scripts/fetch-cloudflared.js --platform=win
       - name: Build Windows installers
@@ -122,6 +132,14 @@ jobs:
             install_name_tool -id "@loader_path/$(basename $lib)" "$lib" || true
           done
           ls -la assets/hamlib/
+      - name: Build wsprd (WSPR decoder — GPLv3 separate exe)
+        # NOTE: built for the RUNNER arch. On the cross-compiled x64 job this
+        # bundles an arm64 wsprd — same known gap as hamlib there (tracked in
+        # potacat-meta work/open/macos-x64-hamlib-arch.md).
+        run: |
+          brew install fftw
+          clang -O3 -o assets/wsprd/wsprd third_party/wsprd/src/*.c "$(brew --prefix fftw)/lib/libfftw3f.a" -lm
+          test -f assets/wsprd/wsprd
       - name: Fetch cloudflared (POTACAT Cloud tunnel binary)
         run: node scripts/fetch-cloudflared.js --platform=mac --arch=arm64
       - name: Build macOS dmg (arm64)
@@ -215,6 +233,14 @@ jobs:
             install_name_tool -id "@loader_path/$(basename $lib)" "$lib" || true
           done
           ls -la assets/hamlib/
+      - name: Build wsprd (WSPR decoder — GPLv3 separate exe)
+        # NOTE: built for the RUNNER arch. On the cross-compiled x64 job this
+        # bundles an arm64 wsprd — same known gap as hamlib there (tracked in
+        # potacat-meta work/open/macos-x64-hamlib-arch.md).
+        run: |
+          brew install fftw
+          clang -O3 -o assets/wsprd/wsprd third_party/wsprd/src/*.c "$(brew --prefix fftw)/lib/libfftw3f.a" -lm
+          test -f assets/wsprd/wsprd
       - name: Fetch cloudflared (POTACAT Cloud tunnel binary)
         run: node scripts/fetch-cloudflared.js --platform=mac --arch=x64
       - name: Build macOS dmg (x64)
@@ -338,6 +364,11 @@ jobs:
             [ -f "$lib" ] && patchelf --set-rpath '$ORIGIN' "$lib" 2>/dev/null || true
           done
           ls -la assets/hamlib/
+      - name: Build wsprd (WSPR decoder — GPLv3 separate exe)
+        run: |
+          sudo apt-get update && sudo apt-get install -y libfftw3-dev
+          gcc -O3 -o assets/wsprd/wsprd third_party/wsprd/src/*.c -Wl,-Bstatic -lfftw3f -Wl,-Bdynamic -lm
+          test -f assets/wsprd/wsprd
       - name: Fetch cloudflared (POTACAT Cloud tunnel binary)
         run: node scripts/fetch-cloudflared.js --platform=linux --arch=x64
       - name: Build Linux packages
@@ -450,6 +481,11 @@ jobs:
             [ -f "$lib" ] && patchelf --set-rpath '$ORIGIN' "$lib" 2>/dev/null || true
           done
           ls -la assets/hamlib/
+      - name: Build wsprd (WSPR decoder — GPLv3 separate exe)
+        run: |
+          sudo apt-get update && sudo apt-get install -y libfftw3-dev
+          gcc -O3 -o assets/wsprd/wsprd third_party/wsprd/src/*.c -Wl,-Bstatic -lfftw3f -Wl,-Bdynamic -lm
+          test -f assets/wsprd/wsprd
       - name: Fetch cloudflared (POTACAT Cloud tunnel binary)
         run: node scripts/fetch-cloudflared.js --platform=linux --arch=arm64
       - name: Build Linux packages (arm64)

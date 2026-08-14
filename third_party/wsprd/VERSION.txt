@@ -1,0 +1,1 @@
+WSJT-X 2.7.0 (tag wsjtx-2.7.0, sourceforge.net/p/wsjt/wsjtx) — lib/wsprd file set + COPYING, fetched 2026-08-13
