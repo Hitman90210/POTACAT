@@ -26159,11 +26159,24 @@ app.whenReady().then(() => {
       const { execFile } = require('child_process');
       execFile(tqsl, args, { timeout: 120000 }, (err, stdout, stderr) => {
         const code = err ? (typeof err.code === 'number' ? err.code : -1) : 0;
-        const r = mapTqslExit(code);
+        let r;
+        if (err && typeof err.code !== 'number') {
+          // execFile failed BEFORE tqsl could report an exit code — the old
+          // "unexpected code -1" hid the real reason (LZ3AW 2026-08-14).
+          if (err.code === 'ENOENT') {
+            r = { ok: false, message: `TQSL could not be started — nothing runnable at ${tqsl}. Reinstall TrustedQSL or set its path in Settings.` };
+          } else if (err.killed || err.signal) {
+            r = { ok: false, message: 'TQSL did not finish within 2 minutes and was stopped. It is probably showing a dialog window (first-run setup, an update prompt, or a question about the log) — open TQSL once by itself, dismiss any prompts, then try again.' };
+          } else {
+            r = { ok: false, message: 'TQSL could not be run: ' + (err.message || String(err.code) || 'unknown error') + '.' };
+          }
+        } else {
+          r = mapTqslExit(code);
+        }
         // TQSL prints its story to stderr in batch mode — keep the tail.
         const tail = String(stderr || stdout || '').trim().split(/\r?\n/).slice(-3).join(' | ');
         if (tail) r.detail = tail;
-        sendCatLog(`[LoTW] ${r.ok ? 'OK' : 'FAILED'} (exit ${code}): ${r.message}${tail ? ' — ' + tail : ''}`);
+        sendCatLog(`[LoTW] ${r.ok ? 'OK' : 'FAILED'} (exit ${code}${err && err.signal ? ' signal ' + err.signal : ''}${err && typeof err.code === 'string' ? ' ' + err.code : ''}): ${r.message}${tail ? ' — ' + tail : ''}`);
         if (r.ok) { settings.lastLotwUploadAt = Date.now(); saveSettings(settings); }
         try { fs.unlinkSync(snap); } catch { /* best effort */ }
         resolve(r);

@@ -4599,7 +4599,10 @@ lotwUploadBtn.addEventListener('click', async () => {
       location: setLotwLocation.value,
       password: setLotwPassword.value,
     });
-    lotwUploadResult.textContent = r.message || (r.ok ? 'Uploaded.' : 'Upload failed.');
+    // On failure include TQSL's own last words (stderr tail) — "unexpected
+    // code" alone gave LZ3AW nothing to act on.
+    lotwUploadResult.textContent = (r.message || (r.ok ? 'Uploaded.' : 'Upload failed.'))
+      + (!r.ok && r.detail ? ' [' + r.detail + ']' : '');
     lotwUploadResult.style.color = r.ok ? '#4ecca3' : '#e94560';
   } catch (e) {
     lotwUploadResult.textContent = 'Upload failed: ' + (e.message || e);
