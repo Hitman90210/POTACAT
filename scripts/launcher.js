@@ -241,21 +241,28 @@ function startPotacat() {
 function stopPotacat() {
   const pids = getOtherPids();
   if (pids.length === 0) return { ok: true, already: true };
-  try {
-    // Kill only GUI POTACAT processes, not our own launcher
-    for (const pid of pids) {
+  // Electron is multi-process: renderers/GPU are ALSO POTACAT.exe. Killing a
+  // child just makes the main process respawn it ("Stop restarts the service",
+  // #71) — so kill each PID's TREE, tolerate per-PID failures (children die
+  // when their parent's tree goes; a second taskkill on them reports 128),
+  // and only report an error if something is genuinely still alive after.
+  const errors = [];
+  for (const pid of pids) {
+    try {
       if (IS_WIN) {
-        execSync(`taskkill /PID ${pid} /F`, { timeout: 10000, windowsHide: true });
+        execSync(`taskkill /PID ${pid} /T /F`, { timeout: 10000, windowsHide: true });
       } else {
         execSync(`kill ${pid}`, { timeout: 10000 });
       }
-    }
+    } catch (err) { errors.push(`${pid}: ${err.message.split('\n')[0]}`); }
+  }
+  const survivors = getOtherPids();
+  if (survivors.length === 0) {
     startedAt = null;
     console.log('[Launcher] Stopped POTACAT (PIDs:', pids.join(', ') + ')');
     return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err.message };
   }
+  return { ok: false, error: `still running: ${survivors.join(', ')} (${errors.join('; ') || 'kill reported success'})` };
 }
 
 async function restartPotacat() {
@@ -549,6 +556,9 @@ async function apiFetch(path, method) {
 async function refresh() {
   const d = await apiFetch('/status');
   if (!d) return;
+  // A 429 body parses as JSON too — without this it rendered "STOPPED" while
+  // the service was fine (#70). Rate-limited = keep showing the LAST truth.
+  if (d.error) { toast('Rate limited — status paused, retrying'); return; }
   const sApp = document.getElementById('s-app');
   sApp.textContent = d.running ? 'RUNNING' : 'STOPPED';
   sApp.className = 'badge ' + (d.running ? 'running' : 'stopped');
