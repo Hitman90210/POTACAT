@@ -26193,7 +26193,36 @@ app.whenReady().then(() => {
         const tail = String(stderr || stdout || '').trim().split(/\r?\n/).slice(-3).join(' | ');
         if (tail) r.detail = tail;
         sendCatLog(`[LoTW] ${r.ok ? 'OK' : 'FAILED'} (exit ${code}${err && err.signal ? ' signal ' + err.signal : ''}${err && typeof err.code === 'string' ? ' ' + err.code : ''}): ${r.message}${tail ? ' — ' + tail : ''}`);
-        if (r.ok) { settings.lastLotwUploadAt = Date.now(); saveSettings(settings); }
+        if (r.ok) {
+          settings.lastLotwUploadAt = Date.now();
+          saveSettings(settings);
+          // Phase 1.5: stamp LOTW_QSL_SENT/LOTW_QSLSDATE on everything that
+          // was in the uploaded snapshot except what tqsl's stderr named as
+          // skipped. Dupes aren't listed (uploaded.db skips them silently)
+          // and ARE stamped — a dupe is at LoTW by definition.
+          try {
+            const { parseTqslSkips, stampLotwSent } = require('./lib/lotw-flags');
+            const snapshotQsos = parseAllRawQsos(snap);
+            const skips = parseTqslSkips(String(stderr || ''));
+            const qsos = parseAllRawQsos(logPath);
+            const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+            const stats = stampLotwSent(qsos, snapshotQsos, skips, today);
+            if (stats.stamped > 0) {
+              rewriteAdifFile(logPath, qsos);
+              if (qsoPopoutWin && !qsoPopoutWin.isDestroyed()) {
+                qsoPopoutWin.webContents.send('qso-popout-refresh');
+              }
+            }
+            sendCatLog(`[LoTW] Marked ${stats.stamped} QSOs as uploaded` +
+              (stats.alreadyStamped ? ` (${stats.alreadyStamped} already marked)` : '') +
+              (skips.length ? `; ${skips.length} skipped by TQSL stay unmarked` : ''));
+            if (stats.stamped > 0 || skips.length > 0) {
+              r.message += ` ${stats.stamped} QSOs marked as uploaded${skips.length ? `; ${skips.length} skipped (see log)` : ''}.`;
+            }
+          } catch (stampErr) {
+            sendCatLog('[LoTW] Sent-flag stamping failed (upload itself succeeded): ' + stampErr.message);
+          }
+        }
         try { fs.unlinkSync(snap); } catch { /* best effort */ }
         resolve(r);
       });

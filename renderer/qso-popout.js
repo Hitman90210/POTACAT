@@ -67,8 +67,20 @@ const EDITABLE = {
   6: 'TX_PWR',
   7: 'RST_SENT', 8: 'RST_RCVD', 9: 'SIG_INFO',
   10: 'GRIDSQUARE', 11: 'STATE', 12: 'COUNTRY',
-  13: 'COMMENT',
+  // 13 is the QSL column — not text-editable; dblclick toggles paper QSL.
+  14: 'COMMENT',
 };
+
+// QSL column marks: L = uploaded to LoTW (Phase 1.5 stamps it after each
+// successful upload), L + check = LoTW confirmed (Phase 3 download), P =
+// paper card received (manual dblclick toggle).
+function qslMarks(q) {
+  const marks = [];
+  if (String(q.LOTW_QSL_RCVD || '').toUpperCase() === 'Y') marks.push('L✓');
+  else if (String(q.LOTW_QSL_SENT || '').toUpperCase() === 'Y') marks.push('L');
+  if (String(q.QSL_RCVD || '').toUpperCase() === 'Y') marks.push('P');
+  return marks.join(' ');
+}
 
 // --- State ---
 let allQsos = [];
@@ -323,6 +335,7 @@ const _virt = {
       q.RST_SENT || '', q.RST_RCVD || '',
       q.SIG_INFO || '',
       q.GRIDSQUARE || '', q.STATE || '', q.COUNTRY || '',
+      qslMarks(q),
       q.COMMENT || '',
     ];
 
@@ -332,6 +345,10 @@ const _virt = {
       if (EDITABLE[i]) {
         td.dataset.field = EDITABLE[i];
         td.classList.add('editable');
+      }
+      if (i === 13) {
+        td.classList.add('qsl-cell');
+        td.title = (cells[i] ? cells[i] + ' — ' : '') + 'double-click to toggle paper QSL received';
       }
       tr.appendChild(td);
     }
@@ -602,6 +619,28 @@ function updateMap() {
     }
   }
 }
+
+// --- Paper QSL toggle (dblclick on the QSL cell) ---
+tbody.addEventListener('dblclick', async (e) => {
+  const td = e.target.closest('td.qsl-cell');
+  if (!td) return;
+  const tr = td.closest('tr');
+  const idx = parseInt(tr.dataset.idx, 10);
+  const qso = allQsos.find(q => q.idx === idx);
+  if (!qso) return;
+  const nowReceived = String(qso.QSL_RCVD || '').toUpperCase() !== 'Y';
+  const fields = { QSL_RCVD: nowReceived ? 'Y' : '' };
+  // QSLRDATE rides along like LOTW_QSLSDATE does — blanked when untoggled.
+  fields.QSLRDATE = nowReceived ? new Date().toISOString().slice(0, 10).replace(/-/g, '') : '';
+  const result = await window.api.updateQso({ idx, fields });
+  if (result.success) {
+    Object.assign(qso, fields);
+    render();
+    toast(nowReceived ? `Paper QSL received from ${qso.CALL}` : `Paper QSL cleared for ${qso.CALL}`);
+  } else {
+    toast('Update failed: ' + (result.error || 'unknown error'));
+  }
+});
 
 // --- Inline edit (dblclick) ---
 tbody.addEventListener('dblclick', (e) => {

@@ -45,7 +45,7 @@
     .qso-table th.sort-asc::after { content: ' \25B2'; font-size: 9px; }
     .qso-table th.sort-desc::after { content: ' \25BC'; font-size: 9px; }
     .qso-table td { padding: 3px 6px; white-space: nowrap; border-bottom: 1px solid var(--border-secondary); height: 20px; box-sizing: content-box; }
-    .qso-table td:nth-child(14) { white-space: normal; word-break: break-word; max-width: 150px; }
+    .qso-table td:nth-child(15) { white-space: normal; word-break: break-word; max-width: 150px; }
     .qso-table tr:last-child td { border-bottom: none; }
     .qso-table td.editable { cursor: text; }
     .qso-table tbody tr { cursor: pointer; }
@@ -70,7 +70,9 @@
     .qso-table td:nth-child(11) { color: var(--log-region); }                        /* Grid */
     .qso-table td:nth-child(12) { color: var(--log-region); }                        /* State */
     .qso-table td:nth-child(13) { color: var(--log-region); }                        /* Country */
-    .qso-table td:nth-child(14) { color: var(--log-notes); }                         /* Notes */
+    .qso-table td:nth-child(14) { color: var(--log-park); font-weight: 600;          /* QSL marks */
+                                  white-space: nowrap; cursor: pointer; }
+    .qso-table td:nth-child(15) { color: var(--log-notes); }                         /* Notes */
     .qso-table td input {
       width: 100%; background: var(--bg-input); border: 1px solid var(--accent-blue);
       color: var(--text-primary); padding: 1px 4px; font-size: inherit;
@@ -245,6 +247,7 @@
           <th data-sort="GRIDSQUARE">Grid</th>
           <th data-sort="STATE">State</th>
           <th data-sort="COUNTRY">Country</th>
+          <th data-sort="LOTW_QSL_SENT" title="QSL status: L = uploaded to LoTW, L&#10003; = LoTW confirmed, P = paper QSL received. Double-click to toggle paper QSL.">QSL</th>
           <th>Notes</th>
           <th></th>
         </tr>
