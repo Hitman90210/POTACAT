@@ -8,8 +8,13 @@ snapshotted to `lotw-upload.adi` so an append mid-upload can't tear the file
 TQSL reads; live dialog values win over saved settings so the button works
 before Save), `lotwCertPassword` in the secrets registry. Casey's
 prerequisite Station Location exists: **"K3SBP Shack"** (K3SBP, FN20JB, PA).
-Phase 1.5 (per-QSO LOTW_QSL_SENT flags) and Phase 2 (debounced auto-upload)
-remain as scoped below.
+**Phase 1.5 SHIPPED 2026-08-14 (9c6d0f9):** post-upload stamping of
+LOTW_QSL_SENT/LOTW_QSLSDATE via lib/lotw-flags.js (tqsl stderr skip-parse;
+snapshot-scoped; dupes stamped), QSL column in the QSO log window
+(L / L-check reserved for Phase 3 / P paper toggle writing QSL_RCVD +
+QSLRDATE). Phase 2 (debounced auto-upload) and Phase 3 (confirmation
+download via lotwreport.adi — needs the user's LoTW WEBSITE login in the
+secrets registry) remain as scoped below.
 
 Upload logged QSOs to ARRL Logbook of the World by shelling out to the user's
 existing TQSL install. We do NOT bundle TQSL (it's ARRL's, tied to the user's
