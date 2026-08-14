@@ -37,6 +37,9 @@ const ECHOCAT_PORT = 7300;
 const PROCESS_NAME = IS_WIN ? 'POTACAT.exe' : 'POTACAT';
 const RATE_LIMIT_WINDOW = 60000;
 const RATE_LIMIT_MAX = 20;
+// Authed status polls only (see checkRateLimit buckets): the page polls
+// every 5s = 12/min per tab; 60 leaves headroom for several open tabs.
+const STATUS_RATE_LIMIT_MAX = 60;
 
 // https defaults to false: the launcher's self-signed cert is rejected by
 // iOS fetch (and Android's underlying URLConnection) even with
@@ -272,15 +275,23 @@ async function restartPotacat() {
 }
 
 // --- Rate limiting ---
+// TWO buckets per IP (#70 round 2, officiallor): the page's own 5s status
+// poll eats 12 req/min, so a single shared 20/min budget meant a few button
+// clicks starved the POLL — the board then froze on stale data with "rate
+// limited" toasts until the window reset. The AUTHED status poll now has its
+// own generous bucket; the strict bucket still covers everything that
+// matters for abuse (auth attempts, actions, page loads — and UNAUTHED
+// /status probes, so passphrase brute-force is exactly as limited as before).
 const rateLimitMap = new Map();
 
-function checkRateLimit(ip) {
+function checkRateLimit(ip, bucket, max) {
+  const key = (bucket || 'action') + ':' + ip;
   const now = Date.now();
-  let hits = rateLimitMap.get(ip) || [];
+  let hits = rateLimitMap.get(key) || [];
   hits = hits.filter(t => now - t < RATE_LIMIT_WINDOW);
-  if (hits.length >= RATE_LIMIT_MAX) return false;
+  if (hits.length >= (max || RATE_LIMIT_MAX)) return false;
   hits.push(now);
-  rateLimitMap.set(ip, hits);
+  rateLimitMap.set(key, hits);
   return true;
 }
 
@@ -575,6 +586,7 @@ async function doAction(action) {
   toast(action === 'start' ? 'Starting...' : action === 'restart' ? 'Restarting...' : 'Stopping...');
   const d = await apiFetch('/' + action, 'POST');
   if (d && d.ok) toast(action === 'stop' ? 'Stopped' : 'Started (PID ' + (d.pid || '?') + ')');
+  else if (d && /rate limit/i.test(d.error || '')) toast('Rate limited — the action was NOT run. Wait a few seconds and click once.', true);
   else toast('Error: ' + (d ? d.error : 'no response'), true);
   setTimeout(async () => { await refresh(); btns.forEach(b => b.disabled = false); }, action === 'restart' ? 4000 : 2000);
 }
@@ -595,15 +607,22 @@ function toast(msg, err) {
 // --- HTTP handler ---
 async function handleRequest(req, res) {
   const ip = req.socket.remoteAddress || '';
-
-  if (!checkRateLimit(ip)) {
-    res.writeHead(429, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Rate limit exceeded' }));
-    return;
-  }
-
   const url = new URL(req.url, `http://${req.headers.host}`);
   const pathname = url.pathname;
+  const isStatusGet = pathname === '/status' && req.method === 'GET';
+
+  const rateLimited = () => {
+    res.writeHead(429, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Rate limit exceeded' }));
+  };
+
+  // Strict bucket for everything EXCEPT /status — the status poll's budget
+  // is decided below, after auth, so an authed page can poll freely while
+  // an unauthed prober burns the strict budget exactly as before.
+  if (!isStatusGet && !checkRateLimit(ip, 'action', RATE_LIMIT_MAX)) {
+    rateLimited();
+    return;
+  }
 
   // Status page — serves HTML, auth handled client-side
   if (pathname === '/' && req.method === 'GET') {
@@ -614,8 +633,19 @@ async function handleRequest(req, res) {
 
   // All API endpoints require auth
   if (!checkAuth(req)) {
+    // An unauthed /status attempt consumes the STRICT bucket — this is the
+    // passphrase brute-force surface, and it stays as limited as it ever was.
+    if (isStatusGet && !checkRateLimit(ip, 'action', RATE_LIMIT_MAX)) {
+      rateLimited();
+      return;
+    }
     res.writeHead(401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Unauthorized' }));
+    return;
+  }
+
+  if (isStatusGet && !checkRateLimit(ip, 'status', STATUS_RATE_LIMIT_MAX)) {
+    rateLimited();
     return;
   }
 
