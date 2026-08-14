@@ -6918,6 +6918,14 @@ async function saveQsoRecord(qsoData, opts) {
     }
   }
 
+  // Send the QSO to Club Log if enabled — a parallel path like SOTA
+  // above, never a gate on logging. skipLogbookForward: multi-park
+  // activations log one record per park but it's one physical QSO.
+  if (settings.clublogEnable && settings.clublogRealtime !== false && !qsoData.skipLogbookForward
+      && settings.clublogEmail && settings.clublogPassword) {
+    await sendQsoToClublog(qsoData);
+  }
+
   const didRespot = (qsoData.respot && qsoData.sig === 'POTA') || qsoData.wwffRespot || qsoData.llotaRespot || qsoData.dxcRespot;
 
   // Push the updated log to any connected mobile/browser clients so
@@ -19841,6 +19849,80 @@ function _summarizePotacatRecord(rec) {
   };
 }
 
+// ── Club Log QSO upload (lib/clublog.js owns the pure builders) ──────────
+// POTACAT's application API key is granted per-app by the Club Log team
+// and must stay out of this public repo, so it's served by
+// api.potacat.com and cached for the session. settings.clublogApiKey is
+// a dev/self-host override.
+let _clublogKeyCache = null;
+function getClublogApiKey() {
+  if (settings.clublogApiKey) return Promise.resolve(settings.clublogApiKey);
+  if (_clublogKeyCache) return Promise.resolve(_clublogKeyCache);
+  return new Promise((resolve) => {
+    const https = require('https');
+    const req = https.get('https://api.potacat.com/clublog-key', { timeout: 10000 }, (res) => {
+      let body = '';
+      res.on('data', (d) => { body += d; });
+      res.on('end', () => {
+        let key = '';
+        if (res.statusCode === 200) {
+          try { key = String(JSON.parse(body).key || '').trim(); }
+          catch { key = body.trim(); }
+        }
+        // A key is a short token — an HTML error page is not a key.
+        if (key && key.length <= 128 && !/[<>\s]/.test(key)) { _clublogKeyCache = key; resolve(key); }
+        else resolve('');
+      });
+    });
+    req.on('timeout', () => { req.destroy(); resolve(''); });
+    req.on('error', () => resolve(''));
+  });
+}
+
+function postToClublog(url, contentType, body) {
+  return new Promise((resolve) => {
+    const https = require('https');
+    const u = new URL(url);
+    const req = https.request({
+      hostname: u.hostname,
+      path: u.pathname + u.search,
+      method: 'POST',
+      headers: { 'Content-Type': contentType, 'Content-Length': Buffer.byteLength(body) },
+      timeout: 60000,
+    }, (res) => {
+      let out = '';
+      res.on('data', (d) => { out += d; });
+      res.on('end', () => resolve({ status: res.statusCode, body: out }));
+    });
+    req.on('timeout', () => { req.destroy(new Error('timeout')); });
+    req.on('error', (e) => resolve({ status: 0, body: e.message }));
+    req.write(body);
+    req.end();
+  });
+}
+
+// Realtime per-QSO push — called from the QSO fan-out next to the SOTA
+// uploader. Never throws; a Club Log hiccup must not break logging.
+async function sendQsoToClublog(qsoData) {
+  try {
+    const { CLUBLOG_REALTIME_URL, buildRealtimeForm, mapClublogResponse } = require('./lib/clublog');
+    const api = await getClublogApiKey();
+    if (!api) { sendCatLog('[ClubLog] QSO not sent — application API key unavailable.'); return; }
+    const form = buildRealtimeForm({
+      email: settings.clublogEmail,
+      password: settings.clublogPassword,
+      callsign: settings.clublogCallsign || settings.myCallsign,
+      api,
+      adif: buildAdifRecord(qsoData),
+    });
+    const res = await postToClublog(CLUBLOG_REALTIME_URL, 'application/x-www-form-urlencoded', form);
+    const r = mapClublogResponse(res.status, res.body, 'realtime');
+    sendCatLog(`[ClubLog] ${r.ok ? (r.dupe ? 'Dupe (already there)' : 'QSO sent') : 'FAILED'}: ${qsoData.callsign} — ${r.message}`);
+  } catch (e) {
+    sendCatLog(`[ClubLog] Error: ${e.message}`);
+  }
+}
+
 function fetchClubLogExpeditions() {
   return new Promise((resolve) => {
     const https = require('https');
@@ -26042,6 +26124,32 @@ app.whenReady().then(() => {
     });
   });
 
+  // ── Club Log bulk upload (putlogs.php). The per-QSO realtime push
+  // lives in the QSO fan-out next to the SOTA uploader. ──────────────
+  ipcMain.handle('clublog-upload', async (_e, opts) => {
+    const { CLUBLOG_PUTLOGS_URL, buildPutlogsMultipart, mapClublogResponse } = require('./lib/clublog');
+    // Live dialog values win over saved settings (same as lotw-upload).
+    const email = (opts && opts.email) || settings.clublogEmail;
+    const password = (opts && opts.password) || settings.clublogPassword;
+    const callsign = ((opts && opts.callsign) || settings.clublogCallsign || settings.myCallsign || '').toUpperCase();
+    if (!email || !password) return { ok: false, message: 'Enter your Club Log email and Application Password first.' };
+    if (!callsign) return { ok: false, message: 'Enter the callsign this log belongs to.' };
+    const api = await getClublogApiKey();
+    if (!api) return { ok: false, message: 'Club Log API key unavailable — check your internet connection, or POTACAT\'s application key has not been issued yet.' };
+    const logPath = settings.adifLogPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
+    if (!fs.existsSync(logPath)) return { ok: false, message: 'No QSO log to upload yet.' };
+    const { contentType, body } = buildPutlogsMultipart({
+      email, password, callsign, api,
+      filename: 'potacat.adi', fileContent: fs.readFileSync(logPath),
+    });
+    sendCatLog(`[ClubLog] Bulk upload for ${callsign} (${Math.round(body.length / 1024)} KB)`);
+    const res = await postToClublog(CLUBLOG_PUTLOGS_URL, contentType, body);
+    const r = mapClublogResponse(res.status, res.body, 'bulk');
+    sendCatLog(`[ClubLog] ${r.ok ? 'OK' : 'FAILED'} (HTTP ${res.status}): ${r.message}`);
+    if (r.ok) { settings.lastClublogUploadAt = Date.now(); saveSettings(settings); }
+    return r;
+  });
+
   ipcMain.handle('get-bug-report-log', () => {
     try {
       let startupLines = [];
@@ -26095,6 +26203,8 @@ app.whenReady().then(() => {
       'https://tailscale.com', 'https://worldradioleague.com',
       // TrustedQSL download — the LoTW upload block in Settings > Logging.
       'https://www.arrl.org/tqsl-download', 'https://lotw.arrl.org/',
+      // Club Log — Application Passwords page link in Settings > Logging.
+      'https://clublog.org/',
       'https://api.potacat.com/',
       'http://rx.linkfanel.net', 'http://kiwisdr.com', 'http://websdr.org',
       // ECHOCAT mobile app store links (Settings footer promo).

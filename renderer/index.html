@@ -2421,6 +2421,26 @@
             <div class="help-text" style="margin-top:4px;line-height:1.5;">Station Locations come from TQSL (Station &gt; Add/Edit Station Locations). The upload sends your whole POTACAT log — TQSL's duplicate detection uploads only what LoTW hasn't seen.</div>
           </div>
         </div>
+        <div style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px;">
+          <label class="checkbox-label"><input type="checkbox" id="set-clublog-enable"> Send QSOs to Club Log</label>
+          <span class="help-text" style="margin-left:12px;display:block;">Each QSO is sent to Club Log as you log it. Use an <a href="https://clublog.org/edituser.php?tab=6" data-external>Application Password</a> from Club Log's settings — never your main Club Log password.</span>
+          <div id="clublog-config" class="hidden" style="margin-left:12px;margin-top:6px;">
+            <label>Club Log email:
+              <input type="text" id="set-clublog-email" style="width:220px;" autocomplete="off">
+            </label>
+            <label style="display:block;margin-top:4px;">Application Password:
+              <input type="password" id="set-clublog-password" style="width:220px;" autocomplete="off">
+            </label>
+            <label style="display:block;margin-top:4px;">Callsign (the log this uploads to):
+              <input type="text" id="set-clublog-callsign" style="width:120px;" placeholder="your callsign">
+            </label>
+            <div style="margin-top:8px;">
+              <button type="button" id="clublog-upload-btn">Upload entire log now</button>
+              <span id="clublog-upload-result" class="help-text" style="margin-left:8px;"></span>
+            </div>
+            <div class="help-text" style="margin-top:4px;line-height:1.5;">The button sends your whole POTACAT log in one batch (Club Log merges it); the checkbox above also pushes every new QSO the moment it's logged. Duplicates are fine — Club Log skips them.</div>
+          </div>
+        </div>
       </div>
       <div style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px;">
         <label class="checkbox-label"><input type="checkbox" id="set-sota-upload"> Auto-upload SOTA chaser QSOs to SOTAdata</label>

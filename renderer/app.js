@@ -1038,6 +1038,13 @@ const setLotwLocation = document.getElementById('set-lotw-location');
 const setLotwPassword = document.getElementById('set-lotw-password');
 const lotwUploadBtn = document.getElementById('lotw-upload-btn');
 const lotwUploadResult = document.getElementById('lotw-upload-result');
+const setClublogEnable = document.getElementById('set-clublog-enable');
+const clublogConfig = document.getElementById('clublog-config');
+const setClublogEmail = document.getElementById('set-clublog-email');
+const setClublogPassword = document.getElementById('set-clublog-password');
+const setClublogCallsign = document.getElementById('set-clublog-callsign');
+const clublogUploadBtn = document.getElementById('clublog-upload-btn');
+const clublogUploadResult = document.getElementById('clublog-upload-result');
 const distHeader = document.getElementById('dist-header');
 const utcClockEl = document.getElementById('utc-clock');
 const sfiStatusEl = document.getElementById('sfi-status');
@@ -4599,6 +4606,30 @@ lotwUploadBtn.addEventListener('click', async () => {
     lotwUploadResult.style.color = '#e94560';
   }
   lotwUploadBtn.disabled = false;
+});
+
+// Club Log — checkbox toggles config; bulk button sends the whole log.
+setClublogEnable.addEventListener('change', () => {
+  clublogConfig.classList.toggle('hidden', !setClublogEnable.checked);
+});
+clublogUploadBtn.addEventListener('click', async () => {
+  if (!window.api || !window.api.clublogUpload) return;
+  clublogUploadBtn.disabled = true;
+  clublogUploadResult.style.color = '';
+  clublogUploadResult.textContent = 'Uploading...';
+  try {
+    const r = await window.api.clublogUpload({
+      email: setClublogEmail.value.trim(),
+      password: setClublogPassword.value,
+      callsign: setClublogCallsign.value.trim(),
+    });
+    clublogUploadResult.textContent = r.message || (r.ok ? 'Uploaded.' : 'Upload failed.');
+    clublogUploadResult.style.color = r.ok ? '#4ecca3' : '#e94560';
+  } catch (e) {
+    clublogUploadResult.textContent = 'Upload failed: ' + (e.message || e);
+    clublogUploadResult.style.color = '#e94560';
+  }
+  clublogUploadBtn.disabled = false;
 });
 
 // (Legacy: a #set-enable-remote checkbox toggled #remote-config
@@ -14520,6 +14551,11 @@ async function openSettingsDialog(tab) {
   setLotwPassword.value = s.lotwCertPassword || '';
   lotwConfig.classList.toggle('hidden', !s.lotwEnable);
   if (s.lotwEnable) refreshLotwLocations(s.lotwStationLocation);
+  setClublogEnable.checked = s.clublogEnable === true;
+  setClublogEmail.value = s.clublogEmail || '';
+  setClublogPassword.value = s.clublogPassword || '';
+  setClublogCallsign.value = s.clublogCallsign || s.myCallsign || '';
+  clublogConfig.classList.toggle('hidden', !s.clublogEnable);
   setPotaParksPath.value = s.potaParksPath || '';
   potaParksClearBtn.style.display = s.potaParksPath ? '' : 'none';
   setHideWorkedParks.checked = s.hideWorkedParks === true;
@@ -15248,6 +15284,10 @@ settingsSave.addEventListener('click', async () => {
     lotwEnable: setLotwEnable.checked,
     lotwStationLocation: setLotwLocation.value || '',
     lotwCertPassword: setLotwPassword.value || '',
+    clublogEnable: setClublogEnable.checked,
+    clublogEmail: setClublogEmail.value.trim(),
+    clublogPassword: setClublogPassword.value || '',
+    clublogCallsign: setClublogCallsign.value.trim().toUpperCase(),
     licenseClass: licenseClassVal,
     hideOutOfBand: hideOob,
     hideWorked: hideWorkedEnabled,
