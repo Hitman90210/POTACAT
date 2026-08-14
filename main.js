@@ -5453,8 +5453,10 @@ function js8MaybeAckHeartbeat(msg) {
   // Step 3: mail goes looking for its recipient — if we hold mail for this
   // station, say so in the same ACK ("SNR -11 MSG ID A1B2C3").
   const held = _js8Mailbox ? js8Mailbox().undeliveredFor(call)[0] : null;
-  const ackText = 'SNR ' + rpt + (held ? ' MSG ID ' + held.id : '');
-  const r = js8Transmit(ackText, call);   // directed SNR report — the acknowledgement
+  const ackText = held ? ('SNR ' + rpt + ' MSG ID ' + held.id) : (call + ' SNR ' + rpt);
+  const r = held
+    ? js8Transmit(ackText, call)
+    : js8Transmit(ackText, '');   // compact directed SNR report: one JS8 frame
   if (r && r.ok) sendCatLog(`[JS8] HB ACK → ${call} (SNR ${rpt})`);
 }
 

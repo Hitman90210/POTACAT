@@ -301,6 +301,8 @@ test('HB ACK auto-reply is guarded and session-only', () => {
   assert.ok(body.includes('_txActive') && body.includes('txQueueLength'),
     'never ACK while already transmitting');
   assert.ok(body.includes('settings.myCallsign'), 'never ACK our own heartbeat');
+  assert.ok(body.includes("call + ' SNR ' + rpt") && body.includes("js8Transmit(ackText, '')"),
+    'ordinary HB ACKs must use compact directed SNR form, not colon-directed two-frame text');
   // Session-only: the enable must never be persisted (would re-arm automatic TX
   // on the next launch with nobody at the radio).
   assert.ok(!/settings\.[A-Za-z]*[Hh]bAck/.test(RAW),

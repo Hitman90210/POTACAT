@@ -251,6 +251,22 @@ test('a long message chains directed + data frames', () => {
   assert.ok(frames[frames.length - 1].bits & V.TransmissionType.JS8CallLast);
 });
 
+test('compact directed SNR ACKs stay in one frame', () => {
+  const compact = V.buildMessageFrames({
+    mycall: 'K3SBP', mygrid: 'FN20', text: 'KE2DMC SNR -12',
+  });
+  const colon = V.buildMessageFrames({
+    mycall: 'K3SBP', mygrid: 'FN20', text: 'KE2DMC: SNR -12',
+  });
+  assert.strictEqual(compact.frames.length, 1,
+    'HB ACKs must use compact directed SNR form to avoid two on-air periods');
+  const decoded = V.interpretFrame(compact.frames[0].frame, compact.frames[0].bits, 0);
+  assert.strictEqual(decoded.frameType, V.FrameType.FrameDirected);
+  assert.strictEqual(decoded.message, 'K3SBP: KE2DMC SNR -12 ');
+  assert.ok(colon.frames.length > compact.frames.length,
+    'the observed colon-directed ACK falls back to data framing and takes longer');
+});
+
 test('every built frame reassembles into the original message', () => {
   const text = 'KN4CRD MSG HELLO FROM POTACAT';
   const { frames } = V.buildMessageFrames({
