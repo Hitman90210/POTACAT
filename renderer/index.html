@@ -2419,6 +2419,20 @@
               <span id="lotw-upload-result" class="help-text" style="margin-left:8px;"></span>
             </div>
             <div class="help-text" style="margin-top:4px;line-height:1.5;">Station Locations come from TQSL (Station &gt; Add/Edit Station Locations). The upload sends your whole POTACAT log — TQSL's duplicate detection uploads only what LoTW hasn't seen.</div>
+            <div style="margin-top:10px;border-top:1px dashed var(--border);padding-top:8px;">
+              <label>LoTW username:
+                <input type="text" id="set-lotw-login" style="width:140px;" autocomplete="off">
+              </label>
+              <label style="margin-left:8px;">LoTW password:
+                <input type="password" id="set-lotw-web-password" style="width:140px;" autocomplete="off">
+              </label>
+              <span class="help-text" style="display:block;margin-top:4px;">Your lotw.arrl.org website login — used only to download which QSOs LoTW has confirmed. This is not the certificate password above.</span>
+              <div style="margin-top:6px;">
+                <button type="button" id="lotw-download-btn">Download confirmations</button>
+                <span id="lotw-download-result" class="help-text" style="margin-left:8px;"></span>
+              </div>
+              <span class="help-text" style="display:block;margin-top:4px;">Confirmed QSOs get the L&#10003; mark in the QSO log window and count as confirmed in the DXCC Tracker. The first download pulls your full history; later ones fetch only new confirmations.</span>
+            </div>
           </div>
         </div>
         <div style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px;">

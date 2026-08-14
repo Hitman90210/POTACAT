@@ -259,6 +259,7 @@ contextBridge.exposeInMainWorld('api', {
   getBugReportLog: () => ipcRenderer.invoke('get-bug-report-log'),
   lotwLocations: () => ipcRenderer.invoke('lotw-locations'),
   lotwUpload: (opts) => ipcRenderer.invoke('lotw-upload', opts),
+  lotwDownloadConfirmations: (opts) => ipcRenderer.invoke('lotw-download-confirmations', opts),
   clublogUpload: (opts) => ipcRenderer.invoke('clublog-upload', opts),
   onWorkedQsos: (cb) => ipcRenderer.on('worked-qsos', (_e, data) => cb(data)),
   onWorkedParks: (cb) => ipcRenderer.on('worked-parks', (_e, data) => cb(data)),

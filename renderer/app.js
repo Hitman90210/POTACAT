@@ -1038,6 +1038,10 @@ const setLotwLocation = document.getElementById('set-lotw-location');
 const setLotwPassword = document.getElementById('set-lotw-password');
 const lotwUploadBtn = document.getElementById('lotw-upload-btn');
 const lotwUploadResult = document.getElementById('lotw-upload-result');
+const setLotwLogin = document.getElementById('set-lotw-login');
+const setLotwWebPassword = document.getElementById('set-lotw-web-password');
+const lotwDownloadBtn = document.getElementById('lotw-download-btn');
+const lotwDownloadResult = document.getElementById('lotw-download-result');
 const setClublogEnable = document.getElementById('set-clublog-enable');
 const clublogConfig = document.getElementById('clublog-config');
 const setClublogEmail = document.getElementById('set-clublog-email');
@@ -4609,6 +4613,24 @@ lotwUploadBtn.addEventListener('click', async () => {
     lotwUploadResult.style.color = '#e94560';
   }
   lotwUploadBtn.disabled = false;
+});
+lotwDownloadBtn.addEventListener('click', async () => {
+  if (!window.api || !window.api.lotwDownloadConfirmations) return;
+  lotwDownloadBtn.disabled = true;
+  lotwDownloadResult.style.color = '';
+  lotwDownloadResult.textContent = 'Downloading from LoTW...';
+  try {
+    const r = await window.api.lotwDownloadConfirmations({
+      login: setLotwLogin.value.trim(),
+      password: setLotwWebPassword.value,
+    });
+    lotwDownloadResult.textContent = r.message || (r.ok ? 'Done.' : 'Download failed.');
+    lotwDownloadResult.style.color = r.ok ? '#4ecca3' : '#e94560';
+  } catch (e) {
+    lotwDownloadResult.textContent = 'Download failed: ' + (e.message || e);
+    lotwDownloadResult.style.color = '#e94560';
+  }
+  lotwDownloadBtn.disabled = false;
 });
 
 // Club Log — checkbox toggles config; bulk button sends the whole log.
@@ -14558,6 +14580,8 @@ async function openSettingsDialog(tab) {
   sotaUploadConfig.classList.toggle('hidden', !s.sotaUpload);
   setLotwEnable.checked = s.lotwEnable === true;
   setLotwPassword.value = s.lotwCertPassword || '';
+  setLotwLogin.value = s.lotwLogin || '';
+  setLotwWebPassword.value = s.lotwPassword || '';
   lotwConfig.classList.toggle('hidden', !s.lotwEnable);
   if (s.lotwEnable) refreshLotwLocations(s.lotwStationLocation);
   setClublogEnable.checked = s.clublogEnable === true;
@@ -15293,6 +15317,8 @@ settingsSave.addEventListener('click', async () => {
     lotwEnable: setLotwEnable.checked,
     lotwStationLocation: setLotwLocation.value || '',
     lotwCertPassword: setLotwPassword.value || '',
+    lotwLogin: setLotwLogin.value.trim(),
+    lotwPassword: setLotwWebPassword.value || '',
     clublogEnable: setClublogEnable.checked,
     clublogEmail: setClublogEmail.value.trim(),
     clublogPassword: setClublogPassword.value || '',

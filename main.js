@@ -26229,6 +26229,63 @@ app.whenReady().then(() => {
     });
   });
 
+  // ── LoTW Phase 3: confirmation download (lotwreport.adi) ────────────
+  // Different auth than upload: the LoTW WEBSITE login, not the TQSL cert.
+  ipcMain.handle('lotw-download-confirmations', async (_e, opts) => {
+    const { buildLotwReportQuery, parseLotwAdif, looksLikeLotwAuthFailure, stampLotwConfirmations } = require('./lib/lotw-report');
+    const { lotwKey } = require('./lib/lotw-flags');
+    const login = (opts && opts.login) || settings.lotwLogin;
+    const password = (opts && opts.password) || settings.lotwPassword;
+    if (!login || !password) return { ok: false, message: 'Enter your LoTW username and password first (your lotw.arrl.org website login).' };
+    const logPath = settings.adifLogPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
+    if (!fs.existsSync(logPath)) return { ok: false, message: 'No QSO log to match confirmations against yet.' };
+    // Incremental after the first pull, with a 7-day overlap so a QSL that
+    // lands between runs can never slip through the crack.
+    let qslSince = null;
+    if (settings.lotwLastQslDownload) {
+      qslSince = new Date(settings.lotwLastQslDownload - 7 * 86400000).toISOString().slice(0, 10);
+    }
+    const q = buildLotwReportQuery({ login, password, qslSince });
+    sendCatLog('[LoTW] Downloading confirmations' + (qslSince ? ` issued since ${qslSince}` : ' (full history — the first run can take a minute)'));
+    const res = await new Promise((resolve) => {
+      const https = require('https');
+      const req = https.get({ hostname: q.host, path: q.path, timeout: 120000 }, (resp) => {
+        let body = '';
+        resp.on('data', (d) => { body += d; });
+        resp.on('end', () => resolve({ status: resp.statusCode, body }));
+      });
+      req.on('timeout', () => { req.destroy(); resolve({ status: 0, body: 'timeout' }); });
+      req.on('error', (e) => resolve({ status: 0, body: e.message }));
+    });
+    if (res.status !== 200) {
+      sendCatLog(`[LoTW] Confirmation download failed (HTTP ${res.status})`);
+      return { ok: false, message: res.status === 0 ? `Could not reach LoTW: ${res.body}.` : `LoTW answered HTTP ${res.status} — try again later.` };
+    }
+    if (looksLikeLotwAuthFailure(res.body)) {
+      return { ok: false, message: 'LoTW rejected the login — check your lotw.arrl.org website username and password (this is NOT the certificate password).' };
+    }
+    const records = parseLotwAdif(res.body);
+    const qsos = parseAllRawQsos(logPath);
+    const stats = stampLotwConfirmations(qsos, records, lotwKey);
+    if (stats.confirmed > 0) {
+      rewriteAdifFile(logPath, qsos);
+      loadWorkedQsos();
+      if (qsoPopoutWin && !qsoPopoutWin.isDestroyed()) qsoPopoutWin.webContents.send('qso-popout-refresh');
+    }
+    settings.lotwLastQslDownload = Date.now();
+    if (opts && opts.login) settings.lotwLogin = opts.login;
+    if (opts && opts.password) settings.lotwPassword = opts.password;
+    saveSettings(settings);
+    const totalConfirmed = qsos.filter((x) => String(x.LOTW_QSL_RCVD || '').toUpperCase() === 'Y').length;
+    // Unmatched = QSLs for QSOs this log doesn't have (other logger, edited
+    // times). Name a few in the log so the operator can reconcile.
+    if (stats.unmatched.length) {
+      sendCatLog(`[LoTW] ${stats.unmatched.length} confirmations had no matching QSO in this log: ` + stats.unmatched.slice(0, 5).join('; ') + (stats.unmatched.length > 5 ? ' ...' : ''));
+    }
+    sendCatLog(`[LoTW] Confirmations: ${stats.confirmed} new, ${stats.alreadyConfirmed} already marked, ${stats.unmatched.length} unmatched — ${totalConfirmed} QSOs confirmed total`);
+    return { ok: true, message: `${stats.confirmed} new confirmation${stats.confirmed === 1 ? '' : 's'} — ${totalConfirmed} QSOs confirmed on LoTW.` + (stats.unmatched.length ? ` ${stats.unmatched.length} had no matching QSO here (see log).` : '') };
+  });
+
   // ── Club Log bulk upload (putlogs.php). The per-QSO realtime push
   // lives in the QSO fan-out next to the SOTA uploader. ──────────────
   ipcMain.handle('clublog-upload', async (_e, opts) => {
