@@ -7252,6 +7252,7 @@ const JTCAT_WSPR_MAX_DBM = 30;
 const JTCAT_TX_AUDIO_LEAD_MS = 500;
 let jtcatWsprScheduler = null;
 let jtcatWsprBeaconTimer = null;
+let _jtcatWsprAnnouncedSlot = -1; // last 2-min slot whose TX/listen draw was pushed to the popout
 let jtcatWsprBeaconArmedAt = 0;
 // Band hopping — sweep the beacon/RX across several bands, one per 2-min cycle.
 let jtcatWsprHopEnabled = false;
@@ -8208,6 +8209,21 @@ function wsprBeaconTick() {
     return;
   }
   if (ft8Engine._txActive) return;
+  // Announce each slot's draw to the popout/phone. The random 20% default
+  // means MOST slots are listen slots, and a beacon that says nothing during
+  // them is indistinguishable from a dead one — N7BBQ armed it, watched 5
+  // silent minutes (a 51% outcome at 20% x 3 slots), and reported TX broken.
+  // decideSlot is decide-once-per-slot, so this never re-rolls the dice.
+  const slotNow = Math.floor(Date.now() / 120000);
+  if (slotNow !== _jtcatWsprAnnouncedSlot) {
+    _jtcatWsprAnnouncedSlot = slotNow;
+    const willTx = jtcatWsprScheduler.decideSlot(Date.now());
+    const payload = { enabled: true, slotTx: willTx, txPct: jtcatWsprScheduler.txPct };
+    if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
+      jtcatPopoutWin.webContents.send('jtcat-wspr-beacon-state', payload);
+    }
+    if (remoteServer && remoteServer.hasClient()) remoteServer.broadcastJtcatWsprBeaconState(payload);
+  }
   const plan = jtcatWsprScheduler.tick(Date.now());
   if (!plan) return;
   const call = (settings.myCallsign || '').trim().toUpperCase();
@@ -8274,7 +8290,11 @@ function setWsprBeacon(on) {
   if (jtcatWsprBeaconTimer) clearInterval(jtcatWsprBeaconTimer);
   jtcatWsprBeaconTimer = setInterval(wsprBeaconTick, 1000);
   const dbm = Math.min(JTCAT_WSPR_MAX_DBM, settings.wsprDbm != null ? settings.wsprDbm : 30);
-  sendCatLog(`[JTCAT] WSPR beacon ARMED: ${call} ${grid} @ ${dbm} dBm (${wsprWattsFromDbm(dbm) >= 1 ? '1 W' : Math.round(wsprWattsFromDbm(dbm) * 1000) + ' mW'} max), TX ${jtcatWsprScheduler.txPct}% of slots. Attended only (30-min watchdog).`);
+  _jtcatWsprAnnouncedSlot = -1; // re-announce the current slot's draw on (re)arm
+  const avgMin = jtcatWsprScheduler.txPct > 0 ? Math.round(200 / jtcatWsprScheduler.txPct) : 0;
+  sendCatLog(`[JTCAT] WSPR beacon ARMED: ${call} ${grid} @ ${dbm} dBm (${wsprWattsFromDbm(dbm) >= 1 ? '1 W' : Math.round(wsprWattsFromDbm(dbm) * 1000) + ' mW'} max), TX ${jtcatWsprScheduler.txPct}% of slots` +
+    (avgMin > 2 ? ` — slots are drawn at random, so expect roughly one transmission every ${avgMin} minutes; listening slots in between are normal` : '') +
+    `. Attended only (30-min watchdog).`);
   sendCatLog(capped
     ? '[JTCAT] WSPR: radio commanded to ~1 W (rfpower 1% on Flex / PC001 on CAT). Still verify actual output on a meter.'
     : '[JTCAT] ⚠ WSPR: could NOT set radio power automatically (no live CAT/SmartSDR power control) — set your radio to ≤1 W BY HAND before it transmits.');

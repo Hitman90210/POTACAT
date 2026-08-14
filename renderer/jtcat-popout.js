@@ -2770,8 +2770,17 @@ function _applyPopoutTheme(payload) {
   // Main process confirms/reverts the beacon toggle (e.g. if arming failed
   // because the operator's call/grid isn't set, or we're not in WSPR mode).
   if (window.api.onJtcatWsprBeaconState) {
+    var wsprBeaconStatusEl = document.getElementById('jp-wspr-beacon-status');
     window.api.onJtcatWsprBeaconState(function(st) {
       if (wsprTxEnable) wsprTxEnable.checked = !!(st && st.enabled);
+      // Per-slot feedback. A beacon that says nothing during listen slots is
+      // indistinguishable from a dead one (N7BBQ armed at 20%, watched 5
+      // silent minutes — a 51% outcome — and reported TX broken).
+      if (!wsprBeaconStatusEl) return;
+      if (!st || !st.enabled) { wsprBeaconStatusEl.textContent = ''; wsprBeaconStatusEl.className = 'jp-wspr-beacon-status'; return; }
+      if (st.slotTx === undefined) return; // plain arm/disarm confirm — keep current text
+      wsprBeaconStatusEl.textContent = st.slotTx ? 'TX this slot' : 'listening this slot';
+      wsprBeaconStatusEl.className = 'jp-wspr-beacon-status' + (st.slotTx ? ' tx' : '');
     });
   }
   // ================== end WSPR ==================
