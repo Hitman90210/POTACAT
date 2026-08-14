@@ -8013,17 +8013,20 @@ function renderCwMacroEditor(macros) {
     });
     footer.appendChild(addBtn);
   }
-  const last = list[slots - 1];
-  const lastEmpty = !last || (!(last.label || '').trim() && !(last.text || '').trim());
-  if (slots > 1 && lastEmpty) {
+  // Always available past one slot (#64: it only appeared when the last row
+  // was empty, so a full set of macros had no Remove at all). Removing a
+  // populated row discards its content in the EDITOR only — nothing is
+  // persisted until Settings Save, so Cancel still restores it.
+  if (slots > 1) {
     const remBtn = document.createElement('button');
     remBtn.type = 'button';
     remBtn.textContent = '− Remove last';
-    remBtn.title = 'Hide the last (empty) CW macro';
+    remBtn.title = 'Remove the last CW macro row (saved when you save Settings)';
     remBtn.style.cssText = 'font-size:11px;padding:3px 10px;cursor:pointer;';
     remBtn.addEventListener('click', () => {
+      const rows = readCwMacroRows().slice(0, slots - 1);
       saveCwMacroSlots(slots - 1);
-      renderCwMacroEditor(readCwMacroRows());
+      renderCwMacroEditor(rows);
     });
     footer.appendChild(remBtn);
   }
