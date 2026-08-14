@@ -762,9 +762,15 @@ window.api.onVfoLockState((locked) => {
 });
 
 window.api.onTuneBlocked((msg) => {
+  // Show the ACTUAL reason — this fires for "no radio connected", SWR-guard
+  // trips, etc., and hardcoding the lock text claimed "VFO Locked" while the
+  // lock was open (#76). The lock wording only appears when it IS the lock.
+  vfoLockToast.textContent = (typeof msg === 'string' && msg)
+    ? msg
+    : (vfoLocked ? '🔒 VFO Locked — Unlock VFO to change frequency' : 'Tuning unavailable — no radio connected');
   vfoLockToast.classList.add('show');
   clearTimeout(_lockToastTimer);
-  _lockToastTimer = setTimeout(() => vfoLockToast.classList.remove('show'), 2000);
+  _lockToastTimer = setTimeout(() => vfoLockToast.classList.remove('show'), 3000);
 });
 const filterSlider = document.getElementById('filter-slider');
 const filterVal = document.getElementById('filter-val');

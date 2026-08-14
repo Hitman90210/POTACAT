@@ -23983,6 +23983,10 @@ app.whenReady().then(() => {
     vfoPopoutWin.loadFile(path.join(__dirname, 'renderer', 'vfo-popout.html'), { query: { theme: settings.lightMode ? 'light' : 'dark', variant: settings.darkVariant || 'navy' } });
     vfoPopoutWin.webContents.on('did-finish-load', () => {
       sendVfoState();
+      // Hydrate the lock: without this a popout opened AFTER the lock was
+      // engaged shows the open padlock while main refuses tunes with "VFO
+      // Locked" — the exact contradiction in #76.
+      vfoPopoutWin.webContents.send('vfo-lock-state', _vfoLocked);
       if (_cachedSolarData) vfoPopoutWin.webContents.send('solar-data', _cachedSolarData);
       vfoPopoutWin.webContents.send('vfo-popout-theme', { theme: settings.lightMode ? 'light' : 'dark', variant: settings.darkVariant || 'navy' });
       // Initial TX EQ state so the popout's controls hydrate to the
