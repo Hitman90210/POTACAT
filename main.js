@@ -20620,12 +20620,40 @@ function checkEventQso(qsoData) {
 // --- Update check (electron-updater for installed, manual fallback for portable) ---
 autoUpdater.autoDownload = false;
 autoUpdater.autoInstallOnAppQuit = false;
+// Route updater activity through sendCatLog, not just the console — a
+// user's "the update didn't apply" report is undiagnosable when the
+// updater's own story never reaches session.log (first Mac field test,
+// 2026-08-14: still on 1.10.3 after Restart, zero evidence in the log).
 autoUpdater.logger = {
-  info: (...args) => console.log('[updater]', ...args),
-  warn: (...args) => console.warn('[updater]', ...args),
-  error: (...args) => console.error('[updater]', ...args),
+  info: (...args) => sendCatLog('[updater] ' + args.join(' ')),
+  warn: (...args) => sendCatLog('[updater] WARN: ' + args.join(' ')),
+  error: (...args) => sendCatLog('[updater] ERROR: ' + args.join(' ')),
   debug: (...args) => console.log('[updater:debug]', ...args),
 };
+
+// Squirrel.Mac's ShipIt replaces the .app bundle at quit — and when it
+// can't, it FAILS SILENTLY and relaunches the old version, which reads
+// as "I clicked Restart and I'm still on 1.10.3". Detect the three
+// bundle-irreplaceable states up front so the user gets the actual fix
+// instead of a fake restart.
+function macUpdateBlocker() {
+  if (process.platform !== 'darwin') return null;
+  const execPath = process.execPath;
+  if (execPath.includes('/AppTranslocation/')) {
+    return 'macOS is running POTACAT from its quarantine sandbox (App Translocation), so the update cannot replace the app. In Finder, move POTACAT.app into Applications, then launch it from there — auto-update will work from then on.';
+  }
+  if (execPath.startsWith('/Volumes/')) {
+    return 'POTACAT is running from the disk image, which is read-only — the update cannot be applied. Drag POTACAT.app into Applications and launch it from there.';
+  }
+  const appBundle = execPath.replace(/\/Contents\/MacOS\/[^/]+$/, '');
+  try {
+    fs.accessSync(appBundle, fs.constants.W_OK);
+    fs.accessSync(path.dirname(appBundle), fs.constants.W_OK);
+  } catch {
+    return 'POTACAT.app is not writable by this user (installed by a different account?), so the update cannot replace it. Reinstall the new version from its DMG under this account, or fix ownership of ' + appBundle + '.';
+  }
+  return null;
+}
 
 autoUpdater.on('update-available', (info) => {
   if (win && !win.isDestroyed()) {
@@ -20644,6 +20672,10 @@ autoUpdater.on('download-progress', (progress) => {
 });
 
 autoUpdater.on('update-downloaded', () => {
+  // Log the blocker at download time too, so a bug report shows the
+  // problem even if the user never clicks Restart.
+  const blocker = macUpdateBlocker();
+  if (blocker) sendCatLog('[update] downloaded, but Restart will NOT apply it: ' + blocker);
   if (win && !win.isDestroyed()) {
     win.webContents.send('update-downloaded');
   }
@@ -20678,6 +20710,16 @@ ipcMain.on('install-update', async () => {
   } catch (err) {
     console.error('[update] cloudflared shutdown before install failed:', err && err.message);
   }
+  // A blocked Mac bundle makes quitAndInstall a fake restart (ShipIt
+  // fails silently and relaunches the OLD version) — refuse with the
+  // real fix instead. The renderer's update-error toast shows it.
+  const blocker = macUpdateBlocker();
+  if (blocker) {
+    sendCatLog('[update] REFUSING install: ' + blocker);
+    if (win && !win.isDestroyed()) win.webContents.send('update-error', blocker);
+    return;
+  }
+  sendCatLog('[update] quitAndInstall — applying the downloaded update now');
   autoUpdater.quitAndInstall();
 });
 ipcMain.on('check-for-updates', () => { checkForUpdates(); });
