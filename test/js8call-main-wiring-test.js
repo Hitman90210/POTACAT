@@ -22,6 +22,8 @@ const path = require('path');
 const assert = require('assert');
 
 const RAW = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+const PRELOAD = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8');
+const RENDERER = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
 
 /** Comments and string literals blanked to spaces, byte offsets preserved. */
 function blankNonCode(src) {
@@ -264,6 +266,16 @@ test('JS8 starts and stops the shared JTCAT audio feeder', () => {
     'desktop JS8 Start must start both the engine and the audio feeder');
   assert.ok(/remoteServer\.on\('js8-start'[\s\S]*startJtcat\('JS8'\); startJs8AudioFeed\(\)/.test(RAW),
     'remote JS8 Start must start both the engine and the audio feeder');
+  assert.ok(PRELOAD.includes("onJtcatStartForJs8") && PRELOAD.includes("jtcat-start-for-js8"),
+    'preload must expose the JS8 audio-start request to the desktop renderer');
+  assert.ok(PRELOAD.includes("onJtcatStopForJs8") && PRELOAD.includes("jtcat-stop-for-js8"),
+    'preload must expose the JS8 audio-stop request to the desktop renderer');
+  assert.ok(RENDERER.includes('jtcatJs8AudioActive'),
+    'renderer must track JS8 ownership separately from desktop/remote JTCAT');
+  assert.ok(/onJtcatStartForJs8[\s\S]*jtcatJs8AudioActive\s*=\s*true[\s\S]*startJtcatAudio\(\)/.test(RENDERER),
+    'renderer must start the shared audio capture when JS8 asks for it');
+  assert.ok(/onJtcatStopForJs8[\s\S]*jtcatJs8AudioActive\s*=\s*false[\s\S]*stopJtcatAudio\(\)/.test(RENDERER),
+    'renderer must stop only JS8-owned audio when JS8 releases it');
 });
 
 test('HB ACK auto-reply is guarded and session-only', () => {
