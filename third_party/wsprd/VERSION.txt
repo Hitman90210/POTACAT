@@ -1,1 +1,1 @@
-WSJT-X 2.7.0 (tag wsjtx-2.7.0, sourceforge.net/p/wsjt/wsjtx) — lib/wsprd file set + COPYING, fetched 2026-08-13
+WSJT-X 2.7.0 lib/wsprd C set + osdwspr.f90 + lib/indexx.f90 (Fortran OSD deep decoder), COPYING as LICENSE. Fetched 2026-08-13 from sourceforge.net/p/wsjt/wsjtx tag wsjtx-2.7.0.

@@ -18,10 +18,10 @@ jobs:
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
-          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-fftw
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-gcc-fortran mingw-w64-x86_64-fftw
       - shell: msys2 {0}
         run: |
-          gcc -O3 -o wsprd.exe third_party/wsprd/src/*.c -lfftw3f -lm -static
+          gfortran -O3 -o wsprd.exe third_party/wsprd/src/*.c third_party/wsprd/src/*.f90 -lfftw3f -lm -static
           ./wsprd.exe 2>&1 | head -5 || true
           test -f wsprd.exe
   linux:
@@ -29,8 +29,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
-          sudo apt-get update && sudo apt-get install -y libfftw3-dev
-          gcc -O3 -o wsprd third_party/wsprd/src/*.c -Wl,-Bstatic -lfftw3f -Wl,-Bdynamic -lm
+          sudo apt-get update && sudo apt-get install -y libfftw3-dev gfortran
+          gfortran -O3 -o wsprd third_party/wsprd/src/*.c third_party/wsprd/src/*.f90 -Wl,-Bstatic -lfftw3f -Wl,-Bdynamic -lm -static-libgfortran -static-libgcc
           ./wsprd 2>&1 | head -5 || true
           test -f wsprd
   macos:
@@ -38,7 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
-          brew install fftw
-          clang -O3 -o wsprd third_party/wsprd/src/*.c "$(brew --prefix fftw)/lib/libfftw3f.a" -lm
+          brew install fftw gcc
+          gfortran -O3 -o wsprd third_party/wsprd/src/*.c third_party/wsprd/src/*.f90 -I"$(brew --prefix fftw)/include" "$(brew --prefix fftw)/lib/libfftw3f.a" -lm -static-libgfortran -static-libgcc
           ./wsprd 2>&1 | head -5 || true
           test -f wsprd
