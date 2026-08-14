@@ -12687,7 +12687,12 @@ function _sendCwTextToRadioImpl(text) {
   // the radio's CW jack, so it bypasses CAT-side keyer quirks entirely.
   const rigModel = getActiveRigModel();
   const cwCaps = rigModel?.cw || {};
-  if (cwCaps.textMethod === 'dtr-key-port') {
+  // A configured dedicated CW key port is OPERATOR INTENT - it wins over
+  // CAT-side CW even when the model doesn't declare dtr-key-port. LA8JKA's
+  // IC-756 Pro III via rigctld: text went to rigctld's send_morse ('b'),
+  // the rig answered RPRT -11, and the separate DTR adapter he explicitly
+  // configured sat unused. Configuring the port IS the choice.
+  if (cwCaps.textMethod === 'dtr-key-port' || settings.cwKeyPort) {
     const wpm = (cat && cat._cwWpm) || 20;
     // Honor the per-rig CW-keying-line override (Settings > Radio >
     // CW keying line), exactly like the paddle paths do — raw
