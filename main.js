@@ -8292,8 +8292,12 @@ function setWsprBeacon(on) {
   const dbm = Math.min(JTCAT_WSPR_MAX_DBM, settings.wsprDbm != null ? settings.wsprDbm : 30);
   _jtcatWsprAnnouncedSlot = -1; // re-announce the current slot's draw on (re)arm
   const avgMin = jtcatWsprScheduler.txPct > 0 ? Math.round(200 / jtcatWsprScheduler.txPct) : 0;
-  sendCatLog(`[JTCAT] WSPR beacon ARMED: ${call} ${grid} @ ${dbm} dBm (${wsprWattsFromDbm(dbm) >= 1 ? '1 W' : Math.round(wsprWattsFromDbm(dbm) * 1000) + ' mW'} max), TX ${jtcatWsprScheduler.txPct}% of slots` +
-    (avgMin > 2 ? ` — slots are drawn at random, so expect roughly one transmission every ${avgMin} minutes; listening slots in between are normal` : '') +
+  const secToNextSlot = Math.ceil((120000 - (Date.now() % 120000)) / 1000);
+  sendCatLog(`[JTCAT] WSPR beacon ARMED: ${call} ${grid} @ ${dbm} dBm (${wsprWattsFromDbm(dbm) >= 1 ? '1 W' : Math.round(wsprWattsFromDbm(dbm) * 1000) + ' mW'} max), TX ${jtcatWsprScheduler.txPct}% of slots.` +
+    (jtcatWsprScheduler.txPct > 0
+      ? ` First transmission fires on the next even-minute slot (~${secToNextSlot}s) to confirm the chain` +
+        (avgMin > 2 ? `; after that slots are drawn at random — roughly one TX every ${avgMin} minutes, listening slots in between are normal` : '')
+      : ' TX 0% = listen only.') +
     `. Attended only (30-min watchdog).`);
   sendCatLog(capped
     ? '[JTCAT] WSPR: radio commanded to ~1 W (rfpower 1% on Flex / PC001 on CAT). Still verify actual output on a meter.'

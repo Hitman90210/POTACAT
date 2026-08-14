@@ -108,11 +108,39 @@ check('scheduler ignores ticks past the start window (missed slot)', () => {
   assert.ok(plan && plan.slotNumber === 8);
 });
 
+check('first eligible slot after arming ALWAYS fires (N7BBQ: silence looked broken)', () => {
+  // rng would say listen every time — the arm-time guarantee overrides it
+  // exactly once, so checking Beacon TX produces RF within 2 minutes.
+  const sch = new S.WsprScheduler({ txPct: 20, rng: () => 0.99 });
+  sch.setEnabled(true);
+  const plan = sch.tick(2 * SLOT + 100);
+  assert.ok(plan && plan.slotNumber === 2, 'guaranteed first TX did not fire');
+  assert.strictEqual(sch.tick(3 * SLOT + 100), null); // back to the rng: listen
+});
+
+check('TX 0% stays listen-only — no guaranteed first TX either', () => {
+  const sch = new S.WsprScheduler({ txPct: 0, rng: () => 0.0 });
+  sch.setEnabled(true);
+  assert.strictEqual(sch.tick(2 * SLOT + 100), null);
+  assert.strictEqual(sch.tick(3 * SLOT + 100), null);
+});
+
+check('re-arming re-guarantees the first slot', () => {
+  const sch = new S.WsprScheduler({ txPct: 20, rng: () => 0.99 });
+  sch.setEnabled(true);
+  assert.ok(sch.tick(2 * SLOT + 100)); // guaranteed
+  sch.setEnabled(false);
+  sch.setEnabled(true);
+  assert.ok(sch.tick(4 * SLOT + 100), 're-arm should guarantee again');
+});
+
 check('listen slot (rng says no) does not fire; next TX slot does', () => {
-  // rng alternates: first slot listen, draw >= threshold; force decisions.
+  // rng alternates: listen then tx. Consume the arm-time guaranteed slot
+  // first so the rng-driven behavior is what's under test.
   const draws = [0.9, 0.1]; let i = 0;
   const sch = new S.WsprScheduler({ txPct: 50, rng: () => draws[i++ % draws.length] });
   sch.setEnabled(true);
+  assert.ok(sch.tick(1 * SLOT + 100));                      // guaranteed first TX
   assert.strictEqual(sch.tick(2 * SLOT + 100), null);       // 0.9 >= 0.5 -> listen
   const plan = sch.tick(3 * SLOT + 100);                    // 0.1 < 0.5 -> tx
   assert.ok(plan && plan.slotNumber === 3);
@@ -122,6 +150,8 @@ check('decideSlot draws exactly once per slot (idempotent)', () => {
   let calls = 0;
   const sch = new S.WsprScheduler({ txPct: 50, rng: () => { calls++; return 0.1; } });
   sch.setEnabled(true);
+  sch.decideSlot(3 * SLOT + 100);   // guaranteed first slot — no rng draw
+  assert.strictEqual(calls, 0, 'guaranteed slot must not consume an rng draw');
   sch.decideSlot(4 * SLOT + 100);
   sch.decideSlot(4 * SLOT + 50000); // same slot
   assert.strictEqual(calls, 1, `rng called ${calls} times in one slot`);
