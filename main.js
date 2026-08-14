@@ -12764,6 +12764,18 @@ function _sendCwTextToRadioImpl(text) {
         const v = keyViaKeyPort();
         if (v) { sendCatLog(`[CW] Text via ${v} @ ${wpm} wpm: ${expanded}`); return; }
         if (++tries < 8) { setTimeout(retryKey, 150); return; }
+        // Give-up split (KW4FM's IC-7300, 2026-08-14, CW dead since the
+        // LA8JKA preference in 1.10.5): a rig that landed here ONLY
+        // because a key port is CONFIGURED still has its working CAT CW
+        // text path — a stale/unopenable port must not disable it. The
+        // model-declared dtr-key-port rigs (FT-891/FT-710) keep the hard
+        // stop: their CAT KY keys the transmitter with NO morse, which is
+        // worse than not sending.
+        if (cwCaps.textMethod !== 'dtr-key-port' && cat && cat.connected) {
+          sendCatLog('[CW] CW Key Port did not become ready — falling back to CAT CW text. Fix or clear the CW Key Port in Settings > Rig to remove this delay.');
+          cat.sendCwText(expanded);
+          return;
+        }
         sendCatLog('[CW] CW Key Port did not become ready — text not sent. Check the CW Key Port in Settings > Rig (and, on Linux, that python3 + pyserial are installed).');
       };
       setTimeout(retryKey, 150);
