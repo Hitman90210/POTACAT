@@ -24,6 +24,7 @@ const assert = require('assert');
 const RAW = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
 const PRELOAD = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8');
 const RENDERER = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+const JS8_ENGINE = fs.readFileSync(path.join(__dirname, '..', 'lib', 'js8-engine.js'), 'utf8');
 
 /** Comments and string literals blanked to spaces, byte offsets preserved. */
 function blankNonCode(src) {
@@ -276,6 +277,17 @@ test('JS8 starts and stops the shared JTCAT audio feeder', () => {
     'renderer must start the shared audio capture when JS8 asks for it');
   assert.ok(/onJtcatStopForJs8[\s\S]*jtcatJs8AudioActive\s*=\s*false[\s\S]*stopJtcatAudio\(\)/.test(RENDERER),
     'renderer must stop only JS8-owned audio when JS8 releases it');
+});
+
+test('JS8 decode searches the full practical passband', () => {
+  assert.ok(JS8_ENGINE.includes('const JS8_DECODE_PASSBAND'),
+    'decode passband must be named instead of buried as magic numbers');
+  assert.ok(JS8_ENGINE.includes('lowHz: 200') && JS8_ENGINE.includes('highHz: 3200'),
+    'JS8 should search the visible/usable 200-3200 Hz passband');
+  assert.ok(/nfa:\s*JS8_DECODE_PASSBAND\.lowHz/.test(JS8_ENGINE),
+    'engine must pass the low decode edge to the worker');
+  assert.ok(/nfb:\s*JS8_DECODE_PASSBAND\.highHz/.test(JS8_ENGINE),
+    'engine must pass the high decode edge to the worker');
 });
 
 test('HB ACK auto-reply is guarded and session-only', () => {

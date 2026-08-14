@@ -14,7 +14,7 @@
  */
 
 const assert = require('assert');
-const { Js8Engine, SUBMODES } = require('../lib/js8-engine');
+const { Js8Engine, SUBMODES, JS8_DECODE_PASSBAND } = require('../lib/js8-engine');
 const { JtcatManager } = require('../lib/jtcat-manager');
 const V = require('../lib/js8-varicode');
 
@@ -178,6 +178,22 @@ async function main() {
     assert.strictEqual(e3._txFreq, 3000, 'offset clamps to the 3000 Hz ceiling');
     report('setTxFreq moves and clamps the TX offset');
   } catch (err) { report('setTxFreq moves and clamps the TX offset', err); }
+
+  // ── RX passband matches the visible/usable JS8 waterfall ──────────────────
+  try {
+    assert.deepStrictEqual(JS8_DECODE_PASSBAND, { lowHz: 200, highHz: 3200 });
+    const sent = [];
+    const e5 = new Js8Engine();
+    e5._workerReady = true;
+    e5._worker = { postMessage: (msg) => sent.push(msg) };
+    e5.setRxFreq(2950);
+    const params = sent.find((msg) => msg && msg.type === 'decode-params');
+    assert.ok(params, 'setRxFreq must push decode params');
+    assert.strictEqual(params.nfa, JS8_DECODE_PASSBAND.lowHz);
+    assert.strictEqual(params.nfb, JS8_DECODE_PASSBAND.highHz);
+    assert.strictEqual(params.nfqso, 2950);
+    report('JS8 decode searches the full practical passband');
+  } catch (err) { report('JS8 decode searches the full practical passband', err); }
 
   // ── feedAudio mirrors into the spectrum ring for the waterfall ─────────────
   try {
