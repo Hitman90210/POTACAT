@@ -16197,6 +16197,14 @@ function assertFlexTxDaxForTx() {
   const prior = (smartSdrAudio.txDaxOn != null)
     ? smartSdrAudio.txDaxOn
     : (smartSdr && smartSdr.connected ? smartSdr.txDaxOn : null); // true/false/null
+  // Also assert the GLOBAL TX-slice flag onto POTACAT's own slice. Official
+  // SmartSDR always keeps tx=1 on the active slice, so this was never needed
+  // — but a third-party GUI (AetherSDR on macOS) can leave NO slice flagged
+  // TX: the radio keys with no transmit slice, giving "keys but zero RF, and
+  // TX-Pwr does nothing" (WW4GA, Flex 8600 + AetherSDR 26.7.4). Same lesson
+  // as js8KeyForTx part 3: the tx flag is global and must point at the slice
+  // whose audio we're about to send. Harmless when it's already set.
+  try { if (smartSdr && smartSdr.connected) smartSdr.setTxSlice(getFlexSliceIndex()); } catch { /* best effort */ }
   if (prior === true) return;     // already the TX source — nothing to do or restore
   if (!_sendFlexTxDax(true)) return;
   _flexTxDaxPrior = (prior === false) ? false : null;
