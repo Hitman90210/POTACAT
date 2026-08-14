@@ -107,6 +107,43 @@
   kl_done_${_KLID}:
 !macroend
 
+; Neutralize v1.10.0's RESIDENT uninstaller before the install section can
+; execute it. 1.10.0 shipped a Toolhelp32 process walk in its uninstaller with
+; the x86 PROCESSENTRY32W size on x64 — it read a garbage PID and
+; TerminateProcess'd it; run elevated during an upgrade that could kill
+; dwm/csrss and crash the whole user session ("upgrading reboots my PC",
+; KO4XJ + N3FMC, Aug 2026). NSIS upgrades run the OLD uninstaller from disk,
+; so no amount of fixing OUR installer reaches affected users — the incoming
+; installer must defuse the resident one first. Deleting the exe is safe:
+; electron-builder's install section checks IfFileExists before ExecWait'ing
+; the old uninstaller, and this install immediately writes a fresh
+; uninstaller + registry entry over the old ones.
+;
+; Detection is deliberately narrow and plugin-free: known install dirs only,
+; and ONLY when POTACAT.exe there reports file version exactly 1.10.0.0
+; (GetDLLVersion — a core NSIS instruction, works on any exe with version
+; info). An unelevated (per-user) installer can't delete a Program Files
+; copy — that failure is logged and harmless (that scope's upgrade doesn't
+; run that uninstaller anyway).
+!macro _NeutralizeBadUninstaller DIR TAG
+  IfFileExists "${DIR}\POTACAT.exe" 0 nbu_done_${TAG}
+    ClearErrors
+    GetDLLVersion "${DIR}\POTACAT.exe" $R0 $R1
+    IfErrors nbu_done_${TAG}
+    ; 1.10.0.0 -> high dword = 0x0001000A (major 1, minor 10), low = 0x0
+    IntCmp $R0 0x0001000A 0 nbu_done_${TAG} nbu_done_${TAG}
+    IntCmp $R1 0 0 nbu_done_${TAG} nbu_done_${TAG}
+    IfFileExists "${DIR}\Uninstall POTACAT.exe" 0 nbu_done_${TAG}
+    ClearErrors
+    Delete "${DIR}\Uninstall POTACAT.exe"
+    IfErrors 0 nbu_ok_${TAG}
+      !insertmacro _LogWrite "NeutralizeBadUninstaller: found v1.10.0 at ${DIR} but could not delete its uninstaller (not elevated?) - leaving it; this scope's upgrade does not run it"
+      Goto nbu_done_${TAG}
+  nbu_ok_${TAG}:
+    !insertmacro _LogWrite "NeutralizeBadUninstaller: removed v1.10.0's faulty uninstaller at ${DIR} (session-crash bug) - this install writes a fresh one"
+  nbu_done_${TAG}:
+!macroend
+
 ; customInit runs in the installer's .onInit, BEFORE installSection's
 ; CHECK_APP_RUNNING. Killing the launcher here means the app-running check then
 ; only sees the GUI (handled gracefully) — and crucially we do NOT redefine
@@ -117,6 +154,12 @@
   !insertmacro _LogWrite "=== POTACAT Installer ==="
   !insertmacro _LogWrite "customInit: Install dir = $INSTDIR"
   !insertmacro _KillLauncher
+  ; Defuse v1.10.0's session-killing uninstaller wherever it may live: the
+  ; per-user dir, both Program Files scopes, and (belt) the target $INSTDIR.
+  !insertmacro _NeutralizeBadUninstaller "$LOCALAPPDATA\Programs\POTACAT" LU
+  !insertmacro _NeutralizeBadUninstaller "$PROGRAMFILES64\POTACAT" PF64
+  !insertmacro _NeutralizeBadUninstaller "$PROGRAMFILES\POTACAT" PF32
+  !insertmacro _NeutralizeBadUninstaller "$INSTDIR" INST
 !macroend
 
 ; customUnInit runs in the uninstaller's un.onInit. For an assisted (oneClick:
