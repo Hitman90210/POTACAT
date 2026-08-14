@@ -22,6 +22,21 @@
 const pkg = require('./package.json');
 const config = { ...pkg.build };
 
+// Squirrel.Mac's ShipIt strips the quarantine xattr from EVERY file in the
+// downloaded update, and removexattr requires owner-write. A single
+// read-only file anywhere in the bundle fails the whole install with
+// "Permission denied ... file is read-only" and silently relaunches the OLD
+// version (W3DFX 2026-08-14: Homebrew's rigctld ships 555, so every signed
+// mac zip to date broke auto-update). The workflow now chmods rigctld at
+// bundling time; this hook is the backstop that makes the class impossible —
+// no future binary with stripped write bits can reintroduce it. Runs before
+// afterSign, so permissions are baked in before signing/notarization.
+config.afterPack = async (context) => {
+  if (context.electronPlatformName !== 'darwin') return;
+  const { execSync } = require('child_process');
+  execSync(`chmod -R u+w "${context.appOutDir}"`);
+};
+
 if (process.env.CSC_LINK) {
   config.afterSign = 'scripts/notarize.js';                 // @electron/notarize; skips if APPLE_* absent
   config.mac = { ...config.mac };

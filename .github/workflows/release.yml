@@ -114,7 +114,14 @@ jobs:
           HAMLIB_PREFIX=$(brew --prefix hamlib)
           rm -f assets/hamlib/*.dll assets/hamlib/*.exe
           cp "$HAMLIB_PREFIX/bin/rigctld" assets/hamlib/rigctld
-          chmod +x assets/hamlib/rigctld
+          # 755, NOT just +x: Homebrew installs binaries 555 and cp preserves
+          # that. A file without owner-write breaks Squirrel.Mac auto-update —
+          # ShipIt must strip the quarantine xattr from every file in the
+          # downloaded zip and removexattr needs u+w; one read-only file fails
+          # the whole install and silently relaunches the old version (W3DFX,
+          # 1.10.3 -> 1.10.5, ShipIt_stderr.log: "Permission denied ...
+          # hamlib/rigctld ... file is read-only").
+          chmod 755 assets/hamlib/rigctld
           copy_deps() {
             local bin="$1"
             for dep in $(otool -L "$bin" | awk 'NR>1 && /\.dylib/ {print $1}' | grep -E "(hamlib|libusb)" | grep -v "$(basename $bin)" || true); do
@@ -215,7 +222,14 @@ jobs:
           HAMLIB_PREFIX=$(brew --prefix hamlib)
           rm -f assets/hamlib/*.dll assets/hamlib/*.exe
           cp "$HAMLIB_PREFIX/bin/rigctld" assets/hamlib/rigctld
-          chmod +x assets/hamlib/rigctld
+          # 755, NOT just +x: Homebrew installs binaries 555 and cp preserves
+          # that. A file without owner-write breaks Squirrel.Mac auto-update —
+          # ShipIt must strip the quarantine xattr from every file in the
+          # downloaded zip and removexattr needs u+w; one read-only file fails
+          # the whole install and silently relaunches the old version (W3DFX,
+          # 1.10.3 -> 1.10.5, ShipIt_stderr.log: "Permission denied ...
+          # hamlib/rigctld ... file is read-only").
+          chmod 755 assets/hamlib/rigctld
           copy_deps() {
             local bin="$1"
             for dep in $(otool -L "$bin" | awk 'NR>1 && /\.dylib/ {print $1}' | grep -E "(hamlib|libusb)" | grep -v "$(basename $bin)" || true); do
@@ -353,7 +367,14 @@ jobs:
           set -e
           rm -f assets/hamlib/*.dll assets/hamlib/*.exe
           cp /usr/local/bin/rigctld assets/hamlib/rigctld
-          chmod +x assets/hamlib/rigctld
+          # 755, NOT just +x: Homebrew installs binaries 555 and cp preserves
+          # that. A file without owner-write breaks Squirrel.Mac auto-update —
+          # ShipIt must strip the quarantine xattr from every file in the
+          # downloaded zip and removexattr needs u+w; one read-only file fails
+          # the whole install and silently relaunches the old version (W3DFX,
+          # 1.10.3 -> 1.10.5, ShipIt_stderr.log: "Permission denied ...
+          # hamlib/rigctld ... file is read-only").
+          chmod 755 assets/hamlib/rigctld
           for dep in $(ldd /usr/local/bin/rigctld | awk '/(hamlib|libusb)/ {print $3}'); do
             if [ -f "$dep" ]; then
               cp -L "$dep" "assets/hamlib/$(basename $dep)"
@@ -470,7 +491,14 @@ jobs:
           set -e
           rm -f assets/hamlib/*.dll assets/hamlib/*.exe
           cp /usr/local/bin/rigctld assets/hamlib/rigctld
-          chmod +x assets/hamlib/rigctld
+          # 755, NOT just +x: Homebrew installs binaries 555 and cp preserves
+          # that. A file without owner-write breaks Squirrel.Mac auto-update —
+          # ShipIt must strip the quarantine xattr from every file in the
+          # downloaded zip and removexattr needs u+w; one read-only file fails
+          # the whole install and silently relaunches the old version (W3DFX,
+          # 1.10.3 -> 1.10.5, ShipIt_stderr.log: "Permission denied ...
+          # hamlib/rigctld ... file is read-only").
+          chmod 755 assets/hamlib/rigctld
           for dep in $(ldd /usr/local/bin/rigctld | awk '/(hamlib|libusb)/ {print $3}'); do
             if [ -f "$dep" ]; then
               cp -L "$dep" "assets/hamlib/$(basename $dep)"
