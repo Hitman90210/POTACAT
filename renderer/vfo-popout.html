@@ -67,6 +67,14 @@
       letter-spacing: 1px; cursor: pointer;
     }
     .freq-display.editing { color: #f0a500; }
+    /* The OTHER VFO while split is on (TX side) — one line under the dial,
+       amber like every TX-adjacent accent. Hidden unless split. */
+    .freq-other-row { display: none; justify-content: center; align-items: baseline;
+      gap: 6px; margin-top: -4px; padding-bottom: 2px; }
+    .freq-other-row.show { display: flex; }
+    .freq-other { font-family: 'Consolas', 'Courier New', monospace;
+      font-size: 18px; font-weight: bold; color: #f0a500; letter-spacing: 1px; }
+    .freq-other-tag { font-size: 11px; color: #f0a500; font-weight: 700; }
     .freq-unit { font-size: 14px; color: var(--text-dimmer); }
     .mode-badge {
       font-size: 14px; font-weight: bold; padding: 2px 10px;
@@ -422,6 +430,12 @@
     <button class="audio-btn" id="audio-btn" title="Radio audio monitor">&#x1F508;</button>
     <button class="vfo-lock-btn" id="vfo-lock-btn" title="Click to lock VFO">&#x1F513;</button>
   </div>
+  <!-- Split: both frequencies visible, one under the other (TS-480 ask). -->
+  <div class="freq-other-row" id="freq-other-row" title="TX frequency (the other VFO) — split is on">
+    <span class="freq-other-tag">TX</span>
+    <span class="freq-other" id="freq-other">---.---.---</span>
+    <span class="freq-unit">kHz</span>
+  </div>
   <div style="display:flex; align-items:center; justify-content:center; gap:10px; padding:0 0 2px;">
     <span class="filter-badge" id="filter-badge"></span>
     <span id="vfo-badge" style="display:none;font-size:10px;font-weight:bold;background:var(--bg-tertiary);color:var(--text-primary);padding:1px 6px;border-radius:8px;letter-spacing:0.5px;" title="Active VFO (from the radio)">VFO A</span>
@@ -759,6 +773,15 @@ vfoLockBtn.addEventListener('click', () => {
 window.api.onVfoLockState((locked) => {
   vfoLocked = locked;
   updateLockBtn();
+});
+
+window.api.onCatFreqOther((hz) => {
+  const row = document.getElementById('freq-other-row');
+  if (!hz || hz <= 0) { row.classList.remove('show'); return; }
+  const khz = hz / 1000;
+  document.getElementById('freq-other').textContent =
+    khz.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+  row.classList.add('show');
 });
 
 window.api.onTuneBlocked((msg) => {

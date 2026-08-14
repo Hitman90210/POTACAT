@@ -2221,6 +2221,7 @@ function bindRigStateEvents(controller) {
   controller.on('antennaPort', sendCatAntennaPort);
   controller.on('vfo', sendCatVfo);
   controller.on('split', sendCatSplit);
+  controller.on('frequencyOther', sendCatFreqOther);
 }
 
 // Readback-fed VFO/split (polled every cycle) — broadcast only on CHANGE so
@@ -2238,7 +2239,20 @@ function sendCatSplit(on) {
   if (v === _currentSplit) return;
   _currentSplit = v;
   sendCatLog(`[CAT] Split ${v ? 'ON' : 'OFF'}`);
+  if (!v) sendCatFreqOther(0);   // split off -> hide the TX line everywhere
   broadcastRigState();
+}
+
+// The OTHER VFO's frequency while split is on (the TX side) — TS-480 ask:
+// show both, one under the other. 0 = hide. Broadcast on change only.
+let _currentFreqOther = 0;
+function sendCatFreqOther(hz) {
+  const v = Number(hz) || 0;
+  if (v === _currentFreqOther) return;
+  _currentFreqOther = v;
+  if (win && !win.isDestroyed()) win.webContents.send('cat-freq-other', v);
+  if (vfoPopoutWin && !vfoPopoutWin.isDestroyed()) vfoPopoutWin.webContents.send('cat-freq-other', v);
+  if (remoteServer && remoteServer.running) remoteServer.sendToClient({ type: 'freq-other', value: v });
 }
 
 function sendCatSmeter(val) {

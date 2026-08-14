@@ -1574,12 +1574,35 @@ test('kenwood freq poll follows the active VFO: FA; then FB; after IF says B', (
   assert.deepStrictEqual(writes, ['FA;', 'FB;']);
 });
 
-test('kenwood FB response parses as frequency', () => {
+test('kenwood FB moves the dial only when VFO B is active', () => {
   const { codec } = captureWrites(KenwoodCodec, KENWOOD_VFO_MODEL);
-  let hz = 0;
+  let hz = 0, other = 0;
   codec.on('frequency', (v) => { hz = v; });
+  codec.on('frequencyOther', (v) => { other = v; });
+  // On VFO A (default), no split: an FB frame must NOT clobber the dial —
+  // that's B's frequency, not what the operator hears.
+  codec.onData(Buffer.from('FB00007074000;'));
+  assert.strictEqual(hz, 0);
+  assert.strictEqual(other, 0);
+  // IF says VFO B active -> FB IS the dial.
+  codec.onData(Buffer.from(kenwoodIf({ vfo: '1' })));
   codec.onData(Buffer.from('FB00007074000;'));
   assert.strictEqual(hz, 7074000);
+});
+
+test('kenwood split: the other VFO polls and lands as frequencyOther', () => {
+  const { codec, writes } = captureWrites(KenwoodCodec, KENWOOD_VFO_MODEL);
+  let hz = 0, other = 0;
+  codec.on('frequency', (v) => { hz = v; });
+  codec.on('frequencyOther', (v) => { other = v; });
+  codec.onData(Buffer.from(kenwoodIf({ vfo: '0', split: '1' })));  // A active, split on
+  writes.length = 0;
+  codec.getFrequency();
+  assert.deepStrictEqual(writes, ['FA;', 'FB;'], 'split polls BOTH VFOs');
+  codec.onData(Buffer.from('FA00014235000;'));
+  codec.onData(Buffer.from('FB00014310000;'));
+  assert.strictEqual(hz, 14235000, 'active VFO drives the dial');
+  assert.strictEqual(other, 14310000, 'other VFO surfaces as frequencyOther (the TX line)');
 });
 
 test('kenwood tune targets the active VFO (FB write after IF says B)', () => {
