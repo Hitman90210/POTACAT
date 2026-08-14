@@ -2220,6 +2220,12 @@ dialog {
   border-right: 2px solid var(--border-secondary);
   align-self: stretch;
   padding-top: 4px;
+  /* A short window must scroll the sidebar, not clip it — with the main
+     window on the upper half of a screen, Report a Bug (the LAST entry) was
+     unreachable without resizing (N2FSM). min-height:0 lets the grid track
+     actually shrink so overflow engages. */
+  overflow-y: auto;
+  min-height: 0;
 }
 .settings-tab-bar > .settings-tabs-row > .settings-tab {
   flex: 0 0 auto;
