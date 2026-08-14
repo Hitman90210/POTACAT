@@ -7838,9 +7838,15 @@ async function enumerateAudioDevicesAugmented() {
     // browser-supplied entries so the existing PulseAudio/PipeWire
     // devices remain on top — same behavior as MSHV's two-section list.
     const augmented = browser.slice();
+    // INPUTS ONLY. The addon enumerates playback PCMs too, but lib/alsa.js
+    // playback is Phase 2 (unbuilt) and setSinkId cannot open an alsa: id —
+    // offering them as outputs sold a device nothing could play to, and the
+    // audio silently went to system default with a false "will NOT
+    // transmit" warning on every TX (KF1G's IC-7300 CODEC, 2026-08-13).
+    // Re-add the audiooutput branch only when Phase 2 playback ships.
     augmented.push({ deviceId: '__alsa_separator__', kind: 'audioinput',  label: '── ALSA hardware (raw) ──', isAlsaSeparator: true });
-    augmented.push({ deviceId: '__alsa_separator__', kind: 'audiooutput', label: '── ALSA hardware (raw) ──', isAlsaSeparator: true });
     for (const d of alsaList) {
+      if (d.kind !== 'audioinput') continue;
       augmented.push({
         deviceId: 'alsa:' + d.id,
         kind: d.kind,
@@ -26887,6 +26893,15 @@ async function playJtcatTxAudio(data) {
         return;
       }
       if (!sinkApplied) {
+        // Raw ALSA ids can NEVER be a Chromium sink: lib/alsa.js playback is
+        // Phase 2 (unbuilt) and setSinkId only takes enumerateDevices ids.
+        // KF1G (2026-08-13) had alsa:plughw:CARD=CODEC saved as output — the
+        // generic "radio will NOT transmit" was wrong (his default sink WAS
+        // the rig), so name the real cause and the real fix.
+        if (outputDeviceId.indexOf('alsa:') === 0) {
+          window.api.jtcatLog('[JTCAT TX] WARNING: the saved output "' + outputDeviceId + '" is a raw ALSA device — POTACAT cannot play FT8 audio to raw ALSA yet (capture only). Audio is going to the system default output instead; if that default is not your radio, it will not transmit. Pick the PulseAudio/PipeWire device for the same card in Settings > Radio.');
+          return;
+        }
         window.api.jtcatLog('[JTCAT TX] WARNING: setSinkId failed (' + sinkError + ') — FT8 audio is on system default, radio will NOT transmit. The saved device is stale or missing. Flex users: make sure the DAX program is running with TX1 mapped to your slice, then re-select the device in Settings.');
         return;
       }
