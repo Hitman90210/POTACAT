@@ -31825,6 +31825,20 @@ process.on('uncaughtException', (err) => {
     console.warn('[shutdown] swallowed:', msg);
     return;
   }
+  // Pure NETWORK failures must never kill a 24/7 radio app (2026-08-15:
+  // an unheard ETIMEDOUT from the FreeDV Reporter WebSocket ended an
+  // overnight session). Every network sidecar has its own error handling
+  // and reconnect; one that leaks an unhandled socket error is a bug worth
+  // a loud log line — not worth the operator's running station. Anything
+  // that isn't plainly a socket-level errno still rethrows.
+  const NET_CODES = new Set(['ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'ENETUNREACH',
+    'EHOSTUNREACH', 'ENETDOWN', 'EPIPE', 'EAI_AGAIN', 'ENOTFOUND', 'ECONNABORTED']);
+  const codes = [err && err.code, ...((err && err.errors) || []).map((e) => e && e.code)].filter(Boolean);
+  if (codes.length && codes.every((c) => NET_CODES.has(c))) {
+    try { sendCatLog(`[net] SWALLOWED unhandled network error (${codes.join(',')}): ${msg} — a sidecar leaked an unhandled socket error; report this log line`); }
+    catch { console.warn('[net] swallowed unhandled network error:', msg); }
+    return;
+  }
   // Pre-shutdown unexpected error — preserve historical behavior
   // (Electron will show its dialog) by rethrowing.
   throw err;
