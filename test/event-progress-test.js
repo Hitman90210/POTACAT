@@ -88,9 +88,17 @@ const STATE = { '13col-2026': { optedIn: true, progress: {} }, 'america250': { o
     'checklist station stamps with event + item');
 }
 {
-  const m = matchEventQsoForStamp(EVENTS, STATE, 'W2S/7', NOW);
+  // District derivation (WG9I fix): PA is district 3, so only /3 stamps it.
+  const m = matchEventQsoForStamp(EVENTS, STATE, 'W2S/3', NOW);
   check(m && m.eventId === 'america250' && m.item === 'PA' && m.itemName === 'Pennsylvania',
     'region-pattern station stamps with the active region');
+}
+{
+  // The pre-fix behavior stamped ANY W2S/x with the first covering state —
+  // that is exactly how /7 Oregon got stamped New Jersey. Wrong-district
+  // suffixes must now refuse to stamp rather than guess.
+  const m = matchEventQsoForStamp(EVENTS, STATE, 'W2S/7', NOW);
+  check(m === null, 'wrong-district suffix does NOT stamp a derivable region');
 }
 check(matchEventQsoForStamp(EVENTS, STATE, 'DL1ABC', NOW) === null,
   'random call during a counter-board window does NOT stamp (identity required)');
@@ -125,7 +133,8 @@ console.log('\nretroStampMatches:');
 {
   const evReg = EVENTS[1]; // regions, W2S/* pattern, July
   const log = [
-    { CALL: 'W2S/7', QSO_DATE: '20260710' },
+    { CALL: 'W2S/3', QSO_DATE: '20260710' },     // district-correct — matches PA
+    { CALL: 'W2S/7', QSO_DATE: '20260710' },     // wrong district — refuses
     { CALL: 'K1ABC', QSO_DATE: '20260710' },
   ];
   const m = retroStampMatches(evReg, log);
@@ -157,8 +166,17 @@ console.log('\nmatchingRegionEntry (concurrent same-week regions):');
     'per-entry patterns pick the right concurrent state');
   check(matchingRegionEntry(ev, 'W1AW/4', week).region === 'GA',
     'first entry only wins when its own patterns match');
-  check(matchingRegionEntry(ev, 'W1AW/0', week).region === 'UT',
-    'pattern-less entry falls back to event-level patterns');
+  // Utah is district 7 — a pattern-less entry now derives W1AW/7 from its
+  // region instead of falling to the match-anything event wildcard, so a /0
+  // call matches NOTHING this week (the pre-fix wildcard fallback is how
+  // WG9I's /7 Oregon QSO got stamped New Jersey).
+  check(matchingRegionEntry(ev, 'W1AW/7', week).region === 'UT',
+    'pattern-less entry derives its district pattern from the region');
+  check(matchingRegionEntry(ev, 'W1AW/0', week) === null,
+    'a suffix matching no covering state refuses instead of guessing');
+  const underivable = [{ region: 'XX', regionName: 'Mystery' }];
+  check(matchingRegionEntry(ev, 'W1AW/5', underivable).region === 'XX',
+    'underivable region keeps the event-level wildcard fallback');
   check(matchingRegionEntry(ev, 'K1ABC', week) === null, 'non-matching call -> null');
   const bare = [{ region: 'PA' }, { region: 'OH' }];
   check(matchingRegionEntry(ev, 'W1AW/3', bare).region === 'PA',
@@ -181,6 +199,40 @@ console.log('\nmatchingRegionEntry (concurrent same-week regions):');
   check(m && m.item === 'IN' && m.itemName === 'Indiana',
     'stamp matcher attributes the concurrent-week QSO to the correct state');
 }
+
+// ---------------------------------------------------------------------------
+// retroCorrectStamps - the healing half (WG9I 2026-08-14: stamps written by
+// the first-entry-wins matcher name the wrong state; the explicit retro
+// button recomputes and fixes them).
+// ---------------------------------------------------------------------------
+console.log('\nretroCorrectStamps:');
+{
+  const { retroCorrectStamps, deriveRegionPatterns, US_CALL_DISTRICT } = require('../lib/event-progress');
+  check(US_CALL_DISTRICT.OH === '8' && US_CALL_DISTRICT.IA === '0' && US_CALL_DISTRICT.HI === 'KH6',
+    'district table: OH=8, IA=0, HI=KH6 (the transposed rows, fixed)');
+  const ev = {
+    id: 'america250', name: 'America 250 WAS', board: 'regions',
+    callsignPatterns: ['W1AW/*'],
+    schedule: [
+      { region: 'NJ', regionName: 'New Jersey', start: '2026-08-05T00:00:00Z', end: '2026-08-11T23:59:59Z' },
+      { region: 'OR', regionName: 'Oregon', start: '2026-08-05T00:00:00Z', end: '2026-08-11T23:59:59Z' },
+    ],
+  };
+  check(deriveRegionPatterns(ev, ev.schedule[1]).join() === 'W1AW/7', 'OR derives W1AW/7');
+  const log = [
+    { CALL: 'W1AW/7', QSO_DATE: '20260808', APP_POTACAT_EVENT: 'america250', APP_POTACAT_EVENT_ITEM: 'NJ' },
+    { CALL: 'W1AW/2', QSO_DATE: '20260808', APP_POTACAT_EVENT: 'america250', APP_POTACAT_EVENT_ITEM: 'NJ' },
+    { CALL: 'W1AW/6', QSO_DATE: '20260808', APP_POTACAT_EVENT: 'america250', APP_POTACAT_EVENT_ITEM: 'NJ' },
+    { CALL: 'W1AW/7', QSO_DATE: '20260808', APP_POTACAT_EVENT: 'other-ev', APP_POTACAT_EVENT_ITEM: 'ZZ' },
+    { CALL: 'W1AW/7', QSO_DATE: '20260808' },
+  ];
+  const r = retroCorrectStamps(ev, log);
+  check(r.corrections.length === 1 && r.corrections[0].index === 0 &&
+        r.corrections[0].item === 'OR' && r.corrections[0].prevItem === 'NJ',
+    'mis-stamped /7 corrects NJ -> OR, correct stamps untouched');
+  check(r.unresolvable === 1, 'unmatchable stamp counted, not touched');
+}
+
 
 console.log(`\n${passed} passed, ${failed} failed`);
 assert.strictEqual(failed, 0, 'event-progress matcher tests failed');

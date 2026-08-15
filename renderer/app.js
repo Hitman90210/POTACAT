@@ -15842,18 +15842,23 @@ function getActiveScheduleEntries(event) {
 // US state/territory -> W1AW call district, for resolving W1AW/* to the exact
 // callsign per region. Module-level so the banner can pair each concurrent
 // state with its own call (Indiana -> W1AW/9, Utah -> W1AW/7).
+// Display twin of US_CALL_DISTRICT in lib/event-progress.js — keep in sync.
+// The 8/0 rows here were TRANSPOSED until 2026-08-14 (zero-land states said
+// 8, eight-land said 0) and Hawaii said 6 instead of KH6 — WG9I caught the
+// banner pairing "Ohio (W1AW/0)" / "Iowa (W1AW/8)". Ordering follows the
+// FCC district map, 1 through 0, then the non-conterminous prefixes.
 const W1AW_STATE_DISTRICT = {
   CT: 1, ME: 1, MA: 1, NH: 1, RI: 1, VT: 1,
   NJ: 2, NY: 2,
   DE: 3, DC: 3, MD: 3, PA: 3,
   AL: 4, FL: 4, GA: 4, KY: 4, NC: 4, SC: 4, TN: 4, VA: 4,
   AR: 5, LA: 5, MS: 5, NM: 5, OK: 5, TX: 5,
-  CA: 6, HI: 6,
+  CA: 6,
   AZ: 7, ID: 7, MT: 7, NV: 7, OR: 7, UT: 7, WA: 7, WY: 7,
-  CO: 8, IA: 8, KS: 8, MN: 8, MO: 8, NE: 8, ND: 8, SD: 8,
+  MI: 8, OH: 8, WV: 8,
   IL: 9, IN: 9, WI: 9,
-  MI: 0, OH: 0, WV: 0,
-  AK: 'KL7', GU: 'KH2', PR: 'KP4', VI: 'KP2',
+  CO: 0, IA: 0, KS: 0, MN: 0, MO: 0, NE: 0, ND: 0, SD: 0,
+  AK: 'KL7', HI: 'KH6', GU: 'KH2', PR: 'KP4', VI: 'KP2',
 };
 
 // "A", "A & B", "A, B & C" — Oxford-free serial join for banner subjects.

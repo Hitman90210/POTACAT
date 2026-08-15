@@ -258,7 +258,7 @@ const { WsprScheduler } = require('./lib/wspr/scheduler');
 const { encodeWspr } = require('./lib/wspr/encode');
 const { loadCtyDat, resolveCallsign, getAllEntities } = require('./lib/cty');
 const { parseAdifFile, parseWorkedQsos, parseAllQsos, parseAllRawQsos, parseAdifStream, parseSqliteFile, parseSqliteConfirmed, isSqliteFile, parseRecord: parseAdifRecord } = require('./lib/adif');
-const { qsoDayInScheduleEntry, matchChecklistItem, matchRegionPatterns, activeScheduleEntry, coveringScheduleEntries, matchingRegionEntry, matchEventQsoForStamp, retroStampMatches } = require('./lib/event-progress');
+const { qsoDayInScheduleEntry, matchChecklistItem, matchRegionPatterns, activeScheduleEntry, coveringScheduleEntries, matchingRegionEntry, matchEventQsoForStamp, retroStampMatches, retroCorrectStamps } = require('./lib/event-progress');
 const { cwPaddleAvailability } = require('./lib/cw-paddle-availability');
 const { resolveCwKeyPins } = require('./lib/cw-key-line');
 const { buildPersistentKeyerScript } = require('./lib/cw-keyer-script');
@@ -28766,7 +28766,14 @@ app.whenReady().then(() => {
       const logPath = settings.adifLogPath || path.join(app.getPath('userData'), 'potacat_qso_log.adi');
       const qsos = parseAllRawQsos(logPath);
       const matches = retroStampMatches(ev, qsos);
-      if (dryRun || !matches.length) return { ok: true, matched: matches.length, stamped: 0 };
+      // Healing half: stamps written under the first-entry-wins matcher (or
+      // the transposed district table) can name the WRONG state — WG9I's
+      // W1AW/7 Oregon QSO carried New Jersey. Recompute every existing stamp
+      // and fix the disagreements in the same explicit-button pass.
+      const heal = retroCorrectStamps(ev, qsos);
+      if (dryRun || (!matches.length && !heal.corrections.length)) {
+        return { ok: true, matched: matches.length, stamped: 0, corrected: heal.corrections.length };
+      }
       for (const m of matches) {
         const r = qsos[m.index];
         r.APP_POTACAT_EVENT = ev.id;
@@ -28777,12 +28784,29 @@ app.whenReady().then(() => {
           if (!c.includes(tag)) r.COMMENT = c ? `${c} ${tag}` : tag;
         }
       }
+      for (const c of heal.corrections) {
+        const r = qsos[c.index];
+        const prevName = (() => {
+          const e = (ev.schedule || []).find((s) => s.region === c.prevItem);
+          return e ? e.regionName : c.prevItem;
+        })();
+        r.APP_POTACAT_EVENT_ITEM = c.item;
+        if (settings.logCommentTags !== false) {
+          const oldTag = `[${[ev.name || ev.id, prevName].filter(Boolean).join(' - ')}]`;
+          const newTag = `[${[ev.name || ev.id, c.itemName].filter(Boolean).join(' - ')}]`;
+          const cm = String(r.COMMENT || '');
+          if (cm.includes(oldTag)) r.COMMENT = cm.replace(oldTag, newTag);
+          else if (!cm.includes(newTag)) r.COMMENT = cm ? `${cm} ${newTag}` : newTag;
+        }
+        sendCatLog(`[events] Corrected ${r.CALL} ${r.QSO_DATE}: ${c.prevItem || '(none)'} -> ${c.item} (${ev.name || ev.id})`);
+      }
       rewriteAdifFile(logPath, qsos);
       loadWorkedQsos();
       scanLogForEvents();
       rebuildContestHistory();
-      sendCatLog(`[events] Retro-stamped ${matches.length} past QSO(s) with ${ev.name || ev.id}`);
-      return { ok: true, matched: matches.length, stamped: matches.length };
+      sendCatLog(`[events] Retro-stamped ${matches.length} past QSO(s), corrected ${heal.corrections.length} mis-stamped` +
+        (heal.unresolvable ? `, left ${heal.unresolvable} unresolvable stamp(s) alone` : '') + ` — ${ev.name || ev.id}`);
+      return { ok: true, matched: matches.length, stamped: matches.length, corrected: heal.corrections.length };
     } catch (err) {
       return { ok: false, error: err.message };
     }
