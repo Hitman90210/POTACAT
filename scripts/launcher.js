@@ -241,7 +241,7 @@ function startPotacat() {
   }
 }
 
-function stopPotacat() {
+async function stopPotacat() {
   const pids = getOtherPids();
   if (pids.length === 0) return { ok: true, already: true };
   // Electron is multi-process: renderers/GPU are ALSO POTACAT.exe. Killing a
@@ -259,17 +259,26 @@ function stopPotacat() {
       }
     } catch (err) { errors.push(`${pid}: ${err.message.split('\n')[0]}`); }
   }
-  const survivors = getOtherPids();
+  // taskkill /F returns when the kill is DISPATCHED, not when the process
+  // has exited — an immediate tasklist still shows the PIDs mid-death, so
+  // the old instant survivor check reported "still running" (HTTP 500) on a
+  // Stop that in fact worked (#80). Poll until they're gone, up to 5s.
+  let survivors = getOtherPids();
+  const deadline = Date.now() + 5000;
+  while (survivors.length && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 300));
+    survivors = getOtherPids();
+  }
   if (survivors.length === 0) {
     startedAt = null;
     console.log('[Launcher] Stopped POTACAT (PIDs:', pids.join(', ') + ')');
     return { ok: true };
   }
-  return { ok: false, error: `still running: ${survivors.join(', ')} (${errors.join('; ') || 'kill reported success'})` };
+  return { ok: false, error: `still running after 5s: ${survivors.join(', ')} (${errors.join('; ') || 'kill reported success'})` };
 }
 
 async function restartPotacat() {
-  stopPotacat();
+  await stopPotacat();
   await new Promise(r => setTimeout(r, 3000));
   return startPotacat();
 }
@@ -675,7 +684,7 @@ async function handleRequest(req, res) {
   }
 
   if (pathname === '/stop' && req.method === 'POST') {
-    const result = stopPotacat();
+    const result = await stopPotacat();
     res.writeHead(result.ok ? 200 : 500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(result));
     return;
