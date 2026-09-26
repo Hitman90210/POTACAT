@@ -2297,13 +2297,13 @@ test('TS-480 SL;/SH; readback: both known = one passband event, the radio\'s own
   codec.getFilter();
 });
 
-test('TS-480 getFilter asks SL; and SH; in SSB, and nothing in CW (FW has no readback)', () => {
+test('TS-480 getFilter asks SL; and SH; in SSB, and FW; in CW (the CW passband is the FW slot)', () => {
   const ssb = ts480Codec('USB');
   ssb.codec.getFilter();
   assert.deepStrictEqual(ssb.writes, ['SL;', 'SH;']);
   const cw = ts480Codec('CW');
   cw.codec.getFilter();
-  assert.deepStrictEqual(cw.writes, []);
+  assert.deepStrictEqual(cw.writes, ['FW;']);
 });
 
 test('TS-480 meter query is SM0; (hamlib RFPOWER_METER), reply accepted with or without the digit', () => {

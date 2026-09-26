@@ -16508,7 +16508,13 @@ function connectRemote() {
         // _setCwPaddleAvailability(false). Subsequent calls here are no-ops
         // since rig-controller latches `_dtrUnsupported` after the first error.
         if (cat.setCwKeyDtr) cat.setCwKeyDtr(down, cwKeyPins);
-      } else if (paddleMethod === 'ta' && cwCaps.taKey) {
+      } else if (paddleMethod === 'ta' && cwCaps.taKey && typeof cat.supportsCwKeyTa === 'function' && cat.supportsCwKeyTa()) {
+        // Only when the codec really keys with TA. No codec does today, and
+        // RigController's fallback is bare PTT: TS-480/590/890/990 paddles
+        // asserted TX;/RX; over CAT on top of the CW Key Port's real keying,
+        // and the PTT hold-off's RX; cut the over a few seconds in (LZ3AW's
+        // TinyMidi paddle, rounds 4–7). Those rigs take the Kenwood branch
+        // below: the key port keys, or the paddle is reported unavailable.
         cat.setCwKeyTa(down);
       } else if (rigModel?.protocol === 'kenwood') {
         // Yaesu/Kenwood CAT has NO per-element CW key command — the txrx route is
