@@ -137,7 +137,10 @@ test('an entry whose occurrences ran out falls back to the local resolver', asyn
   const cqww = bundled.find((c) => c.id === 'cq-ww-ssb');
   entries[0] = { ...cqww, occurrences: [{ start: '2025-10-25T00:00:00Z', end: '2025-10-27T00:00:00Z' }] };
   const { feed } = make({ responses: [{ status: 200, etag: '"e1"', body: JSON.stringify(feedFrom(entries)) }] });
-  await feed.refresh();
+  // The feed must actually be in use, or the bundled fallback would give the
+  // same answer and this test would pass without testing anything (mobile review).
+  assert.strictEqual(await feed.refresh(), 'updated');
+  assert.strictEqual(feed.hasFeed(), true);
   const now = new Date('2026-09-27T00:00:00Z');
   assert.deepStrictEqual(feed.resolvedAt(now).find((c) => c.id === 'cq-ww-ssb').start, db.resolveOccurrence(cqww, now).start);
 });
