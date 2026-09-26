@@ -9011,6 +9011,24 @@ function spotModeKey(spot) {
  * operator still wanted (LZ3AW #14). No band or no mode on the spot = the
  * call alone.
  */
+// How a spot on the radio's frequency relates to the spot the operator tuned:
+// 'same-park' (another operator at the same activation), 'other-park' (a
+// different activation, or a stale spot, sharing a voice/CW frequency), or
+// 'freq' (nothing to compare: no tuned spot, no refs, or a digital mode where
+// every activator shares the dial).
+const DIGITAL_MODE_RE = /^(FT\d|JS8|PSK|RTTY|DIG|PKT|WSPR|OLIVIA|MFSK|DATA)/i;
+function spotRefSet(ref) {
+  return new Set(String(ref || '').toUpperCase().split(/[\s,;]+/).filter(Boolean));
+}
+function onFreqKind(spot, tuned) {
+  if (!tuned || !spot) return 'freq';
+  if (DIGITAL_MODE_RE.test(spot.mode || '') || DIGITAL_MODE_RE.test(tuned.mode || '')) return 'freq';
+  const a = spotRefSet(spot.reference), b = spotRefSet(tuned.reference);
+  if (!a.size || !b.size) return 'freq';
+  for (const r of a) if (b.has(r)) return 'same-park';
+  return 'other-park';
+}
+
 function hasWorkedOnBandMode(spot) {
   const entries = workedQsos.get(String(spot.callsign || '').toUpperCase());
   if (!entries || entries.length === 0) return false;
@@ -12720,7 +12738,19 @@ function render() {
       if (isClickedSpot) {
         tr.classList.add('tuned-spot');
       } else if (radioFreqKhzExact !== null && Math.abs(parseFloat(s.frequency) - radioFreqKhzExact) < 0.5) {
-        tr.classList.add('on-freq');
+        // Same frequency is not the same activation (N0KAH 2026-09-26: two
+        // different parks on 7278.0 read as one multi-operator group). On a
+        // voice/CW frequency a DIFFERENT park than the tuned spot is marked
+        // apart — a second activation sharing the frequency, or a stale spot.
+        // Digital modes share one dial, so there it stays the quiet group.
+        const kind = onFreqKind(s, lastTunedSpot);
+        tr.classList.add(kind === 'other-park' ? 'on-freq-other' : 'on-freq');
+        const freqNote = kind === 'same-park'
+          ? 'Same frequency and park as the spot you tuned: another operator at this activation'
+          : kind === 'other-park'
+            ? 'On your frequency, but a different park than the spot you tuned: a separate activation, or an old spot'
+            : 'On your radio\'s frequency';
+        tr.title = tr.title ? `${tr.title}\n${freqNote}` : freqNote;
       }
       if (isSkipped) {
         tr.classList.add('scan-skipped');

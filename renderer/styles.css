@@ -1640,6 +1640,23 @@ a.park-link:hover {
 .on-freq td.log-col {
   box-shadow: inset -3px 0 0 var(--accent-blue, #4fc3f7);
 }
+/* Logging off hides the Log column (.log-col is display:none without
+   .logging-enabled on the table): the bar goes on the first cell's left edge. */
+table:not(.logging-enabled) .on-freq td:nth-child(1 of :not(.log-col)) {
+  box-shadow: inset 3px 0 0 var(--accent-blue, #4fc3f7);
+}
+/* On the dial but a DIFFERENT park than the tuned spot (voice/CW only): a
+   separate activation or a stale spot, not another operator at this one.
+   No blue tint and a dashed amber edge, so it never reads as joined to the
+   tuned row (N0KAH 2026-09-26). */
+.on-freq-other td.log-col,
+table:not(.logging-enabled) .on-freq-other td:nth-child(1 of :not(.log-col)) {
+  background-image: repeating-linear-gradient(to bottom, var(--source-sota, #f0a500) 0 4px, transparent 4px 8px);
+  background-size: 3px 100%;
+  background-position: right top;
+  background-repeat: no-repeat;
+}
+table:not(.logging-enabled) .on-freq-other td:nth-child(1 of :not(.log-col)) { background-position: left top; }
 /* The spot the operator actually clicked/tuned — always exactly one row.
    Keeps the original strong treatment. */
 .tuned-spot {
