@@ -2539,7 +2539,9 @@
       rcTxPowerSlider.value = s.txpower;
       rcTxPowerVal.textContent = s.txpower;
     }
+    if (s.micGain !== undefined && s.micGain !== null) applyMicGainState(s.micGain);
     if (s.capabilities) {
+      setMicGainVisible(!!s.capabilities.micGain);
       rigCapabilities = s.capabilities;
       soFilterRow.classList.toggle('hidden', !s.capabilities.filter);
       rcNbGroup.classList.toggle('hidden', !s.capabilities.nb);
@@ -4738,6 +4740,37 @@
   }
 
   // RF Gain slider
+  // The radio's own MIC GAIN over CAT (K6RBJ: "a Mic Gain slider ... I could
+  // dump my custom commands"). Two copies — Settings and the Full VFO pane —
+  // kept in step; sent through the one rig-control dispatcher, like the app.
+  const MIC_GAIN_IDS = [['rc-micgain-slider', 'rc-micgain-val'], ['vf-micgain-slider', 'vf-micgain-val']];
+  function micGainPairs() {
+    return MIC_GAIN_IDS.map(([s, v]) => [document.getElementById(s), document.getElementById(v)]).filter(([s]) => s);
+  }
+  function applyMicGainState(val) {
+    for (const [sl, lbl] of micGainPairs()) {
+      if (document.activeElement === sl) continue; // don't fight a drag
+      sl.value = val;
+      if (lbl) lbl.textContent = val;
+    }
+  }
+  function setMicGainVisible(on) {
+    ['so-micgain-row', 'vf-micgain-row'].forEach((id) => {
+      const row = document.getElementById(id);
+      if (row) row.classList.toggle('hidden', !on);
+    });
+  }
+  for (const [sl, lbl] of micGainPairs()) {
+    sl.addEventListener('input', () => {
+      for (const [o, ol] of micGainPairs()) { o.value = sl.value; if (ol) ol.textContent = sl.value; }
+    });
+    sl.addEventListener('change', () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'rig-control', data: { action: 'set-mic-gain', value: parseInt(sl.value, 10) } }));
+      }
+    });
+  }
+
   rcRfGainSlider.addEventListener('input', () => {
     rcRfGainVal.textContent = rcRfGainSlider.value;
   });

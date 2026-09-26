@@ -240,6 +240,12 @@
             <input type="range" id="vf-txpower-slider" min="0" max="100" value="50">
             <span id="vf-txpower-val">50</span>
           </div>
+          <!-- The radio's own MIC GAIN (CAT), when the rig reports it. -->
+          <div class="vf-rig-slider-row hidden" id="vf-micgain-row">
+            <label>MIC</label>
+            <input type="range" id="vf-micgain-slider" min="0" max="100" value="50">
+            <span id="vf-micgain-val">50</span>
+          </div>
         </div>
         <!-- Filter bandwidth stepper -->
         <div class="vf-widget hidden" data-vf-widget="filter">
@@ -359,6 +365,15 @@
           <div class="so-slider-wrap">
             <input type="range" id="rc-txpower-slider" class="so-slider" min="0" max="100" value="100">
             <span id="rc-txpower-val" class="so-slider-val">100</span>
+          </div>
+        </div>
+        <!-- The radio's own MIC GAIN over CAT (K6RBJ: replaces custom
+             commands). Shown only when the rig reports micGain. -->
+        <div id="so-micgain-row" class="so-row hidden">
+          <label class="so-label">Mic Gain</label>
+          <div class="so-slider-wrap">
+            <input type="range" id="rc-micgain-slider" class="so-slider" min="0" max="100" value="50">
+            <span id="rc-micgain-val" class="so-slider-val">50</span>
           </div>
         </div>
 
