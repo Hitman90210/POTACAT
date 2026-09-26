@@ -964,6 +964,60 @@ section('Hound mode — fox dual messages + QSY + no-73 close');
 }
 
 // ============================================================
+// Compound messages outside Hound mode (K3SBP 2026-09-26): an ordinary
+// operator running a multi-answer mode sent "K3SBP RR73; AI5MM <AF0E> -14" —
+// RR73 to us and a report to AI5MM in one transmission. The sender's call is
+// only in the second half, so the plain "our call, their call" match missed it
+// and POTACAT kept sending R-02.
+// ============================================================
+section('Compound messages (non-hound) — our half from our partner counts');
+{
+  const baseQ = () => ({
+    mode: 'reply', phase: 'r+report', call: 'AF0E', grid: '',
+    txMsg: 'AF0E K3SBP R-02', report: '-11', sentReport: '-02',
+    myCall: 'K3SBP', myGrid: 'FN20', txRetries: 0,
+  });
+  // His exact decode: RR73 to us rides on a report to AI5MM.
+  {
+    const q = baseQ();
+    const r = drive(q, [decode('K3SBP RR73; AI5MM <AF0E> -14', { db: -10 })], makeEngine());
+    assertEq(q.phase, '73', 'our RR73 half closes the QSO (73 courtesy follows)');
+    assertEq(r.doneCount, 1, 'logs on the compound RR73');
+    assertEq(r.lastTx, 'AF0E K3SBP 73', 'courtesy 73 to the sender');
+  }
+  // Our half is the REPORT half: "AI5MM RR73; K3SBP <AF0E> -14" in the reply phase.
+  {
+    const q = baseQ();
+    q.phase = 'reply'; q.report = null; q.sentReport = null; q.txMsg = 'AF0E K3SBP FN20';
+    const r = drive(q, [decode('AI5MM RR73; K3SBP <AF0E> -14', { db: -8 })], makeEngine());
+    assertEq(q.phase, 'r+report', 'the report half for us advances to r+report');
+    assertEq(q.report, '-14', 'their report to us is read from our half');
+    assertEq(r.lastTx, 'AF0E K3SBP R-08', 'R+report with our measurement');
+  }
+  // A compound from SOMEONE ELSE that happens to include our call: no advance.
+  {
+    const q = baseQ();
+    const r = drive(q, [decode('K3SBP RR73; AI5MM <W9XYZ> -14', { db: -10 })], makeEngine());
+    assertEq(q.phase, 'r+report', 'a compound from another station does not close our QSO');
+    assertEq(r.doneCount, 0, 'and does not log');
+  }
+  // A compound from our partner addressed to two OTHER stations: no advance.
+  {
+    const q = baseQ();
+    const r = drive(q, [decode('W1AW RR73; AI5MM <AF0E> -14', { db: -10 })], makeEngine());
+    assertEq(q.phase, 'r+report', 'our partner working two others does not advance us');
+    assertEq(r.doneCount, 0, 'and does not log');
+  }
+  // Plain RR73 is unchanged.
+  {
+    const q = baseQ();
+    const r = drive(q, [decode('K3SBP AF0E RR73', { db: -10 })], makeEngine());
+    assertEq(q.phase, '73', 'plain RR73 still closes the QSO');
+    assertEq(r.doneCount, 1, 'and logs');
+  }
+}
+
+// ============================================================
 // Own-TX echo guard (N3VD 2026-07-10): a radio looping transmit audio back
 // to the decoder (IC-7300 + MONI) produced decodes of OUR OWN messages. The
 // order-blind contains-both-calls matchers accepted them: cq-report read our

@@ -91,6 +91,13 @@ eq(step('K3SBP W1ABC -05', ME), { step: 'send-r-report', call: 'W1ABC' }, 'their
 eq(step('K3SBP W1ABC R-05', ME), { step: 'send-rr73', call: 'W1ABC' }, 'their R-report -> RR73');
 eq(step('K3SBP W1ABC RR73', ME), { step: 'send-73', call: 'W1ABC' }, 'RR73 -> 73');
 eq(step('K3SBP W1ABC 73', ME), { step: 'send-73', call: 'W1ABC' }, '73 -> 73');
+
+section('inferReplyStep — compound messages (two QSOs in one transmission)');
+// K3SBP 2026-09-26: "K3SBP RR73; AI5MM <AF0E> -14" — the sender is named only
+// in the second half. Our half is rebuilt with the sender and classified.
+eq(step('K3SBP RR73; AI5MM <AF0E> -14', ME), { step: 'send-73', call: 'AF0E' }, 'RR73 half for us -> 73 to the sender');
+eq(step('AI5MM RR73; K3SBP <AF0E> -14', ME), { step: 'send-r-report', call: 'AF0E' }, 'report half for us -> R+report');
+eq(step('W1AW RR73; AI5MM <AF0E> -14', ME), null, 'compound with no half for us is not actionable');
 eq(step('K3SBP W1ABC RRR', ME), { step: 'send-73', call: 'W1ABC' }, 'RRR -> 73');
 
 section('inferReplyStep — CQ + tail-end + null');

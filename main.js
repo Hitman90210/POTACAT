@@ -18088,6 +18088,12 @@ function connectRemote() {
 
     let txMsg, phase;
     let remoteReplySentRpt = null; // set when Skip Grid replaces the grid with a report
+    // Hound: never 73 the fox (a tapped compound "K3SBP RR73; …" now parses
+    // to send-73). The auto-sequence already logs its RR73 and stops.
+    if (nextStep === 'send-73' && houndReply) {
+      sendCatLog('[JTCAT] Hound: no 73 to the fox — the QSO closes on its RR73');
+      return;
+    }
     if (nextStep === 'send-73') {
       txMsg = jtcatDirectedMsg(call, myCall, '73');
       phase = '73';
@@ -29594,6 +29600,12 @@ app.whenReady().then(() => {
     let txMsg, phase;
     let skipSentRpt = null; // set when Skip Grid replaces the grid with a report
     const ourRpt = fmtSnr(data.snr);
+    // Hound: never 73 the fox (a tapped compound "K3SBP RR73; …" now parses
+    // to send-73). The auto-sequence already logs its RR73 and stops.
+    if (nextStep === 'send-73' && houndReply) {
+      sendCatLog('[JTCAT] Hound: no 73 to the fox — the QSO closes on its RR73');
+      return;
+    }
     if (nextStep === 'send-73') {
       txMsg = jtcatDirectedMsg(data.call, myCall, '73');
       phase = '73';

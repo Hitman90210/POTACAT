@@ -156,8 +156,27 @@
   function inferReplyStep(decode, myCall) {
     var text = ((decode && decode.text) || '').toUpperCase().trim();
     if (!text) return null;
-    var parts = text.split(/\s+/);
     var me = normalizeCall(myCall);
+    // Compound message (DXpedition / multi-answer): "K3SBP RR73; AI5MM
+    // <AF0E> -14" — two QSOs in one transmission, the sender named only in
+    // the second half. Rebuild OUR half as "<ME> <SENDER> <payload>" and
+    // classify that; a compound with no half for us is not actionable.
+    if (text.indexOf(';') >= 0) {
+      var segs = text.split(';').map(function(s) { return s.trim(); }).filter(Boolean);
+      if (segs.length !== 2 || !me) return null;
+      var mine = null;
+      for (var si = 0; si < segs.length; si++) {
+        if (normalizeCall(segs[si].split(/\s+/)[0]) === me) { mine = segs[si]; break; }
+      }
+      if (!mine) return null;
+      var mineParts = mine.split(/\s+/);
+      var sender = (segs[1].split(/\s+/)[1] || '');
+      var rebuilt = mineParts.length === 2
+        ? mineParts[0] + ' ' + sender + ' ' + mineParts[1]   // "K3SBP RR73" + sender
+        : mine;                                              // "K3SBP <AF0E> -14" already names them
+      return inferReplyStep({ text: rebuilt }, myCall);
+    }
+    var parts = text.split(/\s+/);
 
     if (isCqText(text)) {
       var pc = parseCq(text);
