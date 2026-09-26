@@ -8407,13 +8407,13 @@
       currentIsDit = isDit;
       bothAtStart = ditPressed && dahPressed;
       ditLatch = false; dahLatch = false;
-      onKey(true);
+      onKey(true, isDit ? ditMs() : dahMs());
       clearTimers();
       toneTimer = setTimeout(onToneEnd, isDit ? ditMs() : dahMs());
     }
     function onToneEnd() {
       toneTimer = null;
-      onKey(false);
+      onKey(false, 0); // the scheduled element already ends itself
       state = IES;
       iesTimer = setTimeout(onIesEnd, ditMs());
     }
@@ -8475,10 +8475,61 @@
       },
     };
   }
-  var localCwKeyer = createLocalCwKeyer(function(down) {
-    // Phone-side sidetone is now driven by the local keyer, not by the
-    // server's cw-state echo. The indicator class toggle still comes from
-    // cw-state so it reflects what the server/radio actually keyed.
+  // Phone-side sidetone is driven by the local keyer, not by the server's
+  // cw-state echo (the indicator class still comes from cw-state, so it shows
+  // what the radio actually keyed).
+  //
+  // Iambic elements are SCHEDULED on the audio clock at their exact length,
+  // like the macro sidetone: switching the tone from setTimeout callbacks
+  // carried their jitter (several ms on desktop, more on phones — and the
+  // audio clock only advances in blocks) into every dit and dah, which is
+  // the "choppy, not correct dot and dash" LZ3AW heard on paddle but not on
+  // macros (2026-09-26). The keyer's timers now only choose the NEXT element;
+  // its sound, and the one-dit space after it, are exact. Straight-key mode
+  // still follows the contact — that timing is the operator's fist.
+  var paddleOsc = null, paddleGain = null, paddleNextAt = 0;
+  function ensurePaddleVoice() {
+    ensureCwAudioCtx();
+    if (!paddleOsc) {
+      paddleOsc = cwAudioCtx.createOscillator();
+      paddleOsc.type = 'sine';
+      paddleGain = cwAudioCtx.createGain();
+      paddleGain.gain.setValueAtTime(0, cwAudioCtx.currentTime);
+      paddleOsc.connect(paddleGain);
+      paddleGain.connect(cwAudioCtx.destination);
+      paddleOsc.start();
+    }
+    paddleOsc.frequency.value = cwSidetoneFreq;
+  }
+  function schedulePaddleElement(ms) {
+    ensurePaddleVoice();
+    var now = cwAudioCtx.currentTime;
+    var ramp = 0.003, dur = ms / 1000, ditSec = 1.2 / Math.max(5, cwWpm || 20);
+    // Continue exactly one dit after the previous element when that point is
+    // still ahead; otherwise start 20 ms out. That lead is what lets every
+    // later element land exactly even when the keyer's timer fires up to
+    // ~18 ms late (phones), at the cost of 20 ms before the first element.
+    var t = (paddleNextAt > now + 0.002) ? paddleNextAt : now + 0.020;
+    var g = paddleGain.gain;
+    g.setValueAtTime(0, t);
+    g.linearRampToValueAtTime(cwSidetoneVol, t + ramp);
+    g.setValueAtTime(cwSidetoneVol, t + dur - ramp);
+    g.linearRampToValueAtTime(0, t + dur);
+    paddleNextAt = t + dur + ditSec;
+  }
+  function cancelPaddleTones() {
+    if (paddleGain && cwAudioCtx) {
+      var now = cwAudioCtx.currentTime;
+      paddleGain.gain.cancelScheduledValues(now);
+      paddleGain.gain.setValueAtTime(0, now);
+    }
+    paddleNextAt = 0;
+  }
+  var localCwKeyer = createLocalCwKeyer(function(down, durMs) {
+    if (durMs) { schedulePaddleElement(durMs); return; } // iambic element
+    if (durMs === 0) return;                              // its end is already scheduled
+    // Straight key, or a keyer stop/mode change.
+    if (!down) cancelPaddleTones();
     handleCwSidetone(down);
   });
 
@@ -8647,9 +8698,15 @@
   var cwTextOsc = null;    // oscillator for text sidetone (separate from paddle sidetone)
   var cwTextGain = null;
 
-  function playCwTextSidetone(text) {
-    // Cancel any in-progress text sidetone
-    stopCwTextSidetone();
+  // Queued text-sidetone voices (one per chunk) and when the queue ends, so
+  // key-as-I-type APPENDS to what is still sounding. It used to call
+  // stopCwTextSidetone() on every keystroke, cutting off the letters before
+  // it — fast live typing sounded chopped (LZ3AW 2026-09-26).
+  var cwTextVoices = [];
+  var cwTextEndAt = 0;
+  function playCwTextSidetone(text, opts) {
+    var append = !!(opts && opts.append);
+    if (!append) stopCwTextSidetone();
     if (!text) return;
     ensureCwAudioCtx();
 
@@ -8685,6 +8742,12 @@
     var unitSec = 1.2 / cwWpm;
     var ramp = 0.003; // 3ms attack/decay to avoid clicks
     var now = cwAudioCtx.currentTime + 0.01; // small lookahead
+    // Appending while the previous chunk is still sounding: start after it,
+    // with the letter gap the two chunks would have had as one string (a
+    // chunk that begins with a space already carries its word gap).
+    if (append && cwTextEndAt > now) {
+      now = cwTextEndAt + (elements[0] && !elements[0].tone ? 0 : 3 * unitSec);
+    }
     var t = now;
 
     cwTextOsc = cwAudioCtx.createOscillator();
@@ -8710,19 +8773,29 @@
     }
 
     cwTextOsc.stop(t + 0.01);
+    cwTextVoices.push(cwTextOsc);
+    cwTextEndAt = t;
     cwIndicator.classList.add('active');
 
-    // Clean up after playback completes
-    var totalMs = (t - now) * 1000 + 50;
+    // Clean up after the whole queue has played.
+    var totalMs = (t - cwAudioCtx.currentTime) * 1000 + 50;
+    if (cwTextTimer) clearTimeout(cwTextTimer);
     cwTextTimer = setTimeout(function() {
       cwTextOsc = null;
       cwTextGain = null;
       cwTextTimer = null;
+      cwTextVoices = [];
+      cwTextEndAt = 0;
       cwIndicator.classList.remove('active');
     }, totalMs);
   }
 
   function stopCwTextSidetone() {
+    for (var vi = 0; vi < cwTextVoices.length; vi++) {
+      try { cwTextVoices[vi].stop(); } catch(e) {}
+    }
+    cwTextVoices = [];
+    cwTextEndAt = 0;
     if (cwTextOsc) {
       try { cwTextOsc.stop(); } catch(e) {}
       cwTextOsc = null;
@@ -8762,7 +8835,7 @@
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'cw-text', text: delta, live: true }));
     }
-    playCwTextSidetone(delta);
+    playCwTextSidetone(delta, { append: true });
   });
 
   /** The callsign a macro's {call} should send RIGHT NOW.
