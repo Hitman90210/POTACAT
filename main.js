@@ -7198,7 +7198,7 @@ function computeActivityState() {
   } else if (mode) {
     activity = 'jtcat';
     detail = { mode };
-  } else if (autoSstvActive) {
+  } else if (autoRxKind() === 'sstv') {
     activity = 'sstv';
     detail = { armed: true, freqKhz: autoSstvCurrentFreq || null };
   } else if (freedvEngine) {
@@ -16030,6 +16030,10 @@ function connectRemote() {
   remoteServer.on('server-state', onEchocatServerState);
 
   remoteServer.on('tune', ({ freqKhz, mode, bearing }) => {
+    // The operator is back, from their mobile device: an idle-RX session ends
+    // BEFORE the tune (its cancel restores the pre-idle frequency, which must
+    // not land after this one).
+    markUserActive();
     console.log('[Echo CAT] Tune request:', freqKhz, 'kHz, mode:', mode || '(keep)');
     // Dead rig link must be VISIBLE on the mobile device (K6RBJ tuned a dead
     // COM port for weeks with no error). Reuse the tune-blocked channel the
@@ -17873,6 +17877,11 @@ function connectRemote() {
   // --- JTCAT remote control (event handlers — helpers are at file level) ---
 
   remoteServer.on('jtcat-start', ({ mode }) => {
+    // Starting FT8 from ECHOCAT is the operator taking the radio. Without
+    // this the idle session outlived it: the popout it opened was closed
+    // just below, and when FT8 later stopped the leftover flag read as
+    // "SSTV armed" for hours (K3SBP 2026-09-27, 14.074 DIGU on the header).
+    markUserActive();
     // Close JTCAT popout if open — only one platform at a time
     if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) {
       sendCatLog('[JTCAT] Closing popout — ECHOCAT taking over FT8');
@@ -18264,6 +18273,7 @@ function connectRemote() {
 
   remoteServer.on('jtcat-set-mode', ({ mode }) => {
     if (!ft8Engine) return;
+    markUserActive(); // choosing a mode is the operator, not the idle session
     // Same family-switch rule as the popout's jtcat-set-mode: PSK31 and JS8
     // are different engine classes and Ft8Engine.setMode coerces unknown
     // strings to FT8, so crossing families rebuilds the slice.
@@ -24372,6 +24382,18 @@ let _autoRxDeferLogged = false; // one "Deferred" line per deferral, not per tic
 let autoIdleJs8Active = false;
 let autoIdleJs8OpenedPopout = false;
 let autoIdleRxLabel = null; // 'WSPR' | 'PSK31' | 'JS8' — names the stop log line
+
+// Which idle-RX session is running, or null. `autoSstvActive` is the flag
+// for EVERY idle mode (the name predates WSPR/PSK31/JS8), so anything that
+// means "SSTV specifically" must ask this instead: WSPR-on-idle used to be
+// reported to ECHOCAT as "SSTV armed", with the AUTO-SSTV banner on the
+// phone's SSTV tab (K3SBP 2026-09-27).
+function autoRxKind() {
+  if (!autoSstvActive) return null;
+  if (autoIdleJs8Active) return 'js8';
+  if (autoIdleJtcatActive) return autoIdleRxLabel === 'PSK31' ? 'psk31' : 'wspr';
+  return 'sstv';
+}
 // PSK31 watering-hole USB dials (kHz), mirrored from the popout's
 // PSK_BAND_FREQS. PSK31-on-idle parks on one band (no hopping).
 const PSK_IDLE_DIALS = {
@@ -24476,7 +24498,8 @@ function triggerAutoSstv() {
     autoIdleRxLabel = 'JS8';
     ipcMain.emit('js8call-popout-open');
     sendCatLog('[Auto-RX] JS8 receive started — heartbeat net + inbox (mail keeps counting)');
-    if (remoteServer) remoteServer.broadcastSstvTxStatus({ state: 'auto-rx' });
+    // No sstv-tx-status here: 'auto-rx' tells the phone's SSTV tab the
+    // desktop is receiving SSTV. The activity push names JS8.
     pushActivityState();
     return;
   }
@@ -24507,9 +24530,7 @@ function triggerAutoSstv() {
       if (openJtcatPopout) openJtcatPopout();
       sendCatLog('[Auto-RX] PSK31 receive started — ' + band + ' (' + (dialKhz / 1000).toFixed(3) + ' MHz)');
     }
-    if (remoteServer) {
-      remoteServer.broadcastSstvTxStatus({ state: 'auto-rx' });
-    }
+    // No sstv-tx-status here either (see the JS8 branch).
     pushActivityState();
     return;
   }
@@ -24568,12 +24589,16 @@ function cancelAutoSstv() {
     autoIdleRxLabel = null;
     autoSstvPrevFreq = null;
     autoSstvPrevMode = null;
+    pushActivityState();
     return;
   }
   if (autoSstvPrevFreq && cat && cat.connected) {
     cat.tune(autoSstvPrevFreq, autoSstvPrevMode || 'USB');
   }
   sendCatLog('[Auto-SSTV] Cancelled — restored ' + (autoSstvPrevFreq ? (autoSstvPrevFreq / 1000) + ' kHz' : 'previous frequency'));
+  // The server caches the last sstv-tx-status and replays it at connect, so
+  // without this a phone that connects later still sees the AUTO-SSTV banner.
+  if (remoteServer) remoteServer.broadcastSstvTxStatus({ state: 'rx' });
   autoSstvPrevFreq = null;
   autoSstvPrevMode = null;
   pushActivityState();
@@ -28030,6 +28055,10 @@ app.whenReady().then(() => {
     });
     jtcatPopoutWin.on('closed', () => {
       jtcatPopoutWin = null;
+      // The operator closed the window an idle-RX session was running in (a
+      // teardown that closes it itself clears the flag first). The session is
+      // over — without this its flag outlived the engine.
+      if (autoIdleJtcatActive) markUserActive();
       if (js8Engine()) js8AudioFeed(true); // its worklet was the JS8 engine's audio; the main window takes over
       yaesuScopeJtcatWants = false;
       if (!yaesuScopeWanted()) { try { stopYaesuScope('JTCAT window closed'); } catch { /* not running */ } }
@@ -28215,6 +28244,7 @@ app.whenReady().then(() => {
     });
     js8PopoutWin.on('closed', () => {
       js8PopoutWin = null;
+      if (autoIdleJs8Active) markUserActive(); // see the JTCAT window's closed handler
       stopJs8Spectrum();
       // Close = stop, like the JTCAT popout — free the radio/slice when the
       // window goes away. Skipped if a remote client (phone) is connected and

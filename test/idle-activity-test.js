@@ -154,5 +154,63 @@ test('WSPR session ends on every path away from WSPR', () => {
     `stopJtcat + both set-mode handlers + startJtcat rebuild — got ${ends}`);
 });
 
+// ── Auto-RX in WSPR/PSK31/JS8 is not "SSTV armed" (K3SBP 2026-09-27) ────────
+// autoSstvActive is the flag for EVERY idle mode. An idle WSPR session whose
+// engine was gone (the phone started FT8, which closed the popout; FT8 later
+// stopped) fell through to "sstv, armed" with no frequency — on the Now strip
+// and as the AUTO-SSTV banner — for 3 h 39 m.
+
+function bodyOf(name) {
+  const start = MAIN.indexOf('function ' + name + '(');
+  assert.ok(start >= 0, name + ' not found');
+  let d = 0, i = MAIN.indexOf('{', start);
+  for (; i < MAIN.length; i++) { if (MAIN[i] === '{') d++; else if (MAIN[i] === '}' && --d === 0) break; }
+  return MAIN.slice(start, i + 1);
+}
+// eslint-disable-next-line no-new-func
+const activityWith = new Function('flags', `
+  let { autoSstvActive, autoIdleJs8Active, autoIdleJtcatActive, autoIdleRxLabel, autoSstvCurrentFreq } = flags;
+  const _sstvDecode = null, jtcatManager = null, freedvEngine = null, settings = {}, jtcatWsprHopEnabled = false;
+  const _wsprSession = null, js8Threads = { totalUnread: 0 };
+  const _isEffectivelyTransmitting = () => false;
+  ${bodyOf('autoRxKind')}
+  ${bodyOf('computeActivityState')}
+  return { kind: autoRxKind(), state: computeActivityState() };`);
+
+test('an idle WSPR/PSK31/JS8 session is never reported as SSTV', () => {
+  for (const f of [
+    { autoSstvActive: true, autoIdleJtcatActive: true, autoIdleRxLabel: 'WSPR' },
+    { autoSstvActive: true, autoIdleJtcatActive: true, autoIdleRxLabel: 'PSK31' },
+    { autoSstvActive: true, autoIdleJs8Active: true, autoIdleRxLabel: 'JS8' },
+  ]) {
+    const r = activityWith(f);
+    assert.notStrictEqual(r.state.activity, 'sstv', `${f.autoIdleRxLabel} reported as SSTV`);
+    assert.strictEqual(r.kind, f.autoIdleRxLabel.toLowerCase());
+    assert.strictEqual(r.state.auto, true, 'still flagged as automatic');
+  }
+  const sstv = activityWith({ autoSstvActive: true, autoSstvCurrentFreq: 14230 });
+  assert.strictEqual(sstv.state.activity, 'sstv');
+  assert.deepStrictEqual(sstv.state.detail, { armed: true, freqKhz: 14230 }, 'real SSTV Auto-RX keeps its frequency');
+});
+
+test('only SSTV Auto-RX sends the phone the AUTO-SSTV status', () => {
+  const t = bodyOf('triggerAutoSstv');
+  const calls = t.match(/broadcastSstvTxStatus\(\{[^}]*\}\)/g) || [];
+  assert.deepStrictEqual(calls, ["broadcastSstvTxStatus({ state: 'auto-rx', freqKhz: autoSstvCurrentFreq })"],
+    'the JS8/WSPR/PSK31 branches must not claim SSTV');
+  assert.ok(/broadcastSstvTxStatus\(\{ state: 'rx' \}\)/.test(bodyOf('cancelAutoSstv')),
+    'cancelling SSTV Auto-RX replaces the cached banner status');
+});
+
+test('the idle session ends when the operator takes the radio from ECHOCAT or closes its window', () => {
+  for (const ev of ['tune', 'jtcat-start', 'jtcat-set-mode']) {
+    const at = MAIN.indexOf(`remoteServer.on('${ev}',`);
+    assert.ok(at > 0, ev);
+    assert.ok(/markUserActive\(\);/.test(MAIN.slice(at, at + 700)), `${ev} counts as the operator returning`);
+  }
+  assert.ok(/jtcatPopoutWin = null;\s*\/\/[\s\S]{0,300}if \(autoIdleJtcatActive\) markUserActive\(\);/.test(MAIN), 'JTCAT window closed');
+  assert.ok(/js8PopoutWin = null;\s*if \(autoIdleJs8Active\) markUserActive\(\);/.test(MAIN), 'JS8 window closed');
+});
+
 console.log(`\nIdle activity: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
