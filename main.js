@@ -15216,7 +15216,14 @@ function _sendCwTextToRadioImpl(text, opts) {
   // hidden remote-audio renderer which generates morse audio with Web
   // Audio API and mixes it into the WebRTC sender's destination. No-op
   // when ECHOCAT isn't running.
-  if (remoteAudioWin && !remoteAudioWin.isDestroyed()) {
+  // Skipped when the text came from a client that plays its OWN sidetone
+  // for what it sends (ECHOCAT Web declares `local-cw-sidetone`): it heard
+  // the local tone at once and then this copy again one network trip plus
+  // the audio jitter buffer later — the "echo, a second side tone" LZ3AW
+  // heard on 1.10.24 with the radio's sidetone off.
+  const _cwClient = (opts && opts.fromRemote && remoteServer && remoteServer.activeClientContext) ? remoteServer.activeClientContext() : null;
+  const _clientHasOwnSidetone = !!(_cwClient && _cwClient.capabilities.includes('local-cw-sidetone'));
+  if (remoteAudioWin && !remoteAudioWin.isDestroyed() && !_clientHasOwnSidetone) {
     remoteAudioWin.webContents.send('cw-sidetone-play', {
       text: expanded,
       wpm: settings.cwWpm || 20,
@@ -16610,7 +16617,7 @@ function connectRemote() {
     // (no preceding cw-config) still keys at the right speed — and it flows
     // through the one authoritative writer, keeping settings.cwWpm current.
     if (typeof wpm === 'number') applyCwWpm(wpm, 'remote');
-    sendCwTextToRadio(text, { live: !!live });
+    sendCwTextToRadio(text, { live: !!live, fromRemote: true });
   });
 
   // Sanitize a VFO-profile list arriving from a remote client before it

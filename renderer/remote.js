@@ -1381,7 +1381,9 @@
           // 256 KB - which is the "logbook only shows 125 QSOs" report
           // (LZ3AW item 2). Chunked delivery has no cap; qso-delta appends
           // one record per log write instead of re-pushing the whole log.
-          capabilities: ['chunked-all-qsos', 'qso-delta', 'chunked-worked-qsos'],
+          // local-cw-sidetone: this page plays its own sidetone for the CW it
+          // sends, so the desktop must not mix a second copy into RX audio.
+          capabilities: ['chunked-all-qsos', 'qso-delta', 'chunked-worked-qsos', 'local-cw-sidetone'],
         }));
       } catch {}
       onOpen();

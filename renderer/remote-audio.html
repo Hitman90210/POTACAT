@@ -24,6 +24,11 @@ window.api.onStartAudio(async (config) => {
     // Clean up any previous session
     if (pc) { pc.close(); pc = null; }
     if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+    // The CW sidetone mix graph was built on the OLD stream. Left up, mixActive
+    // stayed true, the next sidetone skipped replaceTrack and mixed into a
+    // graph the new sender no longer carried — and rigSenderTrack() handed a
+    // Kiwi/SmartSDR detour's restore that dead track (silent RX).
+    tearDownLocalMixGraph();
     audioEl.srcObject = null;
 
     // Capture radio's USB audio output (RX audio to send to phone)

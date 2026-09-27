@@ -78,6 +78,27 @@ test('the server sends keepalives to the watchdog only, never to the keyer', () 
   assert.ok(/if \(msg\.hold\) \{[\s\S]{0,120}this\._armCwPaddleWatchdog\(\);\s*break;/.test(block), 'hold re-arms the watchdog and stops');
 });
 
+// "Something like an echo of the side tone, or a second side tone" on the web,
+// radio sidetone OFF, gone after reconnecting audio. The desktop mixed its own
+// morse into the RX WebRTC stream for every CW text send while the web page
+// played its own local copy of the same text.
+test('the desktop does not mix a second sidetone for a client that plays its own', () => {
+  const main = R('main.js');
+  const fn = main.slice(main.indexOf('function sendCwTextToRadio('), main.indexOf("'cw-sidetone-play'") + 40);
+  assert.ok(/_clientHasOwnSidetone = !!\(_cwClient && _cwClient\.capabilities\.includes\('local-cw-sidetone'\)\)/.test(fn));
+  assert.ok(/!_clientHasOwnSidetone\) \{\s*remoteAudioWin\.webContents\.send\('cw-sidetone-play'/.test(fn), 'the bridge copy is gated');
+  assert.ok(/opts\.fromRemote/.test(fn), 'only for text the client itself sent (a desktop macro still reaches the listener)');
+  assert.ok(/sendCwTextToRadio\(text, \{ live: !!live, fromRemote: true \}\)/.test(main), 'the ECHOCAT cw-text path marks its origin');
+  const web = R('renderer/remote.js');
+  assert.ok(/capabilities: \[[^\]]*'local-cw-sidetone'/.test(web), 'ECHOCAT Web declares it in hello');
+});
+
+test('restarting ECHOCAT audio tears down the old sidetone mix graph', () => {
+  const html = R('renderer/remote-audio.html');
+  const start = html.slice(html.indexOf('window.api.onStartAudio('), html.indexOf('// Capture radio\'s USB audio output'));
+  assert.ok(/tearDownLocalMixGraph\(\);/.test(start), 'onStartAudio resets the mix graph built on the previous stream');
+});
+
 (async () => {
   for (const [name, fn] of cases) {
     try { await fn(); passed++; console.log('  ✓ ' + name); }
