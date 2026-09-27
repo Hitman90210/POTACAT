@@ -14016,6 +14016,17 @@ function panadapterWantsSource(source) {
   }
 }
 
+// POTA's feed expires its own spots (each carries an `expire` countdown and
+// drops out of /spot/activator when it lapses), so it IS the list of active
+// activators pota.app shows. Cutting it at Max Spot Age (5 min by default)
+// hid about half of them — N4FFF saw 6 activators on ECHOCAT against 12 on
+// pota.app (2026-09-27). POTA follows the feed unless the operator opts in
+// to the age limit (settings.potaAgeLimit). WWFF/LLOTA/WWBOTA feeds keep
+// spots for hours, so they keep the limit.
+function spotAgeExempt(spot) {
+  return !!spot && spot.source === 'pota' && settings.potaAgeLimit !== true;
+}
+
 function pushSpotsToSmartSdr(spots) {
   if (!smartSdr || !smartSdr.connected) return;
   if (!settings.smartSdrSpots) return; // only push spots when explicitly enabled
@@ -14026,6 +14037,8 @@ function pushSpotsToSmartSdr(spots) {
   const tableMaxAgeMs = ((settings.maxAgeMin != null ? settings.maxAgeMin : 5) * 60000) || 300000;
   const sdrMaxAgeMs = (settings.smartSdrMaxAge != null ? settings.smartSdrMaxAge : 15) * 60000;
   const maxAgeMs = sdrMaxAgeMs > 0 ? Math.min(sdrMaxAgeMs, tableMaxAgeMs) : tableMaxAgeMs;
+  // A POTA spot follows the feed's expiry, so only the panadapter's own cap.
+  const potaMaxAgeMs = sdrMaxAgeMs > 0 ? sdrMaxAgeMs : 0;
   const maxSpots = settings.smartSdrMaxSpots || 0;
 
   // Apply the user's panadapter-source allowlist (sync-with-table or independent).
@@ -14034,10 +14047,11 @@ function pushSpotsToSmartSdr(spots) {
   let pushed = 0;
   for (const spot of spots) {
     // Age filter — skip spots older than the effective max age (table age or panadapter age, whichever is smaller)
-    if (maxAgeMs > 0 && spot.spotTime) {
+    const spotMaxAgeMs = spotAgeExempt(spot) ? potaMaxAgeMs : maxAgeMs;
+    if (spotMaxAgeMs > 0 && spot.spotTime) {
       const t = spot.spotTime.endsWith('Z') ? spot.spotTime : spot.spotTime + 'Z';
       const age = now - new Date(t).getTime();
-      if (age > maxAgeMs) continue;
+      if (age > spotMaxAgeMs) continue;
     }
     smartSdr.addSpot(spot);
     pushed++;
@@ -14259,6 +14273,9 @@ function updateRemoteSettings() {
     scanDwell: parseInt(settings.scanDwell, 10) || 7,
     refreshInterval: settings.refreshInterval || 30,
     maxAgeMin: settings.maxAgeMin != null ? settings.maxAgeMin : 5,
+    // false = POTA spots follow pota.app's own expiry and maxAgeMin covers
+    // WWFF/LLOTA/WWBOTA only; true = maxAgeMin applies to POTA as well.
+    potaAgeLimit: settings.potaAgeLimit === true,
     distUnit: settings.distUnit || 'mi',
     // License privileges — mirror to ECHOCAT so the phone can hide
     // out-of-permission spots on the Spots table + Prop map. Same key
@@ -17372,6 +17389,8 @@ function connectRemote() {
     settings.maxAgeMin = val;
     saveSettings(settings);
     updateRemoteSettings();
+    // The desktop table reads settings.maxAgeMin too — tell it.
+    if (win && !win.isDestroyed()) win.webContents.send('reload-prefs');
     console.log('[Echo CAT] Max spot age ->', val, 'm');
   });
 
@@ -19945,6 +19964,7 @@ function pushSpotsToTci(spots) {
   const tableMaxAgeMs = ((settings.maxAgeMin != null ? settings.maxAgeMin : 5) * 60000) || 300000;
   const tciMaxAgeMs = (settings.tciMaxAge != null ? settings.tciMaxAge : 15) * 60000;
   const maxAgeMs = tciMaxAgeMs > 0 ? Math.min(tciMaxAgeMs, tableMaxAgeMs) : tableMaxAgeMs;
+  const potaMaxAgeMs = tciMaxAgeMs > 0 ? tciMaxAgeMs : 0;
 
   // Apply the user's panadapter-source allowlist — TCI is treated as a
   // panadapter destination (Casey: "what is good for the panadapter is
@@ -19953,10 +19973,11 @@ function pushSpotsToTci(spots) {
 
   for (const spot of spots) {
     // Age filter — skip spots older than the effective max age (table age or panadapter age, whichever is smaller)
-    if (maxAgeMs > 0 && spot.spotTime) {
+    const spotMaxAgeMs = spotAgeExempt(spot) ? potaMaxAgeMs : maxAgeMs;
+    if (spotMaxAgeMs > 0 && spot.spotTime) {
       const t = spot.spotTime.endsWith('Z') ? spot.spotTime : spot.spotTime + 'Z';
       const age = now - new Date(t).getTime();
-      if (age > maxAgeMs) continue;
+      if (age > spotMaxAgeMs) continue;
     }
     tciClient.addSpot(spot);
   }
@@ -21053,6 +21074,7 @@ function sendMergedSpots() {
         let limit = maxAgeMs;
         if (s.source === 'dxc') limit = dxcMaxAgeMs;
         else if (s.source === 'sota') limit = sotaMaxAgeMs;
+        else if (spotAgeExempt(s)) limit = Infinity; // the feed expires POTA spots itself
         if (age > limit) return false;
       }
       return true;

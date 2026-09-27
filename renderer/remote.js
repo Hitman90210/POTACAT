@@ -4151,7 +4151,7 @@
     else if (idx === -1) maxAgeMin = MAXAGE_PRESETS[MAXAGE_PRESETS.length - 1];
     soMaxageVal.textContent = maxAgeMin + 'm';
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'set-max-age', value: maxAgeMin }));
+      ws.send(JSON.stringify({ type: 'set-max-age', minutes: maxAgeMin }));
     }
   });
   soMaxageUp.addEventListener('click', () => {
@@ -4160,7 +4160,7 @@
     else if (idx === -1) maxAgeMin = MAXAGE_PRESETS[0];
     soMaxageVal.textContent = maxAgeMin + 'm';
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'set-max-age', value: maxAgeMin }));
+      ws.send(JSON.stringify({ type: 'set-max-age', minutes: maxAgeMin }));
     }
   });
 

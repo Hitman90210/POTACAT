@@ -124,7 +124,10 @@ function isEventWatched(callsign) {
   }
   return false;
 }
-let maxAgeMin = 5;       // max spot age in minutes (POTA, LLOTA, WWFF, WWBOTA)
+let maxAgeMin = 5;       // max spot age in minutes (LLOTA, WWFF, WWBOTA; POTA only when potaAgeLimit)
+// POTA follows pota.app's own expiry unless the operator opts in to the age
+// limit — the feed drops a spot when it expires (N4FFF, 2026-09-27).
+let potaAgeLimit = false;
 let sotaMaxAgeMin = 30;  // SOTA max spot age in minutes
 let dxcMaxAgeMin = 15;   // DX cluster max spot age in minutes — DX spots aren't re-posted like POTA
 let maxDistMi = 0;       // max distance in miles (0 = no limit)
@@ -716,6 +719,7 @@ const settingsCancel = document.getElementById('settings-cancel');
 const setGrid = document.getElementById('set-grid');
 const setDistUnit = document.getElementById('set-dist-unit');
 const setMaxAge = document.getElementById('set-max-age');
+const setPotaAgeLimit = document.getElementById('set-pota-age-limit');
 const setMaxDist = document.getElementById('set-max-dist');
 const setMaxDistUnit = document.getElementById('set-max-dist-unit');
 const setSotaMaxAge = document.getElementById('set-sota-max-age');
@@ -1890,12 +1894,11 @@ async function loadPrefs() {
     }
     setAppMode('activator');
   }
-  // maxAgeMin: prefer localStorage (last-used filter) over settings.json
-  try {
-    const saved = JSON.parse(localStorage.getItem(FILTERS_KEY));
-    if (saved && saved.maxAgeMin) { maxAgeMin = saved.maxAgeMin; }
-    else { maxAgeMin = parseInt(settings.maxAgeMin, 10) || 5; }
-  } catch { maxAgeMin = parseInt(settings.maxAgeMin, 10) || 5; }
+  // maxAgeMin comes from settings.json ONLY. A copy in localStorage used to
+  // win here, so a change made from ECHOCAT (set-max-age) or a settings
+  // import reached main and every client but never this table.
+  maxAgeMin = parseInt(settings.maxAgeMin, 10) || 5;
+  potaAgeLimit = settings.potaAgeLimit === true;
   sotaMaxAgeMin = parseInt(settings.sotaMaxAge, 10) || 30;
   dxcMaxAgeMin = parseInt(settings.dxcMaxAge, 10) || 15;
   maxDistMi = parseInt(settings.maxDist, 10) || 0;
@@ -3988,7 +3991,6 @@ function saveFilters() {
     modes: modes ? [...modes] : null,
     modeRadio,
     continents: continents ? [...continents] : null,
-    maxAgeMin,
   };
   localStorage.setItem(FILTERS_KEY, JSON.stringify(data));
 }
@@ -4074,8 +4076,6 @@ function restoreFilters() {
       continentFilterEl.querySelectorAll('input:not([value="all"])').forEach((cb) => { cb.checked = false; });
     }
 
-    // Restore max age
-    if (data.maxAgeMin) maxAgeMin = data.maxAgeMin;
 
     // Update dropdown button text
     [bandFilterEl, modeFilterEl, continentFilterEl].forEach((container) => {
@@ -9244,6 +9244,8 @@ function getFiltered() {
       // DX cluster spots are one-shot — an operator can be in a pileup
       // for many minutes without a fresh spot, so give DX its own window.
       if (spotAgeSecs(s.spotTime) > dxcMaxAgeMin * 60) return false;
+    } else if (s.source === 'pota' && !potaAgeLimit) {
+      // pota.app's feed expires POTA spots itself — show what it lists.
     } else {
       if (spotAgeSecs(s.spotTime) > maxAgeSecs) return false;
     }
@@ -15179,6 +15181,7 @@ async function openSettingsDialog(tab) {
   setGrid.value = s.grid || '';
   setDistUnit.value = s.distUnit || 'mi';
   setMaxAge.value = s.maxAgeMin || 5;
+  if (setPotaAgeLimit) setPotaAgeLimit.checked = s.potaAgeLimit === true;
   setMaxDist.value = s.maxDist || 0;
   setMaxDistUnit.textContent = (s.distUnit || 'mi') === 'km' ? 'km' : 'miles';
   setSotaMaxAge.value = s.sotaMaxAge || 30;
@@ -16200,6 +16203,7 @@ settingsSave.addEventListener('click', async () => {
     grid: setGrid.value.trim() || 'FN20jb',
     distUnit: setDistUnit.value,
     maxAgeMin: maxAgeVal,
+    potaAgeLimit: !!(setPotaAgeLimit && setPotaAgeLimit.checked),
     maxDist: maxDistVal,
     sotaMaxAge: sotaMaxAgeVal,
     dxcMaxAge: dxcMaxAgeVal,
@@ -16435,6 +16439,7 @@ settingsSave.addEventListener('click', async () => {
   grid = setGrid.value.trim();
   distUnit = setDistUnit.value;
   maxAgeMin = maxAgeVal;
+  potaAgeLimit = !!(setPotaAgeLimit && setPotaAgeLimit.checked);
   maxDistMi = maxDistVal;
   sotaMaxAgeMin = sotaMaxAgeVal;
   dxcMaxAgeMin = dxcMaxAgeVal;
