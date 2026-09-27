@@ -99,6 +99,31 @@ test('restarting ECHOCAT audio tears down the old sidetone mix graph', () => {
   assert.ok(/tearDownLocalMixGraph\(\);/.test(start), 'onStartAudio resets the mix graph built on the previous stream');
 });
 
+// TX meter "still not reaching 100 W, shows 70-75 W ... not so dynamic as on
+// the radio". One instantaneous CAT sample per 2 s, drawn as-is, against a
+// peak-reading radio bar.
+test('wattmeter peak-hold: jumps up, holds, decays toward the live value, never below it', () => {
+  const { createPeakHold } = require('../lib/meter-peak-hold');
+  const h = createPeakHold({ holdMs: 1000, decayPerSec: 0.5 });
+  assert.strictEqual(h.sample(95, 0), 95, 'a new peak shows at once');
+  assert.strictEqual(h.sample(30, 500), 95, 'held for the hold time (CW sample between elements)');
+  assert.strictEqual(h.sample(30, 2000), 47.5, 'then decays 50 % per second');
+  assert.strictEqual(h.sample(80, 2100), 80, 'a higher live value wins immediately');
+  assert.strictEqual(h.sample(0, 9000), 1.3, 'decays toward zero (80 W peak, 5.9 s past its hold)');
+  h.reset();
+  assert.strictEqual(h.sample(10, 9100), 10, 'reset forgets the old peak');
+});
+
+test('every wattmeter surface gets the held value, and the TX poll samples it every cycle', () => {
+  const main = R('main.js');
+  const fn = main.slice(main.indexOf('function sendCatFwdPower('), main.indexOf('function sendCatPower('));
+  assert.ok(/push\(_fwdPowerHold\.sample\(w\)\)/.test(fn), 'the one fan-out holds the peak');
+  assert.ok(/_fwdPowerHold\.reset\(\); push\(0\)/.test(fn), 'the silence reset clears it');
+  assert.ok(/peakW = w/.test(fn), 'Station Setup still measures the raw sample');
+  const rc = R('lib/rig-controller.js');
+  assert.ok(/if \(txMeters\) \{\s*if \(this\._codec\.getPowerMeter\)/.test(rc), 'power meter is not behind the every-2nd-cycle gate');
+});
+
 (async () => {
   for (const [name, fn] of cases) {
     try { await fn(); passed++; console.log('  ✓ ' + name); }

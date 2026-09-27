@@ -2714,6 +2714,9 @@ function sendCatMode(mode) {
 // every wattmeter: main window, VFO and JTCAT pop-outs, ECHOCAT clients.
 // Frames only flow during TX, so the displays decay to 0 shortly after they
 // stop rather than showing stale watts forever.
+// Displays hold the peak: one CAT sample per poll mostly misses it, and the
+// radio's own bar is peak-reading (lib/meter-peak-hold.js).
+const _fwdPowerHold = require('./lib/meter-peak-hold').createPeakHold();
 function sendCatFwdPower(watts) {
   const w = Math.round((Number(watts) || 0) * 10) / 10;
   if (_stationSetupTxTest) {
@@ -2726,9 +2729,9 @@ function sendCatFwdPower(watts) {
     if (jtcatPopoutWin && !jtcatPopoutWin.isDestroyed()) jtcatPopoutWin.webContents.send('cat-fwd-power', v);
     if (remoteServer && remoteServer.running) remoteServer.sendToClient({ type: 'fwd-power', value: v });
   };
-  push(w);
+  push(_fwdPowerHold.sample(w));
   if (_fwdPowerClearTimer) clearTimeout(_fwdPowerClearTimer);
-  _fwdPowerClearTimer = setTimeout(() => { _fwdPowerClearTimer = null; push(0); }, 3000);
+  _fwdPowerClearTimer = setTimeout(() => { _fwdPowerClearTimer = null; _fwdPowerHold.reset(); push(0); }, 3000);
 }
 
 function sendCatPower(watts) {
