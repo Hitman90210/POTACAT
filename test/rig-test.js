@@ -2573,6 +2573,51 @@ test('main.js adopts the reported address and probes it first (source-text guard
 });
 
 // =========================================================================
+// Icom remote power-on (IC-7610 owner, 2026-09-27): a radio in Standby wakes
+// only when the 18 01 frame follows a run of FE bytes sized to the line rate.
+// The bare frame was ignored, so power-on from POTACAT/ECHOCAT did nothing.
+console.log('\n=== CI-V power-on wake preamble ===');
+{
+  const { civWakeupPreambleCount } = require('../lib/codecs/civ-codec');
+
+  test('wake preamble length follows the Icom table', () => {
+    const table = { 115200: 150, 57600: 75, 38400: 50, 19200: 25, 9600: 13, 4800: 7 };
+    for (const [baud, n] of Object.entries(table)) assert.strictEqual(civWakeupPreambleCount(Number(baud)), n, baud);
+    assert.strictEqual(civWakeupPreambleCount(undefined), 150, 'unknown rate (network) = longest run');
+    assert.strictEqual(civWakeupPreambleCount(1200), 7, 'never fewer than 7');
+  });
+
+  test('power-on = FE run + 18 01 frame; power-off stays a bare frame', () => {
+    const { codec, writes } = captureWrites(CivCodec, IC7300_MODEL);
+    codec.setPowerState(true, { baudRate: 115200 });
+    assert.strictEqual(writes.length, 1, 'one write, so nothing interleaves between the preamble and the frame');
+    assert.strictEqual(writes[0], 'fe'.repeat(150) + 'fefe94e01801fd');
+    codec.setPowerState(false, { baudRate: 115200 });
+    assert.strictEqual(writes[1], 'fefe94e01800fd');
+  });
+
+  test('RigController hands the serial rate to the codec (9600 when unset)', () => {
+    const seen = [];
+    const { rig, transport } = stubRig({ setPowerState: (on, o) => seen.push([on, o && o.baudRate]) });
+    transport.connected = true;
+    transport._target = { path: 'COM3', baudRate: 19200 };
+    rig.setPowerState(true);
+    transport._target = { path: 'COM3' };
+    rig.setPowerState(true);
+    assert.deepStrictEqual(seen, [[true, 19200], [true, 9600]]);
+  });
+
+  test('a power-on with the port closed says so', () => {
+    const logs = [];
+    const { rig, transport } = stubRig({ setPowerState: () => { throw new Error('must not send'); } });
+    transport.connected = false;
+    rig.on('log', (m) => logs.push(m));
+    rig.setPowerState(true);
+    assert.ok(logs.some((m) => /Power on not sent/.test(m)), logs.join(' | '));
+  });
+}
+
+// =========================================================================
 // Summary
 console.log(`\n${'='.repeat(50)}`);
 console.log(`Results: ${passed} passed, ${failed} failed`);
