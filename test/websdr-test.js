@@ -281,7 +281,7 @@ test('tune URL has all required params with USB defaults', () => {
   c._sendTune();
   assert.ok(sent.startsWith('GET /~~param?'));
   assert.ok(sent.includes('f=14074'));
-  assert.ok(sent.includes('mode=USB'));
+  assert.ok(sent.includes('mode=0&'), 'mode is numeric, as websdr-base.js sends it: ' + sent);
   // Edges in kHz, as WebSDR.org's own client sends them (0.3..2.7 for USB).
   assert.ok(sent.includes('lo=0.3&'), sent);
   assert.ok(sent.includes('hi=2.7&'), sent);
@@ -319,6 +319,44 @@ test('CW: WebSDR shows the station on its frequency, carrier heard at 600 Hz', (
   assert.strictEqual(+(f + (lo + hi) / 2).toFixed(3), 14025, 'displayed frequency = the station');
   assert.ok(Math.abs(f - 14025.6) < 1e-6, 'BFO 0.6 kHz above the carrier (' + f + ')');
   assert.ok(lo < -(f - 14025) && -(f - 14025) < hi, 'the carrier falls inside the passband');
+});
+
+test('mode goes out as the official number (AM 1, FM 4) and edges are rounded', () => {
+  const ws = require('ws');
+  const sentFor = (mode) => {
+    const c = newClient();
+    c._desiredFreqKhz = 7200; c._desiredMode = mode;
+    let sent = null;
+    c._ws = { readyState: ws.OPEN, send: (s) => { sent = s; } };
+    c._sendTune();
+    return new URLSearchParams(sent.split('?')[1]);
+  };
+  assert.strictEqual(sentFor('am').get('mode'), '1');
+  assert.strictEqual(sentFor('fm').get('mode'), '4');
+  assert.strictEqual(sentFor('cw').get('mode'), '0');
+  assert.strictEqual(sentFor('cw').get('hi'), '-0.4', 'no float noise in the URL');
+});
+
+// GitHub #93 again: on 1.10.24 DF1VB still had to transmit 600 Hz high. His
+// SDRs were KiwiSDRs (port 8073), whose client tuned the CARRIER onto the
+// spot: the spotted station sat at 0 Hz, outside the 200-1200 Hz window.
+test('KiwiSDR CW: carrier 0.6 kHz below the spot, window centred on the 600 Hz tone', () => {
+  const { KiwiSdrClient } = require('../lib/kiwisdr');
+  const k = new KiwiSdrClient();
+  const sent = [];
+  k._connected = true;
+  k._send = (m) => sent.push(m);
+  k.tune(14025, 'cw');
+  const set = sent.find((m) => m.startsWith('SET mod='));
+  const f = +/freq=([\d.]+)/.exec(set)[1];
+  const low = +/low_cut=(-?\d+)/.exec(set)[1], high = +/high_cut=(-?\d+)/.exec(set)[1];
+  assert.strictEqual(f, 14024.4, set);
+  const tone = Math.round((14025 - f) * 1000);
+  assert.ok(low < tone && tone < high, `the spotted carrier (${tone} Hz) is inside ${low}..${high}`);
+  assert.strictEqual((low + high) / 2, 600, 'window centred on the pitch');
+  k._lastTuneSig = ''; sent.length = 0;
+  k.tune(14074, 'usb');
+  assert.ok(/freq=14074\.000/.test(sent[0]), 'SSB is not offset: ' + sent[0]);
 });
 
 test('tune() resets predictor', () => {
