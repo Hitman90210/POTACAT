@@ -55,6 +55,12 @@ test('the view is titled Contests and has the Modes filter', () => {
   assert.ok(/modeFilter = _contestsModeFilter\(\)/.test(app) && /_contestsModeVisible\(c, modeFilter\)/.test(app));
 });
 
+test('the drawer (and other panels fixed over the titlebar) opt out of the drag region', () => {
+  // macOS: the close X sat inside the titlebar's drag region and ignored clicks.
+  const css = fs.readFileSync(path.join(root, 'renderer', 'styles.css'), 'utf8').replace(/\r\n/g, '\n');
+  assert.ok(/\.contests-drawer,\n\.displaced-banner,\n\.cat-popover \{\n  -webkit-app-region: no-drag;/.test(css));
+});
+
 test('"Later" is split into month sections', () => {
   assert.ok(/key === 'later' && r\._status\.start/.test(app));
 });

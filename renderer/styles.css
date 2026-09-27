@@ -9899,6 +9899,15 @@ main.banner-logger-active #event-progress-overlay {
   z-index: 1000;
 }
 .contests-drawer.hidden { display: none; }
+/* Panels fixed over the custom titlebar must opt out of its drag region:
+   on macOS Electron gives -webkit-app-region: drag precedence over whatever
+   is drawn on top, so the drawer's close X (8 px from the top, inside the
+   32 px titlebar) swallowed clicks — Esc still closed it (2026-09-26). */
+.contests-drawer,
+.displaced-banner,
+.cat-popover {
+  -webkit-app-region: no-drag;
+}
 .contests-drawer-close {
   position: absolute;
   top: 8px;
