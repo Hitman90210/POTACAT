@@ -57,6 +57,31 @@ function rebuildWatchlistGroupLookup() {
   }
 }
 
+// settings.watchlistGroups -> the in-memory groups + lookup. Called at
+// startup (loadPrefs) AND when Settings opens. It used to run only from the
+// Settings dialog, so after launch every group was empty: hand-typed group
+// calls had no highlight until Settings was opened, and URL-list calls lit
+// up only when their fetch landed (khoogheem, GitHub #89).
+function hydrateWatchlistGroups(s) {
+  const defaultGroupColors = ['#ffa726', '#82b1ff', '#b388ff'];
+  const savedGroups = Array.isArray(s && s.watchlistGroups) ? s.watchlistGroups : [];
+  for (let i = 0; i < 3; i++) {
+    const g = savedGroups[i] || {};
+    watchlistGroups[i] = {
+      name: typeof g.name === 'string' ? g.name : '',
+      color: (typeof g.color === 'string' && /^#[0-9a-f]{6}$/i.test(g.color)) ? g.color : defaultGroupColors[i],
+      emoji: typeof g.emoji === 'string' ? g.emoji : '',
+      url: typeof g.url === 'string' ? g.url : '',
+      callsigns: typeof g.callsigns === 'string' ? g.callsigns : '',
+      // Runtime cache populated by main on each Ham2K PoLo fetch.
+      remoteEntries: Array.isArray(g.remoteEntries) ? g.remoteEntries : [],
+      lastFetchedAt: typeof g.lastFetchedAt === 'number' ? g.lastFetchedAt : 0,
+      lastFetchError: typeof g.lastFetchError === 'string' ? g.lastFetchError : '',
+    };
+  }
+  rebuildWatchlistGroupLookup();
+}
+
 function lookupWatchlistGroup(callsign) {
   if (!callsign) return null;
   return watchlistGroupLookup.get(callsign.toUpperCase()) || null;
@@ -1693,6 +1718,7 @@ async function loadPrefs() {
   scanDwell = parseInt(settings.scanDwell, 10) || 7;
   watchlist = parseWatchlist(settings.watchlist);
   watchlistRaw = settings.watchlist || '';
+  try { hydrateWatchlistGroups(settings); } catch (err) { console.warn('watchlist groups:', err && err.message); }
   // try/catch: settings application must never abort because the mute-rules
   // addon failed (an aborted loadPrefs breaks the whole session quietly).
   try {
@@ -15169,21 +15195,8 @@ async function openSettingsDialog(tab) {
   // Hydrate watchlist groups from settings — default colors + empty fields
   // when not yet configured. Updates the in-memory state, the form
   // controls, and the CSS color variables in one pass.
-  const defaultGroupColors = ['#ffa726', '#82b1ff', '#b388ff'];
-  const savedGroups = Array.isArray(s.watchlistGroups) ? s.watchlistGroups : [];
+  hydrateWatchlistGroups(s);
   for (let i = 0; i < 3; i++) {
-    const g = savedGroups[i] || {};
-    watchlistGroups[i] = {
-      name: typeof g.name === 'string' ? g.name : '',
-      color: (typeof g.color === 'string' && /^#[0-9a-f]{6}$/i.test(g.color)) ? g.color : defaultGroupColors[i],
-      emoji: typeof g.emoji === 'string' ? g.emoji : '',
-      url: typeof g.url === 'string' ? g.url : '',
-      callsigns: typeof g.callsigns === 'string' ? g.callsigns : '',
-      // Runtime cache populated by main on each Ham2K PoLo fetch.
-      remoteEntries: Array.isArray(g.remoteEntries) ? g.remoteEntries : [],
-      lastFetchedAt: typeof g.lastFetchedAt === 'number' ? g.lastFetchedAt : 0,
-      lastFetchError: typeof g.lastFetchError === 'string' ? g.lastFetchError : '',
-    };
     const nameEl  = document.getElementById(`wl-name-${i}`);
     const colorEl = document.getElementById(`wl-color-${i}`);
     const emojiEl = document.getElementById(`wl-emoji-${i}`);

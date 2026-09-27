@@ -98,5 +98,37 @@ console.log('matchDecode (spec match rules):');
     matchDecode(lk, 'W1AW/7', 'CQ W1AW/7 FN31') !== null && matchDecode(lk, 'W1AW/7', 'CQ W1AW/7 FN31').idx === 0);
 }
 
+// GitHub #89 (khoogheem): group highlights were missing in the spot list
+// until Settings was opened — the groups were hydrated ONLY by the Settings
+// dialog, never at startup. Run the real hydrate helper and assert loadPrefs
+// calls it.
+console.log('groups are loaded at startup (renderer/app.js):');
+{
+  const fs = require('fs');
+  const path = require('path');
+  const app = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+  const body = (name) => {
+    const start = app.indexOf('function ' + name + '(');
+    let d = 0, i = app.indexOf('{', start);
+    for (; i < app.length; i++) { if (app[i] === '{') d++; else if (app[i] === '}' && --d === 0) break; }
+    return app.slice(start, i + 1);
+  };
+  const loadPrefs = body('loadPrefs');
+  check(/hydrateWatchlistGroups\(settings\)/.test(loadPrefs), 'loadPrefs hydrates the watchlist groups');
+  check(/hydrateWatchlistGroups\(s\)/.test(body('openSettingsDialog')), 'the Settings dialog uses the same helper');
+  // eslint-disable-next-line no-new-func
+  const run = new Function('buildGroupLookup', `
+    let watchlistGroups = [{}, {}, {}], watchlistGroupLookup = null;
+    const window = { WatchlistGroups: { buildGroupLookup } };
+    const document = { documentElement: { style: { setProperty() {} } } };
+    ${body('rebuildWatchlistGroupLookup')}
+    ${body('hydrateWatchlistGroups')}
+    return (s) => { hydrateWatchlistGroups(s); return { watchlistGroups, watchlistGroupLookup }; };`)(buildGroupLookup);
+  const r = run({ watchlistGroups: [{ name: 'Friends', callsigns: 'K1ABC, w2xyz', color: '#123456' }] });
+  check(r.watchlistGroupLookup.get('W2XYZ') && r.watchlistGroupLookup.get('W2XYZ').idx === 0, 'a hand-typed group call is in the lookup');
+  check(r.watchlistGroups[0].color === '#123456' && r.watchlistGroups[1].color === '#82b1ff', 'saved colour kept, defaults filled');
+  check(run({}).watchlistGroupLookup.size === 0, 'no groups saved -> empty lookup, no throw');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 assert.strictEqual(failed, 0, 'watchlist-groups tests failed');
