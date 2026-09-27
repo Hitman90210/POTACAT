@@ -30,6 +30,19 @@ function lift(name) {
   return new Function(src.slice(start, i + 1) + '\nreturn ' + name + ';')();
 }
 const appPidsFromProcessTable = lift('appPidsFromProcessTable');
+// appMainPidsFromProcessTable calls appPidsFromProcessTable, so lift the two together.
+function liftWith(name, deps) {
+  const start = src.indexOf('function ' + name + '(');
+  assert.ok(start >= 0, name + ' not found');
+  let depth = 0, i = src.indexOf('{', start);
+  for (; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}' && --depth === 0) break;
+  }
+  // eslint-disable-next-line no-new-func
+  return new Function(...Object.keys(deps), src.slice(start, i + 1) + '\nreturn ' + name + ';')(...Object.values(deps));
+}
+const appMainPidsFromProcessTable = liftWith('appMainPidsFromProcessTable', { appPidsFromProcessTable });
 const appEnv = lift('appEnv');
 
 test('Start never hands the app ELECTRON_RUN_AS_NODE (it started as bare Node and exited)', () => {
@@ -67,6 +80,30 @@ test('the real app and its children are found, next to a launcher', () => {
   assert.deepStrictEqual(appPidsFromProcessTable(rows, ME), [7000, 7001]);
   // /status names the MAIN process even when a child is listed first.
   assert.deepStrictEqual(appPidsFromProcessTable([rows[2], rows[1]], ME), [7000, 7001]);
+});
+
+// 1.10.24 (officiallor #84): Stop made the window vanish while POTACAT kept
+// running. The app the LAUNCHER started has the launcher as its parent, and
+// the filter dropped every launcher child — so only the app's renderer/GPU
+// were killed and the main process survived with no window.
+test('the app the launcher STARTED is the app; only the launcher\'s own helpers are excluded', () => {
+  const rows = [
+    { ProcessId: ME, ParentProcessId: 1, CommandLine: '"C:\POTACAT\POTACAT.exe" --launcher' },
+    { ProcessId: 5001, ParentProcessId: ME, CommandLine: '"C:\POTACAT\POTACAT.exe" --type=gpu-process' },
+    { ProcessId: 7001, ParentProcessId: 7000, CommandLine: '"C:\POTACAT\POTACAT.exe" --type=renderer' },
+    { ProcessId: 7000, ParentProcessId: ME, CommandLine: '"C:\POTACAT\POTACAT.exe"' },
+  ];
+  assert.deepStrictEqual(appPidsFromProcessTable(rows, ME), [7000, 7001]);
+  assert.deepStrictEqual(appMainPidsFromProcessTable(rows, ME), [7000], 'the graceful close goes to the main process');
+});
+
+test('Stop closes the app gracefully first and force-kills only what is left', () => {
+  const stop = src.slice(src.indexOf('async function stopPotacat('), src.indexOf('async function restartPotacat('));
+  const soft = stop.indexOf('taskkill /PID ${pid} /T`'), hard = stop.indexOf('taskkill /PID ${pid} /T /F');
+  assert.ok(soft >= 0 && hard > soft, 'a plain taskkill (WM_CLOSE) before the /F kill');
+  assert.ok(/GRACEFUL_STOP_MS = (\d+)/.test(src) && +/GRACEFUL_STOP_MS = (\d+)/.exec(src)[1] > 5000,
+    'the wait outlasts the app\'s 5 s before-quit watchdog');
+  assert.ok(/getOtherPids\(\) : pids\)/.test(stop), 'the forced pass re-reads the table after the graceful wait');
 });
 
 test('a SECOND launcher (old --launcher login item + new launcher.js) is not the app either', () => {

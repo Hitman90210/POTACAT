@@ -166,8 +166,15 @@ function getWindowsAppPids() {
   let rows = out ? JSON.parse(out) : [];
   if (!Array.isArray(rows)) rows = [rows];
   const pids = appPidsFromProcessTable(rows, MY_PID);
-  _pidCache = { at: Date.now(), pids };
+  const mains = appMainPidsFromProcessTable(rows, MY_PID);
+  _pidCache = { at: Date.now(), pids, mains };
   return pids;
+}
+
+/** The app's MAIN processes (no --type=) from the last process-table read. */
+function getWindowsAppMainPids() {
+  getWindowsAppPids();
+  return (_pidCache && _pidCache.mains) || [];
 }
 
 /** Pure: which rows are the POTACAT app (not a launcher, not a launcher's child). */
@@ -178,10 +185,23 @@ function appPidsFromProcessTable(rows, myPid) {
   // The app's main process first (no --type=), so /status names it rather
   // than a GPU or renderer child.
   const isChild = (r) => /--type=/.test(r.CommandLine || '') ? 1 : 0;
+  // A launcher's child is excluded only when it is one of the launcher's own
+  // Electron helpers (--type=gpu-process, --type=utility, ...). A plain
+  // POTACAT.exe whose parent is the launcher is the APP the launcher
+  // started: excluding it (1.10.23) made Stop kill only the app's renderer
+  // and GPU children — the window vanished, the app kept running, and Stop
+  // reported success (officiallor #84, 1.10.24).
+  const isLauncherHelper = (r) => launcherPids.has(r.ParentProcessId) && isChild(r) === 1;
   return rows
-    .filter(r => r && r.ProcessId && !launcherPids.has(r.ProcessId) && !launcherPids.has(r.ParentProcessId))
+    .filter(r => r && r.ProcessId && !launcherPids.has(r.ProcessId) && !isLauncherHelper(r))
     .sort((a, b) => isChild(a) - isChild(b))
     .map(r => r.ProcessId);
+}
+
+/** Pure: the app's main processes (the ones a graceful close is sent to). */
+function appMainPidsFromProcessTable(rows, myPid) {
+  const app = new Set(appPidsFromProcessTable(rows, myPid));
+  return rows.filter(r => r && app.has(r.ProcessId) && !/--type=/.test(r.CommandLine || '')).map(r => r.ProcessId);
 }
 
 /** Get all PIDs of POTACAT.exe except our own launcher process */
@@ -347,6 +367,10 @@ async function startPotacat() {
   return { ok: true, pid: child.pid };
 }
 
+// Longer than the app's own 5 s before-quit watchdog, so a quit that is
+// cleaning up is never cut short.
+const GRACEFUL_STOP_MS = 6500;
+
 async function stopPotacat() {
   _pidCache = null;
   const pids = getOtherPids();
@@ -356,8 +380,34 @@ async function stopPotacat() {
   // #71) — so kill each PID's TREE, tolerate per-PID failures (children die
   // when their parent's tree goes; a second taskkill on them reports 128),
   // and only report an error if something is genuinely still alive after.
+  // Ask first: a plain taskkill (no /F) closes the app's window, and closing
+  // the main window quits POTACAT through its normal path — settings and
+  // window positions saved, the radio released. Only what is still alive
+  // after GRACEFUL_STOP_MS is killed outright.
+  if (IS_WIN) {
+    let mains = [];
+    try { mains = getWindowsAppMainPids(); } catch {}
+    for (const pid of mains) {
+      try { execSync(`taskkill /PID ${pid} /T`, { timeout: 10000, windowsHide: true }); } catch {}
+    }
+    if (mains.length) {
+      const until = Date.now() + GRACEFUL_STOP_MS;
+      let left = pids;
+      while (left.length && Date.now() < until) {
+        await new Promise(r => setTimeout(r, 300));
+        _pidCache = null;
+        left = getOtherPids();
+      }
+      if (!left.length) {
+        startedAt = null;
+        console.log('[Launcher] Stopped POTACAT (closed; PIDs:', pids.join(', ') + ')');
+        return { ok: true };
+      }
+    }
+    _pidCache = null;
+  }
   const errors = [];
-  for (const pid of pids) {
+  for (const pid of (IS_WIN ? getOtherPids() : pids)) {
     try {
       if (IS_WIN) {
         execSync(`taskkill /PID ${pid} /T /F`, { timeout: 10000, windowsHide: true });
